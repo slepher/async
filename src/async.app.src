@@ -7,7 +7,7 @@
 %% default_timeout (TIMEOUT = 8000)
 %% lock_timeout (LOCK_TIMEOUT = 5000)
 
-{application, pmap, [
+{application, async, [
     {description, "Async Monad"},
     {vsn, "0.1"},
     {modules, []}, 

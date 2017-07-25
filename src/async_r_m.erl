@@ -6,9 +6,9 @@
 %%% @end
 %%% Created : 25 Jul 2017 by Chen Slepher <slepher@issac.local>
 %%%-------------------------------------------------------------------
--module(async_m).
+-module(async_r_m).
 -behaviour(monad).
--transformer(async_t).
+-transformer(async_r_t).
 -compile({parse_transform, monad_t_transform}).
 
 %%%===================================================================

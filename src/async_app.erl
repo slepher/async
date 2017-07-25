@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 23 Mar 2012 by Chen Slepher <slepher@larry.wd201201>
 %%%-------------------------------------------------------------------
--module(pmap_app).
+-module(async_app).
 
 -behaviour(application).
 
@@ -34,7 +34,7 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
-    case pmap_sup:start_link() of
+    case async_sup:start_link() of
         {ok, Pid} ->
             {ok, Pid};
         Error ->
