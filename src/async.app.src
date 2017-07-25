@@ -8,7 +8,7 @@
 %% lock_timeout (LOCK_TIMEOUT = 5000)
 
 {application, pmap, [
-    {description, "Parallel Map"},
+    {description, "Async Monad"},
     {vsn, "0.1"},
     {modules, []}, 
     {mod, {pmap_app, ["%MAKETIME%"]}},

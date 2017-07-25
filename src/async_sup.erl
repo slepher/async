@@ -6,7 +6,7 @@
 %%% @end
 %%% Created : 23 Mar 2012 by Chen Slepher <slepher@larry.wd201201>
 %%%-------------------------------------------------------------------
--module(pmap_sup).
+-module(async_sup).
 
 -behaviour(supervisor).
 
@@ -56,26 +56,14 @@ init([]) ->
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
-    Restart = permanent,
-    Shutdown = 2000,
-    Type = worker,
-
-    AChild = {'pmap_monitor', {'pmap_monitor', start_link, []}, Restart, Shutdown, Type, ['pmap_monitor']},
-    PWSup  =  {'pmap_worker_sup', {supervisor, start_link,
-                                  [{local, pmap_worker_sup}, ?MODULE, [pmap_worker_sup]]},
+    AWSup  =  {'async_worker_sup', {supervisor, start_link,
+                                    [{local, async_worker_sup}, ?MODULE, [atask_worker_sup]]},
                transient, infinity, supervisor, []},
-    AWSup  =  {'atask_worker_sup', {supervisor, start_link,
-                                    [{local, atask_worker_sup}, ?MODULE, [atask_worker_sup]]},
-               transient, infinity, supervisor, []},
-    {ok, {SupFlags, [AChild, PWSup, AWSup]}};
+    {ok, {SupFlags, [AWSup]}};
 
-init([pmap_worker_sup]) ->
+init([async_worker_sup]) ->
     {ok, {{simple_one_for_one, 10, 10},
-          [{undefined, {pmap_worker, start_link, []}, temporary, 5000, worker, [pmap_worker]}]
-         }};
-init([atask_worker_sup]) ->
-    {ok, {{simple_one_for_one, 10, 10},
-          [{undefined, {atask_worker, start_link, []}, temporary, 5000, worker, [atask_worker]}]
+          [{undefined, {async_worker, start_link, []}, temporary, 5000, worker, [async_worker]}]
          }}.
 
 

@@ -6,12 +6,12 @@
 %%% @end
 %%% Created :  6 Feb 2012 by Chen Slepher <slepher@larry.local>
 %%%-------------------------------------------------------------------
--module(atask_worker).
+-module(async_worker).
 
 -behaviour(gen_server).
 
 %% API
--export([atask/1, promise/1]).
+-export([async/1, promise/1]).
 -export([start/0]).
 -export([start_link/0]).
 
@@ -26,8 +26,8 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-atask(Action) ->
-    atask:start_and_action(fun start/0, fun atask_gen_server:call/2, [{action, Action}]).
+async(Action) ->
+    atask:start_and_action(fun start/0, fun async_gen_server:call/2, [{action, Action}]).
 
 promise(Action) ->
     case start() of
