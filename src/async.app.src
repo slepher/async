@@ -11,7 +11,7 @@
     {description, "Async Monad"},
     {vsn, "0.1"},
     {modules, []}, 
-    {mod, {pmap_app, ["%MAKETIME%"]}},
+    {mod, {async_app, ["%MAKETIME%"]}},
     {registered, []},
     {applications, [kernel, stdlib]},
     {env, []}

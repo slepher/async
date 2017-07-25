@@ -1,1 +1,1 @@
-{incl_app, pmap, details}.
+{incl_app, async, details}.

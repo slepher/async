@@ -13,10 +13,14 @@
 %% API
 -export([call/3, message/2, promise_action/2]).
 -export([promise_mref/1, promise_mref/2]).
+-export([start/0]).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+start() ->
+    application:start(async).
+
 %% Local or remote by pid
 call(Pid, Label, Request) when is_pid(Pid) ->
     do_call(Pid, Label, Request);
@@ -49,20 +53,13 @@ message({PId, MRef}, Message) ->
     catch PId ! {message, MRef, Message}.
 
 promise_action(Action, Timeout) ->
-    fun(Callback, StoreCallback, State) ->
-            MRef = Action(),
-            NCallback = async_m:callback_with_timeout(MRef, Callback, Timeout),
-            StoreCallback(MRef, NCallback, State)
-    end.
+    async_m:promise(Action, Timeout).
 
 promise_mref(MRef) ->
     promise_mref(MRef, infinity).
 
 promise_mref(MRef, Timeout) ->
-    fun(Callback, StoreCallback, State) ->
-            NCallback = async_m:callback_with_timeout(MRef, Callback, Timeout),
-            StoreCallback(MRef, NCallback, State)
-    end.
+    async_m:promise(MRef, Timeout).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

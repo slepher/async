@@ -57,7 +57,7 @@ init([]) ->
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
     AWSup  =  {'async_worker_sup', {supervisor, start_link,
-                                    [{local, async_worker_sup}, ?MODULE, [atask_worker_sup]]},
+                                    [{local, async_worker_sup}, ?MODULE, [async_worker_sup]]},
                transient, infinity, supervisor, []},
     {ok, {SupFlags, [AWSup]}};
 

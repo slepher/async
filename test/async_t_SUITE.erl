@@ -34,7 +34,7 @@
 %% @end
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    pmap:start(),
+    async:start(),
     {ok, PId} = echo_server:start(),
     [{echo_server, PId}|Config].
 

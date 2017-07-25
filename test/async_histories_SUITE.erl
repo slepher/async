@@ -29,7 +29,7 @@ suite() ->
 %% @end
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    pmap:start(),
+    async:start(),
     echo_server:start(echo_server),
     Config.
 

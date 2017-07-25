@@ -115,7 +115,7 @@ find_ref(MRef, {?MODULE, _M} = Monad) ->
            State <- Monad:get(),
            begin
                Callbacks = CallbacksGetter(State),
-               return(maps:find(MRef, Callbacks))
+               return(async_util:find(MRef, Callbacks))
            end
        ]).
 
@@ -137,7 +137,7 @@ put_ref(MRef, Data, {?MODULE, _M} = Monad) ->
            Monad:modify_state(
              fun(State) ->
                      Callbacks = CallbacksGetter(State),
-                     NCallbacks = maps:put(MRef, Data, Callbacks),
+                     NCallbacks = async_util:store(MRef, Data, Callbacks),
                      CallbacksSetter(NCallbacks, State)
              end)
        ]).
@@ -149,7 +149,7 @@ remove_ref(MRef, {?MODULE, _M} = Monad) ->
            Monad:modify_state(
              fun(State) ->
                      Callbacks = CallbacksGetter(State),
-                     NCallbacks = maps:remove(MRef, Callbacks),
+                     NCallbacks = async_util:remove(MRef, Callbacks),
                      CallbacksSetter(NCallbacks, State)
            end)
        ]).

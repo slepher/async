@@ -35,6 +35,7 @@
 %%% API
 %%%===================================================================
 
+
 -spec new(M) -> TM when TM :: monad:monad(), M :: monad:monad().
 new(M) ->
     {?MODULE, M}.
@@ -530,7 +531,7 @@ info_to_a(_Info) ->
     unhandled.
 
 handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) ->
-    case maps:find(MRef, Callbacks) of
+    case async_util:find(MRef, Callbacks) of
         {ok, #callback{cc = Callback, acc_ref = Acc}} ->
             {Callback, Acc, Callbacks};
         error ->
@@ -538,9 +539,9 @@ handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) ->
     end;
 handle_a(MRef, _Reply, Callbacks) when is_reference(MRef) ->
     erlang:demonitor(MRef, [flush]),
-    case maps:find(MRef, Callbacks) of
+    case async_util:find(MRef, Callbacks) of
         {ok, #callback{cc = Callback, acc_ref = Acc}} ->
-            NCallbacks = maps:remove(MRef, Callbacks),
+            NCallbacks = async_util:remove(MRef, Callbacks),
             {Callback, Acc, NCallbacks};
         error ->
             error
