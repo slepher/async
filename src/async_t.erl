@@ -266,8 +266,7 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
                                  NPending = maps:remove(PKey, Pending),
                                  do([Monad ||
                                         Monad:put_ref(PRef, NPending),
-                                        Monad:put_ref(
-                                          WRef, [PKey|lists:delete(Key, NWorking)]),
+                                        Monad:put_ref(WRef, lists:delete(Key, NWorking)),
                                         PPromise
                                     ])
                          end
