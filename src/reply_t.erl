@@ -20,7 +20,7 @@
 -export_type([reply_t/2]).
 
 -behaviour(monad_trans).
--export([new/1, '>>='/3, return/2, fail/2, run/2, pure_return/2, lift/2, lift_reply/2]).
+-export([new/1, '>>='/3, return/2, fail/2, run/2, pure_return/2, wrapped_return/2, lift/2, lift_reply/2]).
 
 -opaque reply_t(M, A) :: monad:monadic(M, ok | {ok, A} | {error, any()} | {message, any()} | A).
 
@@ -59,6 +59,9 @@ run(EM, _M) -> EM.
 pure_return(X, {?MODULE, M}) ->
     M:return(X).
 
+wrapped_return(X, {?MODULE, M}) ->
+    M:return(wrap_value(X)).
+
 -spec lift(monad:monadic(M, A), M) -> reply_t(M, A).
 lift(X, {?MODULE, M}) ->
     do([M || A <- X,
@@ -73,3 +76,17 @@ lift_reply(X, {?MODULE, M}) ->
                  A ->
                      return({ok, A})
              end]).
+
+wrap_value(Value) ->
+    case Value of
+        {ok, V} ->
+            {ok, V};
+        {error, R} ->
+            {error, R};
+        {message, M} ->
+            {message, M};
+        ok ->
+            ok;
+        Other ->
+            {ok, Other}
+    end.

@@ -16,7 +16,8 @@
 -export([new/1, new_mr/1, '>>='/3, return/2, fail/2, lift/2, lift_mr/2]).
 -export([get_state/1, put_state/2, modify_state/2, find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
          get_local/1, put_local/2, modify_local/2, local_ref/3, get_local_ref/1, callCC/2]).
--export([lift_reply/2, lift_reply_all/2, pure_return/2, message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
+-export([lift_reply/2, lift_reply_all/2, pure_return/2, wrapped_return/2,
+         message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise/3, then/3, map/2, map/3, par/2]).
 -export([wait/2, wait/3, wait/4, wait/5, wait/6]).
 -export([run/5, handle_info/4, wait_receive/4]).
@@ -154,6 +155,10 @@ lift_reply(F, {?MODULE, M}) ->
 pure_return(X, {?MODULE, M}) ->
     Monad = real(M),
     Monad:pure_return(X).
+
+wrapped_return(X, {?MODULE, M}) ->
+    Monad = real(M),
+    Monad:wrapped_return(X).
 
 -spec message(A, M) -> async_t(_S, _R, M, A).
 message(A, {?MODULE, _M} = Monad) ->
