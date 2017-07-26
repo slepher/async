@@ -465,7 +465,7 @@ handle_info(Info, Offset, State, {?MODULE, M}) ->
 %%%===================================================================
 split(0, Keys) ->
     {Keys, []};
-split(Threads, Keys) when length(Keys) =< Threads ->
+split(Threads, Keys) when length(Keys) >= Threads ->
     lists:split(Threads, Keys);
 split(_Threads, Keys) ->
     {Keys, []}.
