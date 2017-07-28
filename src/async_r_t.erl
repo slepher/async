@@ -15,6 +15,7 @@
 
 %% API
 -export([new/1, '>>='/3, return/2, fail/2, lift/2]).
+-export([do_get_state/1, do_put_state/2, do_modify_state/2]).
 -export([get_state/1, put_state/2, modify_state/2]).
 -export([get_local_ref/1, local_ref/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, put_ref/3, remove_ref/2]).
@@ -53,25 +54,66 @@ lift(F, {?MODULE, M}) ->
     M3 = state_t:new(M2),
     M3:lift(M2:lift(M1:lift(F))).
 
--spec get_state(M) -> async_r_t(S,  M, S).
-get_state({?MODULE, M}) ->
+do_get_state({?MODULE, M}) ->
     M1 = reader_t:new(M),
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
     M3:get().
 
--spec put_state(S, M) -> async_r_t(S, M, ok).
-put_state(State, {?MODULE, M}) ->
+do_put_state(State, {?MODULE, M}) ->
     M1 = reader_t:new(M),
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
     M3:put(State).
 
-modify_state(Fun, {?MODULE, M}) ->
+do_modify_state(State, {?MODULE, M}) ->
     M1 = reader_t:new(M),
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
-    M3:modify(Fun).
+    M3:modify(State).
+
+-spec get_state(M) -> async_r_t(S,  M, S).
+get_state({?MODULE, M}) ->
+    Monad = new(M),
+    do([Monad ||
+           {CallbacksGetter, CallbacksSetter} <- ask(Monad),
+           State <- Monad:do_get_state(),
+           begin
+               Callbacks = CallbacksGetter(State),
+               return(CallbacksSetter(async_util:clear(Callbacks), State))
+           end
+       ]).
+
+-spec put_state(S, M) -> async_r_t(S, M, ok).
+put_state(NState, {?MODULE, M}) ->
+    Monad = new(M),
+    do([Monad ||
+           {CallbacksGetter, CallbacksSetter} <- ask(Monad),
+           State <- Monad:do_get_state(),
+           begin 
+               Callbacks = CallbacksGetter(State),
+               case async_util:same_type_state(State, NState) of
+                   true ->
+                       NCallbacks = CallbacksGetter(NState),
+                       NNState = CallbacksSetter(async_util:merge(Callbacks, NCallbacks), NState),
+                       Monad:do_put_state(NNState);
+                   false ->
+                       case async_util:callback_exists(Callbacks) of
+                           true ->
+                               Monad:fail({invalid_put_state, NState});
+                           false ->
+                               Monad:do_put_state(NState)
+                       end
+               end
+           end
+       ]).
+
+modify_state(Fun, {?MODULE, M}) ->
+    Monad = new(M),
+    do([Monad ||
+           State <- Monad:do_get_state(),
+           Monad:put_state(Fun(State))
+       ]).
 
 -spec get_local_ref(M) -> async_r_t(_S, M, reference()).
 get_local_ref({?MODULE, M}) ->
@@ -112,7 +154,7 @@ modify_local(Fun, {?MODULE, _M} = Monad) ->
 find_ref(MRef, {?MODULE, _M} = Monad) ->
     do([Monad ||
            {CallbacksGetter, _CallbacksSetter} <- ask(Monad),
-           State <- Monad:get(),
+           State <- Monad:do_get_state(),
            begin
                Callbacks = CallbacksGetter(State),
                return(async_util:find(MRef, Callbacks))
@@ -123,7 +165,7 @@ find_ref(MRef, {?MODULE, _M} = Monad) ->
 get_ref(MRef, Default, {?MODULE, _M} = Monad) ->
     do([Monad ||
            {CallbacksGetter, _CallbacksSetter} <- ask(Monad),
-           State <- Monad:get_state(),
+           State <- Monad:do_get_state(),
            begin
                Callbacks = CallbacksGetter(State),
                return(maps:get(MRef, Callbacks, Default))
@@ -134,7 +176,7 @@ get_ref(MRef, Default, {?MODULE, _M} = Monad) ->
 put_ref(MRef, Data, {?MODULE, _M} = Monad) ->
     do([Monad ||
            {CallbacksGetter, CallbacksSetter} <- ask(Monad),
-           Monad:modify_state(
+           Monad:do_modify_state(
              fun(State) ->
                      Callbacks = CallbacksGetter(State),
                      NCallbacks = async_util:store(MRef, Data, Callbacks),
@@ -146,7 +188,7 @@ put_ref(MRef, Data, {?MODULE, _M} = Monad) ->
 remove_ref(MRef, {?MODULE, _M} = Monad) ->
     do([Monad ||
            {CallbacksGetter, CallbacksSetter} <- ask(Monad),
-           Monad:modify_state(
+           Monad:do_modify_state(
              fun(State) ->
                      Callbacks = CallbacksGetter(State),
                      NCallbacks = async_util:remove(MRef, Callbacks),
@@ -178,3 +220,5 @@ ask({?MODULE, M}) ->
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
     M3:lift(M2:lift(M1:ask())).
+
+

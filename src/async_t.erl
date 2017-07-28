@@ -346,8 +346,8 @@ run(X, Callback, Offset, State, {?MODULE, M} = Monad) ->
            (A) ->
              do([MR ||
                     K(A),
-                    NState <- MR:get_state(),
-                    case same_type_state(NState, State) of
+                    NState <- MR:do_get_state(),
+                    case async_util:same_type_state(NState, State) of
                         true ->
                             MR:remove_ref(Ref);
                         false ->
@@ -386,7 +386,7 @@ wait(X, Callback, Offset, State, Timeout, {?MODULE, M} = Monad) ->
     MState = run(X, Callback, Offset, State, Monad),
     do([M ||
            NState <- MState,
-           case same_type_state(NState, State) of
+           case async_util:same_type_state(NState, State) of
                true ->
                    wait_receive(Offset, NState, Timeout, Monad);
                false ->
@@ -398,7 +398,7 @@ wait(X, Callback, Offset, State, Timeout, {?MODULE, M} = Monad) ->
 wait_receive(Offset, State, Timeout, {?MODULE, M} = Monad) ->
     {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
-    case callback_exists(Callbacks) of
+    case async_util:callback_exists(Callbacks) of
         true ->
             receive 
                 Info ->
@@ -408,7 +408,7 @@ wait_receive(Offset, State, Timeout, {?MODULE, M} = Monad) ->
                         MNState ->
                             do([M ||
                                    NState <- MNState,
-                                   case same_type_state(NState, State) of
+                                   case async_util:same_type_state(NState, State) of
                                        true ->
                                            wait_receive(Offset, NState, Timeout, Monad);
                                        false ->
@@ -517,13 +517,6 @@ callback_to_cc(Callback, {?MODULE, M}) ->
     MR:fail({invalid_callback, Callback}).
 
 
-callback_exists(Callbacks) ->
-    (maps:size(Callbacks) =/= 0) and
-        (lists:any(fun(#callback{}) ->
-                           true;
-                      (_) ->
-                           false
-                   end, maps:values(Callbacks))).
 
 info_to_a({message, MRef, Message}) when is_reference(MRef) ->
     {MRef, {message, Message}};
@@ -562,13 +555,13 @@ callback_with_timeout(Callback, _MRef, _Timeout, {?MODULE, _M}) ->
 
 state_callbacks_gs(Offset) ->
     {fun(State) ->
-             element(Offset, State)
+             try
+                 element(Offset, State)
+             catch
+                 _:Exception ->
+                     exit(Exception)
+             end
      end,
      fun(Callbacks, State) ->
              setelement(Offset, State, Callbacks)
      end}.
-
-same_type_state(NState, State) when is_tuple(NState), is_tuple(State) ->
-    element(1, NState) == element(1, State);
-same_type_state(_NState, _State) ->
-    false.

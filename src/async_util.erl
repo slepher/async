@@ -10,6 +10,10 @@
 
 %% API
 -export([store/3, find/2, remove/2]).
+-export([clear/1, merge/2]).
+-export([same_type_state/2, callback_exists/1]).
+
+-record(callback, {cc, acc_ref}).
 
 %%%===================================================================
 %%% API
@@ -34,6 +38,33 @@ remove(Key, Dict) when is_list(Dict) ->
     orddict:erase(Key, Dict);
 remove(Key, Dict) ->
     dict:erase(Key, Dict).
+
+clear(Dict) when is_map(Dict) ->
+    maps:new();
+clear(Dict) when is_list(Dict) ->
+    orddict:new();
+clear(_Dict) ->
+    dict:new().
+
+merge(Dict1, Dict2) when is_map(Dict1) ->
+    maps:merge(Dict1, Dict2);
+merge(Dict1, Dict2) when is_list(Dict1) ->
+    orddict:merge(Dict1, Dict2);
+merge(Dict1, Dict2) ->
+    dict:merge(Dict1, Dict2).
+
+same_type_state(NState, State) when is_tuple(NState), is_tuple(State) ->
+    element(1, NState) == element(1, State);
+same_type_state(_NState, _State) ->
+    false.
+
+callback_exists(Callbacks) ->
+    (maps:size(Callbacks) =/= 0) and
+        (lists:any(fun(#callback{}) ->
+                           true;
+                      (_) ->
+                           false
+                   end, maps:values(Callbacks))).
 
 
 %%--------------------------------------------------------------------

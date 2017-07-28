@@ -210,7 +210,7 @@ test_async_t_par(_Config) ->
                  (Reply) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:put_state({Acc, Reply})
+                             MR:do_put_state({Acc, Reply})
                          ])
               end),
     ?assertEqual({hello_message, {error, hello}}, Reply).
@@ -234,13 +234,12 @@ test_async_t_pmap(Config) ->
                  (X) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:put_state({X, Acc})
+                             MR:do_put_state({X, Acc})
                          ])
               end
              ),
     ?assertEqual({lists:duplicate(3, {error, hello}), [message, message, message]}, Reply).
                                
-
 test_async_t_pmap_with_acc(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
     Monad = async_t:new(identity_m),
@@ -270,7 +269,7 @@ test_async_t_pmap_with_acc(Config) ->
                  (X) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:put_state({X, Acc})
+                             MR:do_put_state({X, Acc})
                          ])
               end
              ),
@@ -288,13 +287,13 @@ test_local_acc_ref(_Config) ->
     Ref1 = make_ref(),
     M0 = do([MR ||
                 Ref <- MR:get_local_ref(),
-                MR:put_state(Ref)
+                MR:do_put_state(Ref)
             ]),
     M1 = MR:local_ref(Ref1, M0),
     M2 = do([MR ||
                 R1 <- MR:local_ref(Ref1, MR:get_local_ref()),
                 R0 <- MR:get_local_ref(),
-                MR:put_state({R0, R1})
+                MR:do_put_state({R0, R1})
             ]),
     ?assertEqual(Ref0, MR:exec(M0, undefined, Ref0, undefined)),
     ?assertEqual(Ref1, MR:exec(M1, undefined, Ref0, undefined)),
@@ -318,7 +317,7 @@ test_async_t_local_acc_ref(_Config) ->
     {{R0, R1, R2}, R3} = Monad:wait(M2, fun(X) -> 
                                           do([MR || 
                                                  MRRef <- MR:get_local_ref(),
-                                                 MR:put_state({X, MRRef})])
+                                                 MR:do_put_state({X, MRRef})])
                                   end),
     ?assertEqual(Ref, R1),
     ?assertEqual(R0, R2),
