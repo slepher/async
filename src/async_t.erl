@@ -343,23 +343,26 @@ run_cc(X, CC, Offset, State, {?MODULE, M} = Monad) ->
     MR = new_mr(M),
     CallbacksGS = state_callbacks_gs(Offset),
     Ref = make_ref(),
-    NCC = 
-        fun({message, _M} = Message) ->
-                CC(Message);
-           (A) ->
-                do([MR ||
-                       Val <- CC(A),
-                       NState <- MR:do_get_state(),
-                       case async_util:same_type_state(NState, State) of
-                           true ->
-                               MR:remove_ref(Ref);
-                           false ->
-                               MR:return(ok)
-                       end,
-                       return(Val)
-                   ])
-          end,
+    NCC = remove_ref_after_cc(Ref, CC, element(1, State), size(State), Monad),
     MR:exec(X(NCC), CallbacksGS, Ref, State).
+
+remove_ref_after_cc(Ref, CC, Type, Size, {?MODULE, M}) ->
+    MR = new_mr(M),
+    fun({message, _M} = Message) ->
+            CC(Message);
+       (A) ->
+            do([MR ||
+                   Val <- CC(A),
+                   Match <- MR:match_state(Type, Size),
+                   case Match of
+                       true ->
+                           MR:remove_ref(Ref);
+                       false ->
+                           MR:return(ok)
+                   end,
+                   return(Val)
+               ])
+    end.
 
 -spec wait(async_t(_S, A, M, A), M) -> monad:monadic(M, A).
 wait(X, {?MODULE, _M} = Monad) ->

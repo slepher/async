@@ -16,7 +16,7 @@
 %% API
 -export([new/1, '>>='/3, return/2, fail/2, lift/2]).
 -export([do_get_state/1, do_put_state/2, do_modify_state/2]).
--export([get_state/1, put_state/2, modify_state/2]).
+-export([get_state/1, put_state/2, modify_state/2, match_state/3]).
 -export([get_local_ref/1, local_ref/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, put_ref/3, remove_ref/2]).
 -export([exec/5]).
@@ -114,6 +114,13 @@ modify_state(Fun, {?MODULE, M}) ->
     do([Monad ||
            State <- Monad:do_get_state(),
            Monad:put_state(Fun(State))
+       ]).
+
+match_state(Type, Size, {?MODULE, M}) ->
+    Monad = new(M),
+    do([Monad ||
+           State <- Monad:do_get_state(),
+           return(async_util:match_state(State, Type, Size))
        ]).
 
 -spec get_local_ref(M) -> async_r_t(_S, M, reference()).
