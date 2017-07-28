@@ -108,6 +108,7 @@ put_state(NState, {?MODULE, M}) ->
            end
        ]).
 
+-spec modify_state(fun((S) -> S), M) -> async_r_t(S, M, ok).
 modify_state(Fun, {?MODULE, M}) ->
     Monad = new(M),
     do([Monad ||
