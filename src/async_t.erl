@@ -18,9 +18,9 @@
          get_local/1, put_local/2, modify_local/2, local_ref/3, get_local_ref/1, callCC/2]).
 -export([lift_reply/2, lift_reply_all/2, pure_return/2, wrapped_return/2,
          message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
--export([promise/2, promise/3, then/3, map/2, map/3, par/2]).
+-export([promise/2, promise/3, then/3, map/2, map/3, par/2, progn_par/2]).
 -export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
--export([run/5, run_cc/5, handle_info/4, wait_receive/4]).
+-export([exec/5, exec_cc/5, run/5, run_cc/5, handle_info/4, wait_receive/4]).
 
 -opaque async_t(S, R, M, A) :: 
           fun((fun((reply_t:reply_t(identity_m, A)) -> async_r_t:async_r_t(S, M, R))) -> async_r_t:async_r_t(S, M, R)).
@@ -28,7 +28,7 @@
 -type callback_or_cc(S, R, M, A) :: fun((A | {ok, A} | {error, _E} | {message, _IM}) -> async_r_t:async_r_t(S, M, R)) | 
                                     fun(() -> any()) | 
                                     fun((A | {ok, A} | {error, _E} | {message, _M}) -> any()) |
-                                    fun((A | {ok, A} | {error, _E} | {message, _IM}, S) -> S).
+                                    fun((A | {ok, A} | {error, _E} | {message, _IM}, S) -> any()).
 
 -record(callback, {cc, acc_ref}).
 
@@ -227,7 +227,7 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
     WRef = make_ref(),
     PRef = make_ref(),
     CRef = make_ref(),
-    CC = maps:get(cc, Options, default_cc(Monad)),
+    CC = maps:get(cc, Options, default_map_cc(Monad)),
     Acc0 = maps:get(acc0, Options, maps:new()),
     Threads = maps:get(concurrency, Options, 0),
     NPromises = 
@@ -253,7 +253,7 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
                                                 Monad:remove_ref(WRef),
                                                 Monad:remove_ref(CRef),
                                                 Monad:pure_return(Completed)
-                                                ]);
+                                            ]);
                                      NNWorking ->
                                          do([Monad ||
                                                 Monad:put_ref(WRef, NNWorking),
@@ -284,7 +284,7 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
 provide_message(Promise, Then, {?MODULE, _M} = Monad) ->
     do([Monad ||
            Val <- Monad:lift_reply_all(Promise),
-           Monad:par([
+           progn_par([
                       % this will only return messages and ignore all normal reply returned in then
                       do([Monad || 
                              Monad:lift_reply(Then(Val)),
@@ -297,7 +297,7 @@ provide_message(Promise, Then, {?MODULE, _M} = Monad) ->
                           _ ->
                               Monad:pure_return(Val)
                       end
-                     ])
+                      ], Monad)
       ]).
 
 %% this is a dangerous function, only one should return A | {ok, A} | {error, E}
@@ -309,6 +309,18 @@ par(Promises, {?MODULE, M}) ->
     fun(K) ->
             monad:sequence(MR, lists:map(fun(Promise) -> Promise(K) end, Promises))
     end.
+
+progn_par(Promises, {?MODULE, M}) ->
+    MR = new_mr(M),
+    fun(K) ->
+            progn_sequence(MR, lists:map(fun(Promise) -> Promise(K) end, Promises), ok)
+    end.
+
+progn_sequence(Monad, [], Acc) ->
+    do([Monad || return(Acc)]);
+progn_sequence(Monad, [X|Xs], _Acc) ->
+    do([Monad || E <- X,
+                 progn_sequence(Monad, Xs, E)]).    
 
 -spec handle_message(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> async_t(S, R, M, A).
 handle_message(X, MessageHandler, {?MODULE, M} = Monad) ->
@@ -322,7 +334,6 @@ handle_message(X, MessageHandler, {?MODULE, M} = Monad) ->
                    Monad:pure_return(Reply)
            end
        ]).
-
 -spec hijack(async_r_t:async_r_t(S, M, R), M) -> async_t(S, R, M, _A).
 hijack(MR, {?MODULE, _M}) ->
     fun(_K) ->
@@ -334,6 +345,17 @@ pass({?MODULE, M} = Monad) ->
     MR = new_mr(M),
     Monad:hijack(MR:return(ok)).
 
+
+exec(X, Callback, Offset, State, Monad) ->
+    CC = callback_to_cc(Callback, Monad),
+    Monad:exec_cc(X, CC, Offset, State).
+
+exec_cc(X, CC, Offset, State, {?MODULE, M} = Monad) ->
+    do([M ||
+           {_A, NState} <- run_cc(X, CC, Offset, State, Monad),
+           return(NState)
+       ]).
+    
 run(X, Callback, Offset, State, Monad) ->
     CC = callback_to_cc(Callback, Monad),
     Monad:run_cc(X, CC, Offset, State).
@@ -343,26 +365,8 @@ run_cc(X, CC, Offset, State, {?MODULE, M} = Monad) ->
     MR = new_mr(M),
     CallbacksGS = state_callbacks_gs(Offset),
     Ref = make_ref(),
-    NCC = remove_ref_after_cc(Ref, CC, element(1, State), size(State), Monad),
-    MR:exec(X(NCC), CallbacksGS, Ref, State).
-
-remove_ref_after_cc(Ref, CC, Type, Size, {?MODULE, M}) ->
-    MR = new_mr(M),
-    fun({message, _M} = Message) ->
-            CC(Message);
-       (A) ->
-            do([MR ||
-                   Val <- CC(A),
-                   Match <- MR:match_state(Type, Size),
-                   case Match of
-                       true ->
-                           MR:remove_ref(Ref);
-                       false ->
-                           MR:return(ok)
-                   end,
-                   return(Val)
-               ])
-    end.
+    NCC = remove_ref_after_cc(Ref, CC, Monad),
+    MR:run(X(NCC), CallbacksGS, Ref, State).
 
 -spec wait(async_t(_S, A, M, A), M) -> monad:monadic(M, A).
 wait(X, {?MODULE, _M} = Monad) ->
@@ -380,75 +384,68 @@ wait(X, Callback, Timeout, {?MODULE, _M} = Monad) ->
     wait(X, Callback, 2, {state, maps:new()}, Timeout, Monad).
 
 -spec wait(async_t(S, A, M, A), integer(), S, integer() | infinity, M) -> monad:monadic(M, A).
-wait(X, Offset, State, Timeout, {?MODULE, M} = Monad) ->
-    MR = async_r_t:new(M),
-    wait(X,
-         fun({message, _M}) ->
-                 MR:return(ok);
-            (A) ->
-                 MR:do_put_state(A)
-         end, Offset, State, Timeout, Monad).
+wait(X, Offset, State, Timeout, Monad) ->
+    wait(X, fun(A) -> A end, Offset, State, Timeout, Monad).
 wait(X, Callback, Offset, State, Timeout, Monad) ->
     CC = callback_to_cc(Callback, Monad),
     Monad:wait_cc(X, CC, Offset, State, Timeout).
 
 -spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer(), S, integer() | infinity, M) -> monad:monadic(M, R).
-wait_cc(X, CC, Offset, State, Timeout, {?MODULE, M} = Monad) ->
-    MState = run_cc(X, CC, Offset, State, Monad),
+wait_cc(X, CC, Offset, State, Timeout, Monad) ->
+    MResult = run_cc(X, CC, Offset, State, Monad),
+    wait_mresult(MResult, Offset, State, Timeout, Monad).
+
+-spec wait_receive(integer(), _S, integer() | infinity, M) -> monad:monadic(M, _A).
+wait_receive(Offset, State, Timeout, Monad) ->
+    receive 
+        Info ->
+            case run_info(Info, Offset, State, Monad) of
+                unhandled ->
+                    wait_receive(Offset, State, Timeout, Monad);
+                MResult ->
+                    wait_mresult(MResult, Offset, State, Timeout, Monad)
+            end
+    after Timeout ->
+            %% TODO: corrent this
+            {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
+            Callbacks = CallbacksG(State),
+            maps:fold(
+              fun(MRef, #callback{}, Acc) ->
+                      self() ! {MRef, {error, timeout}},
+                      Acc;
+                 (_MRef, _Other, Acc) ->
+                      Acc
+              end, ok, Callbacks),
+            wait_receive(Offset, State, 0, Monad)
+    end.
+
+wait_mresult(MResult, Offset, State, Timeout, {?MODULE, M} = Monad) ->
     do([M ||
-           NState <- MState,
+           {A, NState} <- MResult,
            case async_util:same_type_state(NState, State) of
                true ->
-                   wait_receive(Offset, NState, Timeout, Monad);
+                   {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
+                   Callbacks = CallbacksG(NState),
+                   case async_util:callback_exists(Callbacks) of
+                       true ->
+                           wait_receive(Offset, NState, Timeout, Monad);
+                       false ->
+                           M:return(A)
+                   end;
                false ->
-                   NState
+                   M:return(A)
            end
        ]).
 
--spec wait_receive(integer(), S, integer() | infinity, M) -> monad:monadic(M, S) | monad:monadic(M, _A).
-wait_receive(Offset, State, Timeout, {?MODULE, M} = Monad) ->
-    {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
-    Callbacks = CallbacksG(State),
-    case async_util:callback_exists(Callbacks) of
-        true ->
-            receive 
-                Info ->
-                    case handle_info(Info, Offset, State, Monad) of
-                        unhandled ->
-                            wait_receive(Offset, State, Timeout, Monad);
-                        MNState ->
-                            do([M ||
-                                   NState <- MNState,
-                                   case async_util:same_type_state(NState, State) of
-                                       true ->
-                                           wait_receive(Offset, NState, Timeout, Monad);
-                                       false ->
-                                           M:return(NState)
-                                   end
-                               ])
-                    end
-            after Timeout ->
-                    maps:fold(
-                      fun(MRef, #callback{}, MS) ->
-                              do([M || 
-                                     S <- MS,
-                                     case handle_info({MRef, {error, timeout}}, Offset, S, Monad) of
-                                         unhandled ->
-                                             M:return(S);
-                                         NS ->
-                                             NS
-                                     end
-                                 ]);
-                         (_MRef, _Other, MS) ->
-                              MS
-                      end, M:return(State), Callbacks)
-            end;
-        false ->
-            M:return(State)
-    end.
-
 -spec handle_info(_Info, integer(), S, M) -> monad:monadic(M, S).
 handle_info(Info, Offset, State, {?MODULE, M}) ->
+    do([M || 
+           {_A, NState} <- run_info(Info, Offset, State, {?MODULE, M}),
+           return(NState)
+       ]).
+
+-spec run_info(any(), integer(), S, M) -> monad:monadic(M, {_A, S}).
+run_info(Info, Offset, State, {?MODULE, M}) ->
     MR = new_mr(M),
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
@@ -457,13 +454,14 @@ handle_info(Info, Offset, State, {?MODULE, M}) ->
             case handle_a(MRef, A, Callbacks) of
                 {Callback, AccRef, NCallbacks} ->
                     NState = CallbacksS(NCallbacks, State),
-                    MR:exec(Callback(A), {CallbacksG, CallbacksS}, AccRef, NState);
+                    MR:run(Callback(A), {CallbacksG, CallbacksS}, AccRef, NState);
                 error ->
                     M:return(State)
             end;
         unhandled ->
             unhandled
     end.
+
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
@@ -483,7 +481,7 @@ split(_Threads, Keys) ->
 real(M) ->
     reply_t:new(cont_t:new(new_mr(M))).
 
-default_cc({?MODULE, _M} = Monad) ->
+default_map_cc({?MODULE, _M} = Monad) ->
     fun(Key, {message, Message}) ->
             Monad:message({Key, Message});
        (Key, Value) ->
@@ -500,8 +498,8 @@ callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 0) ->
             case Callback() of
                 NMonadMR when is_function(NMonadMR) ->
                     NMonadMR;
-                _ ->
-                    MR:return(ok)
+                Result ->
+                    MR:return(Result)
             end
     end;
 callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 1) ->
@@ -510,8 +508,8 @@ callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 1) ->
             case Callback(A) of
                 NMonadMR when is_function(NMonadMR) ->
                     NMonadMR;
-                _ ->
-                    MR:return(ok)
+                Result ->
+                    MR:return(Result)
             end
     end;
 callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 2) ->
@@ -519,8 +517,18 @@ callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 2) ->
     fun(A) ->
             do([MR || 
                    State <- MR:get_state(),
-                   NState <- MR:lift(Callback(A, State)),
-                   MR:put_state(NState)
+                   begin
+                       NState = Callback(A, State),
+                       case async_util:same_type_state(NState, State) of
+                           true ->
+                               do([MR ||
+                                      MR:put_state(NState),
+                                      MR:return(NState)
+                                  ]);
+                           false ->
+                               MR:return(NState)
+                       end
+                   end
                ])
     end;
 callback_to_cc(Callback, {?MODULE, M}) ->
@@ -574,3 +582,22 @@ state_callbacks_gs(Offset) ->
      fun(Callbacks, State) ->
              setelement(Offset, State, Callbacks)
      end}.
+
+remove_ref_after_cc(Ref, CC, {?MODULE, M}) ->
+    MR = new_mr(M),
+    fun({message, _M} = Message) ->
+            CC(Message);
+       (A) ->
+            do([MR ||
+                   State <- MR:get_state(),
+                   Val <- CC(A),
+                   NState <- MR:do_get_state(),
+                   case async_util:same_type_state(NState, State) of
+                       true ->
+                           MR:remove_ref(Ref);
+                       false ->
+                           MR:return(ok)
+                   end,
+                   return(Val)
+               ])
+    end.

@@ -16,10 +16,10 @@
 %% API
 -export([new/1, '>>='/3, return/2, fail/2, lift/2]).
 -export([do_get_state/1, do_put_state/2, do_modify_state/2]).
--export([get_state/1, put_state/2, modify_state/2, match_state/3]).
+-export([get_state/1, put_state/2, modify_state/2]).
 -export([get_local_ref/1, local_ref/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, put_ref/3, remove_ref/2]).
--export([exec/5]).
+-export([exec/5, run/5]).
 
 -opaque async_r_t(S, M, A) :: fun((S) -> fun((reference()) -> fun((callback_gs(S)) -> monad:monadic(M, {S, A})))).
 -type callback_gs(S) :: {fun((S) -> #{reference() => Val}), fun((#{reference() => Val}, S) -> S)}.
@@ -116,13 +116,6 @@ modify_state(Fun, {?MODULE, M}) ->
            Monad:put_state(Fun(State))
        ]).
 
-match_state(Type, Size, {?MODULE, M}) ->
-    Monad = new(M),
-    do([Monad ||
-           State <- Monad:do_get_state(),
-           return(async_util:match_state(State, Type, Size))
-       ]).
-
 -spec get_local_ref(M) -> async_r_t(_S, M, reference()).
 get_local_ref({?MODULE, M}) ->
     M1 = reader_t:new(M),
@@ -210,6 +203,13 @@ exec(X, CallbacksGS, Acc, State, {?MODULE, M}) ->
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
     M1:run((M2:run(M3:exec(X, State), Acc)), CallbacksGS).
+
+-spec run(async_r_t(S, M, A), callback_gs(S), _Acc, S, M) -> monad:monadic(M, {A, S}).
+run(X, CallbacksGS, Acc, State, {?MODULE, M}) ->
+    M1 = reader_t:new(M),
+    M2 = reader_t:new(M1),
+    M3 = state_t:new(M2),
+    M1:run((M2:run(M3:run(X, State), Acc)), CallbacksGS).
 
 %%--------------------------------------------------------------------
 %% @doc

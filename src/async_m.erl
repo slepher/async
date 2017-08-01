@@ -17,7 +17,7 @@
 %%%===================================================================
 
 then(Monad, Callback, Offset, State) ->
-    run(Monad, Callback, Offset, State).
+    exec(Monad, Callback, Offset, State).
 
 update_state(Fun) ->
     modify_state(Fun).

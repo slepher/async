@@ -200,17 +200,19 @@ test_async_t_with_message_handler(Config) ->
 test_async_t_par(_Config) ->
     MR = async_t:new_mr(identity_m),
     Monad = async_t:new(identity_m),
-    M1 = Monad:par(
-           [Monad:message(hello_message),
-            Monad:fail(hello)
-           ]),
+    M1 = Monad:progn_par(
+                  [Monad:message(hello_message),
+                   Monad:fail(hello)]),
     Reply = Monad:wait(M1,
               fun({message, M}) ->
-                      MR:put_local(M);
+                      do([MR ||
+                             MR:put_local(M),
+                             MR:return(ok)
+                         ]);
                  (Reply) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:do_put_state({Acc, Reply})
+                             return({Acc, Reply})
                          ])
               end),
     ?assertEqual({hello_message, {error, hello}}, Reply).
@@ -220,7 +222,7 @@ test_async_t_pmap(Config) ->
     Monad = async_t:new(identity_m),
     MR = async_t:new_mr(identity_m),
     M0 = Monad:promise(fun() -> echo_server:echo_with_messages(EchoServer, [message], {error, hello}) end),
-    Promises = lists:duplicate(3, M0),
+    Promises = lists:duplicate(6, M0),
     M1 = do([Monad ||
                 Monad:put_local([]),
                 Monad:map(Promises)
@@ -234,11 +236,11 @@ test_async_t_pmap(Config) ->
                  (X) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:do_put_state({X, Acc})
+                             return({X, Acc})
                          ])
               end
              ),
-    ?assertEqual({lists:duplicate(3, {error, hello}), [message, message, message]}, Reply).
+    ?assertEqual({lists:duplicate(6, {error, hello}), lists:duplicate(6, message)}, Reply).
                                
 test_async_t_pmap_with_acc(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
@@ -269,7 +271,7 @@ test_async_t_pmap_with_acc(Config) ->
                  (X) ->
                       do([MR ||
                              Acc <- MR:get_local(),
-                             MR:do_put_state({X, Acc})
+                             return({X, Acc})
                          ])
               end
              ),
@@ -317,7 +319,7 @@ test_async_t_local_acc_ref(_Config) ->
     {{R0, R1, R2}, R3} = Monad:wait(M2, fun(X) -> 
                                           do([MR || 
                                                  MRRef <- MR:get_local_ref(),
-                                                 MR:do_put_state({X, MRRef})])
+                                                 return({X, MRRef})])
                                   end),
     ?assertEqual(Ref, R1),
     ?assertEqual(R0, R2),
