@@ -284,20 +284,20 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
 provide_message(Promise, Then, {?MODULE, _M} = Monad) ->
     do([Monad ||
            Val <- Monad:lift_reply_all(Promise),
-           progn_par([
-                      % this will only return messages and ignore all normal reply returned in then
-                      do([Monad || 
-                             Monad:lift_reply(Then(Val)),
-                             Monad:pass()
-                         ]),
-                      % this will only return normal reply and ignore messages in promise
-                      case Val of
-                          {message, _IM} ->
-                              Monad:pass();
-                          _ ->
-                              Monad:pure_return(Val)
-                      end
-                      ], Monad)
+           Monad:progn_par(
+             [% this will only return messages and ignore all normal reply returned in then
+              do([Monad || 
+                     Monad:lift_reply(Then(Val)),
+                     Monad:pass()
+                 ]),
+              % this will only return normal reply and ignore messages in promise
+              case Val of
+                  {message, _IM} ->
+                      Monad:pass();
+                  _ ->
+                      Monad:pure_return(Val)
+              end
+             ])
       ]).
 
 %% this is a dangerous function, only one should return A | {ok, A} | {error, E}
@@ -310,6 +310,9 @@ par(Promises, {?MODULE, M}) ->
             monad:sequence(MR, lists:map(fun(Promise) -> Promise(K) end, Promises))
     end.
 
+
+%% acts like par, but only return last value of promises
+%% the name of progn is from lisp
 progn_par(Promises, {?MODULE, M}) ->
     MR = new_mr(M),
     fun(K) ->
