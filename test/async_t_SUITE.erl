@@ -326,4 +326,3 @@ test_async_t_local_acc_ref(_Config) ->
     ?assertEqual(Ref, R1),
     ?assertEqual(R0, R2),
     ?assertEqual(R0, R3).
-    

@@ -124,14 +124,15 @@ get_local_ref({?MODULE, M}) ->
     M3:lift(M2:ask()).
 
 -spec local_ref(reference(), async_r_t(S, M, A), M) -> async_r_t(S, M, A).
-local_ref(Ref, X, {?MODULE, M} = Monad) ->
+local_ref(Ref, X, {?MODULE, _M} = Monad) ->
     Monad:local_local_ref(fun(_) -> Ref end, X).
 
 local_local_ref(L, X, {?MODULE, M}) ->
     M1 = reader_t:new(M),
     M2 = reader_t:new(M1),
+    M3 = state_t:new(M2),
     fun(S) ->
-            M2:local(L, X(S))
+            M2:local(L, M3:run(X, S))
     end. 
 
 -spec get_local(M) -> async_r_t(_S, M, _C).
