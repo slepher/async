@@ -221,7 +221,7 @@ map(Promises, {?MODULE, _M} = Monad) when is_map(Promises) ->
 
 -spec map(#{Key => async_t(S, R, M, A)}, 
           #{cc => fun((Key, A) -> async_r_t:async_r_t(S, M, _IM)),
-            acc0 => Acc, concurrency => integer()}, M) -> 
+            acc0 => Acc, limit => integer()}, M) -> 
                  async_t(S, R, M, Acc).
 map(Promises, Options, {?MODULE, _M} = Monad) ->
     WRef = make_ref(),
@@ -229,7 +229,7 @@ map(Promises, Options, {?MODULE, _M} = Monad) ->
     CRef = make_ref(),
     CC = maps:get(cc, Options, default_map_cc(Monad)),
     Acc0 = maps:get(acc0, Options, maps:new()),
-    Threads = maps:get(concurrency, Options, 0),
+    Threads = maps:get(limit, Options, 0),
     NPromises = 
         maps:map(
           fun(Key, Promise) ->

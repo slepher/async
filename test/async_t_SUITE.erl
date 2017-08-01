@@ -259,7 +259,7 @@ test_async_t_pmap_with_acc(Config) ->
                  end, maps:new(), lists:seq(1, 5)),
     M1 = do([Monad ||
                 Monad:put_local([]),
-                Monad:map(Promises, #{concurrency => 2})
+                Monad:map(Promises, #{limit => 2})
             ]),
     MR = async_t:new_mr(identity_m),
     Reply = Monad:wait(M1, 
