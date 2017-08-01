@@ -17,7 +17,7 @@
 -export([new/1, '>>='/3, return/2, fail/2, lift/2]).
 -export([do_get_state/1, do_put_state/2, do_modify_state/2]).
 -export([get_state/1, put_state/2, modify_state/2]).
--export([get_local_ref/1, local_ref/3, get_local/1, put_local/2, modify_local/2]).
+-export([get_local_ref/1, local_ref/3, local_local_ref/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, put_ref/3, remove_ref/2]).
 -export([exec/5, run/5]).
 
@@ -124,12 +124,15 @@ get_local_ref({?MODULE, M}) ->
     M3:lift(M2:ask()).
 
 -spec local_ref(reference(), async_r_t(S, M, A), M) -> async_r_t(S, M, A).
-local_ref(Ref, X, {?MODULE, M}) ->
+local_ref(Ref, X, {?MODULE, M} = Monad) ->
+    Monad:local_local_ref(fun(_) -> Ref end, X).
+
+local_local_ref(L, X, {?MODULE, M}) ->
     M1 = reader_t:new(M),
     M2 = reader_t:new(M1),
     fun(S) ->
-            M2:local(fun(_) -> Ref end, X(S))
-    end.
+            M2:local(L, X(S))
+    end. 
 
 -spec get_local(M) -> async_r_t(_S, M, _C).
 get_local({?MODULE, _M} = Monad) ->

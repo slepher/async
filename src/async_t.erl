@@ -15,7 +15,7 @@
 %% API
 -export([new/1, new_mr/1, '>>='/3, return/2, fail/2, lift/2, lift_mr/2]).
 -export([get_state/1, put_state/2, modify_state/2, find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
-         get_local/1, put_local/2, modify_local/2, local_ref/3, get_local_ref/1, callCC/2]).
+         get_local/1, put_local/2, modify_local/2, local_ref/3, local_local_ref/3, get_local_ref/1, callCC/2]).
 -export([lift_reply/2, lift_reply_all/2, pure_return/2, wrapped_return/2,
          message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise/3, then/3, map/2, map/3, par/2, progn_par/2]).
@@ -102,20 +102,16 @@ modify_local(Fun, {?MODULE, M} = Monad) ->
     Monad:lift_mr(MR:modify_local(Fun)).
 
 -spec local_ref(reference(), async_t(S, R, M, A), M) -> async_t(S, R, M, A).
-local_ref(Ref, X, {?MODULE, M}) ->
+local_ref(Ref, X, {?MODULE, _M} = Monad) ->
+    Monad:local_local_ref(fun(_) -> Ref end, X).
+
+local_local_ref(F, X, {?MODULE, M}) ->
     MR = new_mr(M),
-    fun(K) ->
-            do([MR ||
-                   ORef <- MR:get_local_ref(),
-                   begin 
-                       NK = 
-                           fun(A) ->
-                                   MR:local_ref(ORef, K(A))
-                           end,
-                       MR:local_ref(Ref, X(NK))
-                   end
-               ])
-    end.
+    M1 = cont_t:new(MR),
+    Ask = fun() -> MR:get_local_ref() end,
+    Local = fun(IF, IM) -> MR:local_local_ref(IF, IM) end,
+    M1:lift_local(Ask, Local, F, X).
+
 -spec get_local_ref(M) -> async_t(_S, _R, M, reference()).
 get_local_ref({?MODULE, M} = Monad) ->
     MR = new_mr(M),
