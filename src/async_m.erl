@@ -9,7 +9,7 @@
 -module(async_m).
 -behaviour(monad).
 -transformer(async_t).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, monad_m}).
 -export([then/4, update_state/1, return_error_m/1]).
 
 %%%===================================================================

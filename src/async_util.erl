@@ -9,7 +9,7 @@
 -module(async_util).
 
 %% API
--export([store/3, find/2, remove/2]).
+-export([store/3, find/2, get/3, remove/2]).
 -export([clear/1, merge/2]).
 -export([same_type_state/2, match_state/3, callback_exists/1]).
 
@@ -31,6 +31,14 @@ find(Key, Dict) when is_list(Dict) ->
     orddict:find(Key, Dict);
 find(Key, Dict) ->
     dict:find(Key, Dict).
+
+get(Key, Dict, Default) ->
+    case find(Key, Dict) of
+        {ok, Value} ->
+            Value;
+        error ->
+            Default
+    end.
 
 remove(Key, Dict) when is_map(Dict) ->
     maps:remove(Key, Dict);

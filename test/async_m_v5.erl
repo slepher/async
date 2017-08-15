@@ -32,19 +32,19 @@ fail(R) ->
 promise(Mref, Timeout) when is_reference(Mref) ->
     promise(fun() -> Mref end, Timeout);
 promise(Action, Timeout) when is_function(Action) ->
-    fun(CC) ->
-            Mref = Action(),
-            do([async_r_m_v5 ||
-                   State <- async_r_m_v5:get(),
-                   Offset <- async_r_m_v5:ask(),
-                   begin
+    error_t:error_t(
+      cont_t:cont_t(
+        fun(CC) ->
+                Mref = Action(),
+                do([async_r_m_v5 ||
+                       State <- async_r_m_v5:get(),
+                       Offset <- async_r_m_v5:ask(),
                        NCC = cc_with_timeout(CC, Mref, Timeout),
                        CCs = element(Offset, State),
                        NCCs = maps:put(Mref, NCC, CCs),
                        async_r_m_v5:put(setelement(Offset, State, NCCs))
-                   end
-               ])
-    end.
+                   ])
+        end)).
 
 promise_call(Process, Request) ->
     promise_call(Process, Request, infinity).
@@ -53,7 +53,7 @@ promise_call(Process, Request, Timeout) ->
   promise(fun() -> async_gen_server_call(Process, Request) end, Timeout).    
 
 run(Promise, CC, Offset, State) ->
-    async_r_m_v5:run((Promise)(CC), Offset, State).
+    async_r_m_v5:run((cont_t:run_cont_t(error_t:run_error_t(Promise)))(CC), Offset, State).
 
 async_gen_server_call(Process, Request) ->
     do_call(Process, '$gen_call', Request).

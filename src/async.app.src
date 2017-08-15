@@ -13,6 +13,6 @@
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
     {registered, []},
-    {applications, [kernel, stdlib]},
+    {applications, [kernel, stdlib, erlando]},
     {env, []}
 ]}.

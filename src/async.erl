@@ -11,7 +11,7 @@
 -compile({parse_transform, do}).
 
 %% API
--export([call/3, message/2, promise_action/2]).
+-export([call/3, message/2, promise_action/2, start_and_action/3]).
 -export([promise_mref/1, promise_mref/2]).
 -export([start/0]).
 
@@ -20,6 +20,14 @@
 %%%===================================================================
 start() ->
     application:start(async).
+
+start_and_action(StartFun, ActionFun, Args) ->
+    case StartFun() of
+        {ok, Server} ->
+            apply(ActionFun, [Server|Args]);
+        {error, Reason} ->
+            {error, Reason}
+    end.
 
 %% Local or remote by pid
 call(Pid, Label, Request) when is_pid(Pid) ->

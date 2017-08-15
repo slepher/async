@@ -46,7 +46,7 @@ ask() ->
 run(AsyncRM, Offset, State) ->
     R = reader_t:new(identity_m),
     M = state_t:new(R),
-    R:run(M:exec(AsyncRM, State), Offset).
+    R:run_reader(M:exec_state(AsyncRM, State), Offset).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

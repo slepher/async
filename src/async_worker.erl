@@ -27,7 +27,7 @@
 %%% API
 %%%===================================================================
 async(Action) ->
-    atask:start_and_action(fun start/0, fun async_gen_server:call/2, [{action, Action}]).
+    async:start_and_action(fun start/0, fun async_gen_server:call/2, [{action, Action}]).
 
 promise(Action) ->
     case start() of

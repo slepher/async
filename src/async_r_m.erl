@@ -9,7 +9,7 @@
 -module(async_r_m).
 -behaviour(monad).
 -transformer(async_r_t).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, monad_m}).
 
 %%%===================================================================
 %%% API
