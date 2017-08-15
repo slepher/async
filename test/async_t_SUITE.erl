@@ -249,7 +249,6 @@ test_async_t_pmap(Config) ->
             ]),
     Reply = Monad:wait(M1, 
               fun({message, X}) -> 
-                      io:format("get message ~p~n", [X]),
                       do([MR ||
                              Acc <- MR:get_local(),
                              MR:put_local([X|Acc])

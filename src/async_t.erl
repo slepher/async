@@ -40,7 +40,8 @@
 
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 
--record(callback, {cc, acc_ref}).
+-record(callback, {cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:monad(), A)),
+                   acc_ref :: reference()}).
 
 %%%===================================================================
 %%% API
