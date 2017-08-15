@@ -19,7 +19,7 @@
 -export([get_state/1, put_state/2, modify_state/2, 
          find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1, callCC/2]).
--export([lift_reply/2, lift_reply_all/2, pure_return/2, wrapped_return/2,
+-export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
          message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise/3, then/3, map/2, map/3, par/2, progn_par/2]).
 -export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
@@ -28,15 +28,15 @@
 -opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
 
 -type inner_async_t(S, R, M, A) :: 
-        fun((fun((reply_t:reply_value(A)) -> async_r_t:async_r_t(S, M, R))) -> async_r_t:async_r_t(S, M, R)).
+        fun((fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R))) -> async_r_t:async_r_t(S, M, R)).
 
 -type callback_or_cc(S, R, M, A) :: 
         async_t_cc(S, R, M, A) | 
         fun(() -> any()) | 
-        fun((reply_t:reply_value(A)) -> any()) |
-        fun((reply_t:reply_value(A), S) -> any()).
+        fun((reply_t:reply(A)) -> any()) |
+        fun((reply_t:reply(A), S) -> any()).
 
--type async_t_cc(S, R, M, A) :: fun((reply_t:reply_value(A)) -> async_r_t:async_r_t(S, M, R)).
+-type async_t_cc(S, R, M, A) :: fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)).
 
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 
@@ -164,15 +164,15 @@ remove_ref(MRef, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:remove_ref(MRef, MR), AT).
 
--spec lift_reply_all(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:reply_t(identity_m, A)).
-lift_reply_all(X, {?MODULE, IM}) ->
+-spec lift_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:reply(A)).
+lift_reply(X, {?MODULE, IM}) ->
     RealM = real_new(IM),
     real_to_async_t(reply_t:lift(reply_t:run_reply_t(async_to_real_t(X)), RealM)).
 
--spec lift_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, A | {ok, A} | {error, _E}).
-lift_reply(X, {?MODULE, IM}) ->
+-spec lift_final_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:final_reply(A)).
+lift_final_reply(X, {?MODULE, IM}) ->
     RealM = real_new(IM),
-    real_to_async_t(reply_t:lift_reply(async_to_real_t(X), RealM)).
+    real_to_async_t(reply_t:lift_final(async_to_real_t(X), RealM)).
 
 -spec pure_return(A, M) -> async_t(_S, _R, M, A).
 pure_return(A, {?MODULE, IM}) ->
@@ -230,7 +230,7 @@ then(X, Then, {?MODULE, _IM} = AT) ->
 map(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
     NPromises = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
     do([{?MODULE, IM} || 
-           Value <- lift_reply_all(map(NPromises, AT), AT),
+           Value <- lift_reply(map(NPromises, AT), AT),
            case Value of
                {message, {_Key, Message}} ->
                    message(Message, AT);
@@ -258,7 +258,7 @@ map(Promises, Options, {?MODULE, IM} = AT) ->
                   do([{?MODULE, IM} ||
                          Working <- get_ref(WRef, [], AT),
                          put_ref(WRef, [Key|Working], AT),
-                         lift_reply(
+                         lift_final_reply(
                            provide_message(
                              Promise,
                              fun(Val) ->
@@ -302,14 +302,14 @@ map(Promises, Options, {?MODULE, IM} = AT) ->
        ]).
 
 %% provide extra message and return origin value
--spec provide_message(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, _B)), M) -> async_t(S, R, M, A).
+-spec provide_message(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, A)), M) -> async_t(S, R, M, A).
 provide_message(Promise, Then, {?MODULE, IM} = AT) ->
     do([{?MODULE, IM} ||
-           Val <- lift_reply_all(Promise, AT),
+           Val <- lift_reply(Promise, AT),
            progn_par(
              [% this will only return messages and ignore all normal reply returned in then
               do([{?MODULE, IM} || 
-                     lift_reply(Then(Val), AT),
+                     lift_final_reply(Then(Val), AT),
                      pass(AT)
                  ]),
               % this will only return normal reply and ignore messages in promise
@@ -325,7 +325,7 @@ provide_message(Promise, Then, {?MODULE, IM} = AT) ->
 %% this is a dangerous function, only one should return A | {ok, A} | {error, E}
 %% others should return {message, IM} or use pass()
 %% or it will cause unexpected error
--spec par([async_t(S, R, M, A)], M) -> async_t(S, R, M, A).
+-spec par([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]).
 par(Promises, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     async_t(fun(CC) ->
@@ -335,9 +335,10 @@ par(Promises, {?MODULE, IM} = AT) ->
 
 %% acts like par, but only return last value of promises
 %% the name of progn is from lisp
+-spec progn_par([async_t(S, R, M, A)], t(M)) -> async_t(S, R, M, A).
 progn_par([], {?MODULE, _IM}) ->
     exit(invalid_progn_list);
-progn_par(Promises, {?MODULE, IM} = AT) ->
+progn_par(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
     map_async(fun(IX) -> 
                       do([IM ||
                              {Values, S} <- IX,
@@ -350,7 +351,7 @@ progn_par(Promises, {?MODULE, IM} = AT) ->
 handle_message(X, MessageHandler, {?MODULE, IM} = AT) ->
     NMessageHandler = callback_to_cc(MessageHandler, AT),
     do([{?MODULE, IM} ||
-           Value <- lift_reply_all(X, AT),
+           Value <- lift_reply(X, AT),
            case Value of               {message, Message} ->
                    hijack(NMessageHandler(Message), AT);
                Reply ->

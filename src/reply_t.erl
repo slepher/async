@@ -17,20 +17,24 @@
 -module(reply_t).
 -compile({parse_transform, do}).
 
--export_type([reply_t/2, reply_value/1]).
+-export_type([reply_t/2, reply/1, final_reply/1, ok_reply/1, message_reply/0]).
 
 -behaviour(monad_trans).
 -export([new/1, reply_t/1, run_reply_t/1]).
 -export([fmap/3]).
 -export(['>>='/3, return/2, fail/2, lift/2]).
--export([pure_return/2, wrapped_return/2, lift_reply/2]).
+-export([pure_return/2, wrapped_return/2, lift_final/2]).
 -export([run_reply/2, map_reply/3, with_reply/3]).
 
 -opaque reply_t(M, A) :: {reply_t, inner_reply_t(M, A)}.
 
--type reply_value(A) :: {ok, A} | {error, any()} | {message, any()} | ok | A.
+-type reply(A) :: final_reply(A) | message_reply().
+-type final_reply(A) :: ok_reply(A) | error_m:error(any()).
+-type ok_reply(A) :: error_m:ok(A) | A.
+-type message_reply() :: {message, any()}.
 
--type inner_reply_t(M, A) :: monad:monadic(M, reply_value(A)).
+
+-type inner_reply_t(M, A) :: monad:monadic(M, reply(A)).
 
 -type t(M) :: {reply_t, M}.
 
@@ -81,16 +85,16 @@ lift(X, {?MODULE, IM}) ->
     reply_t(do([IM || A <- X,
                 return({ok, A})])).
 
--spec pure_return(reply_value(A), t(M)) -> reply_t(M, A).
+-spec pure_return(reply(A), t(M)) -> reply_t(M, A).
 pure_return(X, {?MODULE, IM}) ->
     reply_t(IM:return(X)).
 
--spec wrapped_return(reply_value(A), t(M)) -> reply_t(M, A).
+-spec wrapped_return(reply(A), t(M)) -> reply_t(M, A).
 wrapped_return(X, {?MODULE, M}) ->
     reply_t(M:return(wrap_value(X))).
 
--spec lift_reply(reply_t(M, A), t(M)) -> reply_t(M, reply_value(A)).
-lift_reply(X, {?MODULE, _IM} = RT) ->
+-spec lift_final(reply_t(M, A), t(M)) -> reply_t(M, final_reply(A)).
+lift_final(X, {?MODULE, _IM} = RT) ->
     with_reply(
       fun(A) ->
               case A of
@@ -104,11 +108,11 @@ lift_reply(X, {?MODULE, _IM} = RT) ->
 -spec run_reply(reply_t(M, A), M) -> inner_reply_t(M, A).
 run_reply(EM, _M) -> run_reply_t(EM).
 
--spec map_reply(fun((monad:monadic(M, reply_value(A))) -> monad:monadic(N, reply_value(B))), reply_t(M, A), M) -> reply_t(N, B). 
+-spec map_reply(fun((monad:monadic(M, reply(A))) -> monad:monadic(N, reply(B))), reply_t(M, A), M) -> reply_t(N, B). 
 map_reply(F, X, {?MODULE, _M}) ->
     reply_t(F(run_reply_t(X))).
 
--spec with_reply(fun((reply_value(A)) -> reply_value(B)), reply_t(M, A), t(M)) -> reply_t(M, B). 
+-spec with_reply(fun((reply(A)) -> reply(B)), reply_t(M, A), t(M)) -> reply_t(M, B). 
 with_reply(F, X, {?MODULE, IM} = RT) ->
     map_reply(
       fun(MA) ->
