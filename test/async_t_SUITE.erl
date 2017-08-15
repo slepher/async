@@ -283,7 +283,7 @@ test_async_t_pmap_with_acc(Config) ->
                  fun(N, Acc0) ->
                          MA = 
                              do([Monad || 
-                                    Val <- Monad:lift_reply(M0),
+                                    Val <- Monad:lift_final_reply(M0),
                                     Acc <- Monad:get_local(),
                                     Monad:put_local([N|Acc]),
                                     Monad:pure_return(Val)

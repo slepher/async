@@ -23,7 +23,7 @@ update_state(Fun) ->
     modify_state(Fun).
 
 return_error_m(Monad) ->
-    lift_reply(Monad).
+    lift_final_reply(Monad).
 
 
 %%--------------------------------------------------------------------
