@@ -8,22 +8,33 @@
 %%%-------------------------------------------------------------------
 -module(async_t).
 -compile({parse_transform, do}).
+
+-behaviour(type).
+-behaviour(functor).
+-behaviour(monad).
 -behaviour(monad_trans).
 
 -export_type([async_t/4]).
 
 %% API
 -export([new/1, async_t/1, run_async_t/1]).
--export([fmap/3]).
--export(['>>='/3, return/2, fail/2, lift/2, lift_mr/2]).
+-export([type/0]).
+-export([fmap/2, '<$'/2]).
+-export(['>>='/2, '>>'/2, return/1]).
+-export([return/2, lift/1]).
+-export([lift_mr/1]).
+-export([fail/1]).
+-export([fail/2]).
+
 -export([get_state/1, put_state/2, modify_state/2, 
          find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
-         get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1, callCC/2]).
--export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
-         message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
--export([promise/2, promise/3, then/3, map/2, map/3, par/2, progn_par/2]).
+         get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1, callCC/1]).
+-export([lift_reply/1, lift_final_reply/1, pure_return/2, wrapped_return/2,
+         message/2, hijack/1, pass/1, handle_message/3, provide_message/3]).
+-export([promise/2, promise/3, map/2, map/3, par/1, progn_par/1]).
 -export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
--export([exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, handle_info/4, wait_receive/4, map_async/3]).
+-export([exec/5, exec_cc/5, run/5, run_cc/2, run_with_cc/5, handle_info/4, wait_receive/4, map_async/2, map_cont/2]).
+-export([state_callbacks_gs/1]).
 
 -opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
 
@@ -56,124 +67,142 @@ async_t(Inner) ->
     {?MODULE, Inner}.
 
 -spec run_async_t(async_t(S, R, M, A)) -> inner_async_t(S, R, M, A).
+run_async_t({undetermined, _} = UA) ->
+    run_async_t(undetermined:run(UA, ?MODULE));
 run_async_t({?MODULE, Inner}) ->
     Inner;
 run_async_t(Other) ->
     exit({invalid_async_t, Other}).
 
--spec fmap(fun((A) -> B), async_t(S, R, M, A), t(M)) -> async_t(S, R, M, B).
-fmap(F, X, {?MODULE, IM}) ->
-    RealM = real_new(IM),
-    real_to_async_t(reply_t:fmap(F, async_to_real_t(X), RealM)).
+type() ->
+    type:default_type(?MODULE).
 
--spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) ), M) -> async_t(S, R, M, B).
-'>>='(X, Fun, {?MODULE, M}) ->
-    Monad = real_new(M),
-    real_to_async_t(reply_t:'>>='(async_to_real_t(X), fun(A) -> async_to_real_t(Fun(A)) end, Monad)).
+-spec fmap(fun((A) -> B), async_t(S, R, M, A)) -> async_t(S, R, M, B).
+fmap(F, ATA) ->
+    map_real(
+      fun(RTA) ->
+              functor:fmap(F, RTA)
+      end, ATA).
+
+'<$'(ATB, ATA) ->
+    functor:'default_<$'(ATB, ATA, ?MODULE).
+
+-spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) )) -> async_t(S, R, M, B).
+'>>='(ATA, KATB) ->
+    real_to_async_t(monad:'>>='(async_to_real_t(ATA), fun(A) -> async_to_real_t(KATB(A)) end)).
+
+'>>'(ATA, ATB) ->
+    monad:'default_>>'(ATA, ATB, ?MODULE).
+
+return(A) ->
+    return(A, {?MODULE, monad}).
 
 -spec return(A, M) -> async_t(_S, _R, M, A).
 return(A, {?MODULE, IM}) ->
-    Monad = real_new(IM),
-    real_to_async_t(reply_t:return(A, Monad)).
+    MR = async_r_t:new(IM),
+    lift_mr(async_r_t:return(A, MR)).
 
--spec fail(any(), M) -> async_t(_S, _R, M, _A).
+fail(E) ->
+    fail(E, {?MODULE, monad}).
+
+-spec fail(any(), t(M)) -> async_t(_S, _R, M, _A).
 fail(X, {?MODULE, IM}) ->
     Monad = real_new(IM),
     real_to_async_t(reply_t:fail(X, Monad)).
 
--spec lift(monad:monadic(M, A), M) -> async_t(_S, _R, M, A).
-lift(F, {?MODULE, IM} = AT) ->
-    MR = async_r_t:new(IM),
-    lift_mr(async_r_t:lift(F, MR), AT).
+-spec lift(monad:monadic(M, A)) -> async_t(_S, _R, M, A).
+lift(MA) ->
+    lift_mr(async_r_t:lift(MA)).
 
--spec lift_mr(async_r_t:async_r_t(S, M, A), M) -> async_t(S, _R, M, A).
-lift_mr(MonadR, {?MODULE, IM}) ->
-    MR = async_r_t:new(IM),
-    M1 = cont_t:new(MR),
-    M2 = reply_t:new(M1),
-    real_to_async_t(reply_t:lift(cont_t:lift(MonadR, M1), M2)).
+-spec lift_mr(async_r_t:async_r_t(S, M, A)) -> async_t(S, _R, M, A).
+lift_mr(MRA) ->
+    real_to_async_t(reply_t:lift(cont_t:lift(MRA))).
 
 -spec get_state(M) -> async_t(S, _R, M, S).
-get_state({?MODULE, IM} = AT) ->
+get_state({?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:get_state(MR), AT).
+    lift_mr(async_r_t:get_state(MR)).
 
 -spec put_state(S, M) -> async_t(S, _R, M, ok).
-put_state(State, {?MODULE, M} = Monad) ->
-    MR = async_r_t:new(M),
-    lift_mr(async_r_t:put_state(State, MR), Monad).
+put_state(State, {?MODULE, IM}) ->
+    MR = async_r_t:new(IM),
+    lift_mr(async_r_t:put_state(State, MR)).
 
 -spec modify_state(S, M) -> async_t(S, _R, M, ok).
-modify_state(Fun, {?MODULE, IM} = AT) ->
+modify_state(Fun, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:modify_state(Fun, MR), AT).
+    lift_mr(async_r_t:modify_state(Fun, MR)).
 
 -spec get_local(M) -> async_t(_S, _R, M, _Local).
-get_local({?MODULE, IM} = AT) ->
+get_local({?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:get_local(MR), AT).
+    lift_mr(async_r_t:get_local(MR)).
 
 -spec put_local(_Local, M) -> async_t(_S, _R, M, ok).
-put_local(Local, {?MODULE, IM} = AT) ->
+put_local(Local, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:put_local(Local, MR), AT).
+    lift_mr(async_r_t:put_local(Local, MR)).
 
 -spec modify_local(fun((Local) -> Local), M) -> async_t(_S, _R, M, ok).
-modify_local(Fun, {?MODULE, IM} = AT) ->
+modify_local(Fun, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:modify_local(Fun, MR), AT).
+    lift_mr(async_r_t:modify_local(Fun, MR)).
 
 -spec local_ref(reference(), async_t(S, R, M, A), M) -> async_t(S, R, M, A).
 local_ref(Ref, X, {?MODULE, _IM} = AT) ->
     local(fun(_) -> Ref end, X, AT).
 
 -spec local(fun((T) -> T), async_t(S, R, M, A), M) -> async_t(S, R, M, A).
-local(F, X, {?MODULE, IM}) ->
+local(F, ATA, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    CT = cont_t:new(MR),
-    RT = reply_t:new(CT),
     Ask = fun() -> async_r_t:get_local_ref(MR) end,
-    Local = fun(IF, IMR) -> async_r_t:local(IF, IMR, MR) end,
-    real_to_async_t(
-      reply_t:map_reply(
-        fun(Cont) ->
-                cont_t:lift_local(Ask, Local, F, Cont, CT)
-        end, async_to_real_t(X), RT)).
+    Local = fun(IF, IMR) -> async_r_t:local(IF, IMR) end,
+    map_real(
+      fun(RTA) ->
+              reply_t:map(
+                fun(Cont) ->
+                        cont_t:lift_local(Ask, Local, F, Cont)
+                end, RTA)
+      end, ATA).
 
 -spec get_local_ref(M) -> async_t(_S, _R, M, reference()).
-get_local_ref({?MODULE, IM} = AT) ->
+get_local_ref({?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:get_local_ref(MR), AT).
+    lift_mr(async_r_t:get_local_ref(MR)).
 
 -spec find_ref(reference(), M) -> async_t(_S, _R, M, {ok, _A} | error).
-find_ref(MRef, {?MODULE, IM} = AT) ->
+find_ref(MRef, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:find_ref(MRef, MR), AT).
+    lift_mr(async_r_t:find_ref(MRef, MR)).
 
 -spec get_ref(reference(), A, M) -> async_t(_S, _R, M, A).
-get_ref(MRef, Default, {?MODULE, IM} = AT) ->
+get_ref(MRef, Default, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:get_ref(MRef, Default, MR), AT).
+    lift_mr(async_r_t:get_ref(MRef, Default, MR)).
 
 -spec put_ref(reference(), _A, M) -> async_t(_S, _R, M, ok).
-put_ref(MRef, Value, {?MODULE, IM} = AT) ->
+put_ref(MRef, Value, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:put_ref(MRef, Value, MR), AT).
+    lift_mr(async_r_t:put_ref(MRef, Value, MR)).
 
 -spec remove_ref(reference(), M) -> async_t(_S, _R, M, ok).
-remove_ref(MRef, {?MODULE, IM} = AT) ->
+remove_ref(MRef, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    lift_mr(async_r_t:remove_ref(MRef, MR), AT).
+    lift_mr(async_r_t:remove_ref(MRef, MR)).
 
--spec lift_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:reply(A)).
-lift_reply(X, {?MODULE, IM}) ->
-    RealM = real_new(IM),
-    real_to_async_t(reply_t:lift(reply_t:run_reply_t(async_to_real_t(X)), RealM)).
+-spec lift_reply(async_t(S, R, M, A)) -> async_t(S, R, M, reply_t:reply(A)).
+lift_reply(ATA) ->
+    map_real(
+      fun(RTA) ->
+              reply_t:lift(reply_t:run_reply_t(RTA))
+      end, ATA).
 
--spec lift_final_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:final_reply(A)).
-lift_final_reply(X, {?MODULE, IM}) ->
-    RealM = real_new(IM),
-    real_to_async_t(reply_t:lift_final(async_to_real_t(X), RealM)).
+-spec lift_final_reply(async_t(S, R, M, A)) -> async_t(S, R, M, reply_t:final_reply(A)).
+lift_final_reply(ATA) ->
+    map_real(
+      fun(RTA) ->
+              reply_t:lift_final(RTA)
+      end, ATA).
 
 -spec pure_return(A, M) -> async_t(_S, _R, M, A).
 pure_return(A, {?MODULE, IM}) ->
@@ -188,12 +217,9 @@ wrapped_return(A, {?MODULE, IM}) ->
 message(A, {?MODULE, _IM} = AT) ->
     pure_return({message, A}, AT).
 
--spec callCC(fun((fun( (A) -> async_t(S, R, M, _B) ))-> async_t(S, R, M, A)), M) -> async_t(S, R, M, A).
-callCC(F,  {?MODULE, IM}) ->
-    MR = async_r_t:new(IM),
-    CT = cont_t:new(MR),
-    RT = reply_t:new(CT),
-    real_to_async_t(reply_t:lift(cont_t:callCC(fun(A) -> async_to_real_t(F(A)) end, CT), RT)).
+-spec callCC(fun((fun( (A) -> async_t(S, R, M, _B) ))-> async_t(S, R, M, A))) -> async_t(S, R, M, A).
+callCC(F) ->
+    real_to_async_t(reply_t:lift(cont_t:callCC(fun(A) -> async_to_real_t(F(A)) end))).
 
 -spec promise(any(), M) -> async_t(_S, _R, M, _A).
 promise(MRef, {?MODULE, _M} = Monad) ->
@@ -222,16 +248,12 @@ promise(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) ->
 promise(Value, _Timeout, {?MODULE, _M} = Monad) ->
     pure_return(Value, Monad).
 
--spec then(async_t(S, R, M, A), fun((A) -> async_t( S, R, M, B)), M) -> async_t(S, R, M, B).
-then(X, Then, {?MODULE, _IM} = AT) ->
-    '>>='(X, Then, AT).
-
 -spec map([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
          (#{Key => async_t(S, R, M, A)}, M) -> async_t(S, R, M, #{Key => A}).
 map(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
     NPromises = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
     do([{?MODULE, IM} || 
-           Value <- lift_reply(map(NPromises, AT), AT),
+           Value <- lift_reply(map(NPromises, AT)),
            case Value of
                {message, {_Key, Message}} ->
                    message(Message, AT);
@@ -256,7 +278,7 @@ map(Promises, Options, {?MODULE, IM} = AT) ->
     NPromises = 
         maps:map(
           fun(Key, Promise) ->
-                  do([{?MODULE, IM} ||
+                  do([AT ||
                          Working <- get_ref(WRef, [], AT),
                          put_ref(WRef, [Key|Working], AT),
                          lift_final_reply(
@@ -264,7 +286,7 @@ map(Promises, Options, {?MODULE, IM} = AT) ->
                              Promise,
                              fun(Val) ->
                                      local_ref(CRef, CC(Key, Val), AT)
-                             end, AT), AT),
+                             end, AT)),
                          Pending <- get_ref(PRef, maps:new(), AT),
                          NWorking <- get_ref(WRef, [], AT),
                          case maps:size(Pending) of
@@ -299,18 +321,18 @@ map(Promises, Options, {?MODULE, IM} = AT) ->
     do([{?MODULE, IM} ||
            put_ref(CRef, Acc0, AT),
            put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
-           par(maps:values(maps:with(WPromiseKeys, NPromises)), AT)
+           par(maps:values(maps:with(WPromiseKeys, NPromises)))
        ]).
 
 %% provide extra message and return origin value
 -spec provide_message(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, A)), M) -> async_t(S, R, M, A).
-provide_message(Promise, Then, {?MODULE, IM} = AT) ->
-    do([{?MODULE, IM} ||
-           Val <- lift_reply(Promise, AT),
+provide_message(Promise, Then, {?MODULE, _IM} = AT) ->
+    do([AT ||
+           Val <- lift_reply(Promise),
            progn_par(
              [% this will only return messages and ignore all normal reply returned in then
-              do([{?MODULE, IM} || 
-                     lift_final_reply(Then(Val), AT),
+              do([AT || 
+                     lift_final_reply(Then(Val)),
                      pass(AT)
                  ]),
               % this will only return normal reply and ignore messages in promise
@@ -320,64 +342,68 @@ provide_message(Promise, Then, {?MODULE, IM} = AT) ->
                   _ ->
                       pure_return(Val, AT)
               end
-             ], AT)
+             ])
       ]).
 
 %% this is a dangerous function, only one should return A | {ok, A} | {error, E}
 %% others should return {message, IM} or use pass()
 %% or it will cause unexpected error
--spec par([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]).
-par(Promises, {?MODULE, IM} = AT) ->
-    MR = async_r_t:new(IM),
-    async_t(fun(CC) ->
-                 monad:sequence(
-                   MR, lists:map(fun(Promise) -> run_cc(Promise, CC, AT) end, Promises))
-         end).
+-spec par([async_t(S, R, M, A)]) -> async_t(S, R, M, [A]).
+par(Promises) ->
+    async_t(
+      fun(CC) ->
+              traversable:sequence(
+                lists:map(fun(Promise) -> run_cc(Promise, CC) end, Promises))
+      end).
 
 %% acts like par, but only return last value of promises
 %% the name of progn is from lisp
--spec progn_par([async_t(S, R, M, A)], t(M)) -> async_t(S, R, M, A).
-progn_par([], {?MODULE, _IM}) ->
+-spec progn_par([async_t(S, R, M, A)]) -> async_t(S, R, M, A).
+progn_par([]) ->
     exit(invalid_progn_list);
-progn_par(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
-    map_async(fun(IX) -> 
-                      do([IM ||
-                             {Values, S} <- IX,
-                             return({lists:nth(length(Values), Values), S})
-                         ])
-              end, 
-              par(Promises, AT), AT).
+progn_par(Promises) when is_list(Promises) ->
+    map_async(
+      fun(MA) -> 
+              do([monad ||
+                     {Values, S} <- MA,
+                     return({lists:nth(length(Values), Values), S})
+                 ])
+      end, 
+      par(Promises)).
 
 -spec handle_message(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> async_t(S, R, M, A).
-handle_message(X, MessageHandler, {?MODULE, IM} = AT) ->
+handle_message(X, MessageHandler, {?MODULE, _IM} = AT) ->
     NMessageHandler = callback_to_cc(MessageHandler, AT),
-    do([{?MODULE, IM} ||
-           Value <- lift_reply(X, AT),
+    do([AT ||
+           Value <- lift_reply(X),
            case Value of               {message, Message} ->
-                   hijack(NMessageHandler(Message), AT);
+                   hijack(NMessageHandler(Message));
                Reply ->
                    pure_return(Reply, AT)
            end
        ]).
--spec hijack(async_r_t:async_r_t(S, M, R), M) -> async_t(S, R, M, _A).
-hijack(MR, {?MODULE, _IM}) ->
+
+-spec hijack(async_r_t:async_r_t(S, M, R)) -> async_t(S, R, M, _A).
+hijack(MR) ->
     async_t(fun(_K) -> MR end).
 
--spec map_async(fun((monad:monadic(M, {A, S})) -> monad:monadic(M, {A, S})), 
-                async_t(R, S, M, A), M) -> async_t(R, S, M, A).
-map_async(F, X, {?MODULE, IM}) ->
-    MR = async_r_t:new(IM),
-    CT = cont_t:new(MR),
-    RT = reply_t:new(CT),
+-spec map_async(fun((monad:monadic(M, {A, S})) -> monad:monadic(M, {A, S})), async_t(R, S, M, A)) -> async_t(R, S, M, A).
+map_async(F, ATA) ->
     NF = fun(AsyncR) ->
-                 async_r_t:map_async_r(F, AsyncR, MR) 
+                 async_r_t:map(F, AsyncR) 
          end,
-    real_to_async_t(reply_t:map_reply(fun(Cont) -> cont_t:map_cont(NF, Cont, CT) end, async_to_real_t(X), RT)).
+    map_cont(NF, ATA).
+
+map_cont(F, ATA) ->
+    map_real(
+      fun(RTA) ->
+              reply_t:map(fun(Cont) -> cont_t:map(F, Cont) end, RTA)
+      end, ATA).
 
 -spec pass(M) -> async_t(_S, ok, M, _A).
-pass({?MODULE, IM} = AT) ->
+pass({?MODULE, IM}) ->
     MR = async_r_t:new(IM),
-    hijack(async_r_t:return(ok, MR), AT).
+    hijack(async_r_t:return(ok, MR)).
 
 exec(X, Callback, Offset, State, {?MODULE, _IM} = AT) ->
     CC = callback_to_cc(Callback, AT),
@@ -395,21 +421,17 @@ run(X, Callback, Offset, State, {?MODULE, _IM} = AT) ->
     run_with_cc(X, CC, Offset, State, AT).
 
 -spec run_with_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), integer(), S, _MT) -> S.
-run_with_cc(X, CC, Offset, State, {?MODULE, IM} = AT) ->
-    MR = async_r_t:new(IM),
+run_with_cc(X, CC, Offset, State, {?MODULE, _IM} = AT) ->
     CallbacksGS = state_callbacks_gs(Offset),
     Ref = make_ref(),
     NCC = remove_ref_after_cc(Ref, CC, AT),
-    MonadMR = run_cc(X, NCC, AT),
-    async_r_t:run(MonadMR, CallbacksGS, Ref, State, MR).
+    MonadMR = run_cc(X, NCC),
+    async_r_t:run(MonadMR, CallbacksGS, Ref, State).
 
--spec run_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), _MT) -> async_r_t:async_r_t(S, M, A).
-run_cc(X, CC, {?MODULE, IM}) ->
-    MR = async_r_t:new(IM),
-    CT = cont_t:new(MR),
-    RT = reply_t:new(CT),
-    IX = reply_t:run_reply(async_to_real_t(X), RT),
-    cont_t:run_cont(IX, CC, CT).
+-spec run_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A)) -> async_r_t:async_r_t(S, M, A).
+run_cc(X, CC) ->
+    CTA = reply_t:run(async_to_real_t(X)),
+    cont_t:run(CTA, CC).
 
 -spec wait(async_t(_S, A, M, A), M) -> monad:monadic(M, A).
 wait(X, {?MODULE, _IM} = AT) ->
@@ -480,10 +502,10 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
                        true ->
                            wait_receive(Offset, NState, Timeout, AT);
                        false ->
-                           IM:return(A)
+                           return(A)
                    end;
                false ->
-                   IM:return(A)
+                   return(A)
            end
        ]).
 
@@ -496,7 +518,6 @@ handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
 
 -spec run_info(any(), integer(), S, M) -> monad:monadic(M, {_A, S}).
 run_info(Info, Offset, State, {?MODULE, IM}) ->
-    MR = async_r_t:new(IM),
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
     case info_to_a(Info) of
@@ -504,10 +525,11 @@ run_info(Info, Offset, State, {?MODULE, IM}) ->
             case handle_a(MRef, A, Callbacks) of
                 {Callback, AccRef, NCallbacks} ->
                     NState = CallbacksS(NCallbacks, State),
-                    MonadMR = Callback(A),
-                    async_r_t:run(MonadMR, {CallbacksG, CallbacksS}, AccRef, NState, MR);
+                    ARTA = Callback(A),
+                    async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
                 error ->
-                    IM:return(State)
+                    %% TODO : fix this.
+                    monad:return({ok, State}, IM)
             end;
         unhandled ->
             unhandled
@@ -652,7 +674,7 @@ remove_ref_after_cc(Ref, CC, {?MODULE, IM}) ->
     fun({message, _M} = Message) ->
             CC(Message);
        (A) ->
-            do([{async_r_t, IM} ||
+            do([MR ||
                    State <- async_r_t:get_state(MR),
                    Val <- CC(A),
                    NState <- async_r_t:do_get_state(MR),
@@ -666,3 +688,5 @@ remove_ref_after_cc(Ref, CC, {?MODULE, IM}) ->
                ])
     end.
 
+map_real(F, ATA) ->
+    real_to_async_t(F(async_to_real_t(ATA))).

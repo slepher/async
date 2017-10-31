@@ -10,43 +10,41 @@
 -behaviour(monad).
 
 %% API
--export(['>>='/2, return/1, fail/1, get/0, put/1, modify/1, ask/0, run/3]).
+-export(['>>='/2, '>>'/2, return/1, fail/1, get/0, put/1, modify/1, ask/0, run/3]).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 '>>='(X, Fun) ->
-    M = state_t:new(reader_t:new(identity_m)),
-    M:'>>='(X, Fun).
+    state_t:'>>='(X, Fun).
+
+'>>'(Xa, Xb) ->
+    state_t:'>>'(Xa, Xb).
 
 return(A) ->
-    M = state_t:new(reader_t:new(identity_m)),
-    M:return(A).
+    M = state_t:new(reader_t:new(identity)),
+    state_t:return(A, M).
 
 fail(R) ->
     exit(R).
 
 get() ->
-    M = state_t:new(reader_t:new(identity_m)),
-    M:get().
+    M = state_t:new(reader_t:new(identity)),
+    state_t:get(M).
 
 put(S) ->
-    M = state_t:new(reader_t:new(identity_m)),
-    M:put(S).
+    M = state_t:new(reader_t:new(identity)),
+    state_t:put(S, M).
 
 modify(S) ->
-    M = state_t:new(reader_t:new(identity_m)),
-    M:modify(S).
+    M = state_t:new(reader_t:new(identity)),
+    monad_state:modify(S, M).
 
 ask() ->
-    R = reader_t:new(identity_m),
-    M = state_t:new(R),
-    M:lift(R:ask()).
+    state_t:lift(reader_m:ask()).
 
 run(AsyncRM, Offset, State) ->
-    R = reader_t:new(identity_m),
-    M = state_t:new(R),
-    R:run_reader(M:exec_state(AsyncRM, State), Offset).
+    reader_m:run(state_t:exec(AsyncRM, State), Offset).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

@@ -7,13 +7,25 @@
 %%% Created : 25 Jul 2017 by Chen Slepher <slepher@issac.local>
 %%%-------------------------------------------------------------------
 -module(async_r_m).
+
+-compile({parse_transform, import_as}).
+
+-import_as({async_r_t, [fmap/2, '<$'/2, '>>='/2, '>>'/2]}).
+
+-define(ASYNC_R, {async_r_t, identity}).
+
+-behaviour(functor).
 -behaviour(monad).
--transformer(async_r_t).
--compile({parse_transform, monad_m}).
+
+-export([fmap/2, '<$'/2]).
+-export(['>>='/2, '>>'/2, return/1]).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
+return(A) ->
+    async_r_t:return(A, ?ASYNC_R).
+
 
 %%--------------------------------------------------------------------
 %% @doc

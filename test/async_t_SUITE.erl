@@ -19,6 +19,9 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("common_test/include/ct.hrl").
 
+suite() ->
+    [{timetrap,{seconds,30}}].
+
 %% Test server callback functions
 %%--------------------------------------------------------------------
 %% @doc
@@ -111,31 +114,31 @@ test_async_t() ->
     [{doc, "Describe the main purpose of this test case"}].
 test_async_t(Config) when is_list(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:echo(EchoServer, {ok, hello}),
     M0 = Monad:promise(MRef),
-    Reply = Monad:wait(M0, infinity),
+    Reply = identity:run(Monad:wait(M0, infinity)),
     ?assertEqual({ok, hello}, Reply).
 
 test_chain_async() ->
     [{doc, "Describe the main purpose of this test case"}].
 test_chain_async(Config) when is_list(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:echo(EchoServer, hello),
     M0 = do([Monad || 
                 R1 <- Monad:promise(MRef),
                 R2 <- Monad:promise(echo_server:echo(EchoServer, {ok, world})),
                 return({R1, R2})
                ]),
-    Reply = Monad:wait(M0),
+    Reply = identity:run(Monad:wait(M0)),
     ?assertEqual({ok, {hello, world}}, Reply).
 
 test_chain_async_fail() ->
     [{doc, "test fail in async_t"}].
 test_chain_async_fail(Config) when is_list(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:echo(EchoServer, {ok, hello}),
     M0 = do([Monad || 
                    R1 <- Monad:promise(MRef),
@@ -143,16 +146,15 @@ test_chain_async_fail(Config) when is_list(Config) ->
                    R3 <- Monad:promise(echo_server:echo(EchoServer, hello)),
                    return({R1, R2, R3})
                ]),
-    Reply = Monad:wait(M0),
+    Reply = identity:run(Monad:wait(M0)),
     ?assertEqual({error, world}, Reply).
 
 test_async_t_with_timeout() ->
     [{doc, "test async with timeout"}].
 
-
 test_async_t_with_timeout(Config) when is_list(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:delayed_echo(EchoServer, 2000, hello),
     M0 = do([Monad || 
                    R1 <- Monad:promise(MRef),
@@ -160,7 +162,7 @@ test_async_t_with_timeout(Config) when is_list(Config) ->
                    R3 <- Monad:promise(echo_server:echo(EchoServer, hello)),
                    return({R1, R2, R3})
                ]),
-    Reply = Monad:wait(M0, 500),
+    Reply = identity:run(Monad:wait(M0, 500)),
     ?assertEqual({error, timeout}, Reply).
 
 test_async_t_with_message() ->
@@ -168,20 +170,21 @@ test_async_t_with_message() ->
 
 test_async_t_with_message(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:echo_with_messages(EchoServer, [message, message], hello),
     M0 = do([Monad || 
                    R1 <- Monad:promise(MRef),
                    R2 <- Monad:promise(echo_server:echo_with_messages(EchoServer, [message, message, message], world)),
                    return({R1, R2})
                ]),
-    Reply = Monad:wait(M0,
-                       fun({ok, R}, #state{acc = Acc}) ->
-                               [R, Acc];
-                          ({message, Message}, #state{acc = Acc} = State)->
-                               NAcc = [Message|Acc],
-                               State#state{acc = NAcc}
-                       end, #state.callbacks, #state{}, infinity),
+    Reply = identity:run(
+              Monad:wait(M0,
+                         fun({ok, R}, #state{acc = Acc}) ->
+                                 [R, Acc];
+                            ({message, Message}, #state{acc = Acc} = State)->
+                                 NAcc = [Message|Acc],
+                                 State#state{acc = NAcc}
+                         end, #state.callbacks, #state{}, infinity)),
     ?assertEqual([{hello, world}, lists:duplicate(5, message)], Reply).
 
 test_async_t_with_message_handler() ->
@@ -189,7 +192,7 @@ test_async_t_with_message_handler() ->
 
 test_async_t_with_message_handler(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     MRef = echo_server:echo_with_messages(EchoServer, [message, message], hello),
     M0 = do([Monad || 
                 R1 <- Monad:promise(MRef),
@@ -208,81 +211,85 @@ test_async_t_with_message_handler(Config) ->
                              EchoServer, lists:duplicate(3, message), world)),
                 return({R1, R2, R3})
                ]),
-    Reply = Monad:wait(M0,
-                       fun({ok, R}, #state{acc0 = Acc0, acc = Acc}) ->
-                               {R, Acc0, Acc};
-                          ({message, Message}, #state{acc = Acc} = State)->
-                               NAcc = [Message|Acc],
-                               State#state{acc = NAcc}
-                       end, #state.callbacks, #state{}, infinity),
+    Reply = identity:run(
+              Monad:wait(M0,
+                         fun({ok, R}, #state{acc0 = Acc0, acc = Acc}) ->
+                                 {R, Acc0, Acc};
+                            ({message, Message}, #state{acc = Acc} = State)->
+                                 NAcc = [Message|Acc],
+                                 State#state{acc = NAcc}
+                         end, #state.callbacks, #state{}, infinity)),
     ?assertEqual({{hello, world, world}, lists:duplicate(8, message), lists:duplicate(5, message)}, Reply).
 
 test_async_t_par(_Config) ->
-    MR = async_r_t:new(identity_m),
-    Monad = async_t:new(identity_m),
-    M1 = Monad:progn_par(
+    MR = async_r_t:new(identity),
+    Monad = async_t:new(identity),
+    M1 = async_t:progn_par(
                   [Monad:message(hello_message),
                    Monad:fail(hello)]),
-    Reply = Monad:wait(M1,
-              fun({message, M}) ->
-                      do([MR ||
-                             MR:put_local(M),
-                             MR:return(ok)
-                         ]);
-                 (Reply) ->
-                      do([MR ||
-                             Acc <- MR:get_local(),
-                             MR:return({Acc, Reply})
-                         ])
-              end),
+    Reply = identity:run(
+              Monad:wait(M1,
+                         fun({message, M}) ->
+                                 do([MR ||
+                                        MR:put_local(M),
+                                        MR:return(ok)
+                                    ]);
+                            (Reply) ->
+                                 do([MR ||
+                                        Acc <- MR:get_local(),
+                                        MR:return({Acc, Reply})
+                                    ])
+                         end)),
     ?assertEqual({hello_message, {error, hello}}, Reply).
 
 test_async_t_pmap(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
-    MR = async_r_t:new(identity_m),
+    Monad = async_t:new(identity),
+    MR = async_r_t:new(identity),
     M0 = Monad:promise(fun() -> echo_server:echo_with_messages(EchoServer, [message], {error, hello}) end),
     Promises = lists:duplicate(6, M0),
     M1 = do([Monad ||
                 Monad:put_local([]),
                 Monad:map(Promises)
             ]),
-    Reply = Monad:wait(M1, 
-              fun({message, X}) -> 
-                      do([MR ||
-                             Acc <- MR:get_local(),
-                             MR:put_local([X|Acc])
-                         ]);
-                 (X) ->
-                      do([MR ||
-                             Acc <- MR:get_local(),
-                             return({X, Acc})
-                         ])
-              end
-             ),
+    Reply = identity:run(
+              Monad:wait(
+                M1, 
+                fun({message, X}) -> 
+                        do([MR ||
+                               Acc <- MR:get_local(),
+                                        MR:put_local([X|Acc])
+                           ]);
+                   (X) ->
+                        do([MR ||
+                               Acc <- MR:get_local(),
+                                        return({X, Acc})
+                           ])
+                         end
+               )),
     ?assertEqual({lists:duplicate(6, {error, hello}), lists:duplicate(6, message)}, Reply).
 
 test_async_t_pmap_with_timeout(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     M0 = Monad:promise(fun() -> echo_server:delayed_echo(EchoServer, 2000, hello) end),
     Promises = lists:duplicate(6, M0),
     M1 = do([Monad ||
                 Monad:put_local([]),
                 Monad:map(Promises)
             ]),
-    Reply = Monad:wait(M1, 1000),
+    Reply = identity:run(Monad:wait(M1, 1000)),
     ?assertEqual(lists:duplicate(6, {error, timeout}), Reply).
                                
 test_async_t_pmap_with_acc(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity_m),
+    Monad = async_t:new(identity),
     M0 =  Monad:promise(fun() -> echo_server:echo_with_messages(EchoServer,  [message], {error, hello}) end),
     Promises = lists:foldl(
                  fun(N, Acc0) ->
                          MA = 
                              do([Monad || 
-                                    Val <- Monad:lift_final_reply(M0),
+                                    Val <- async_t:lift_final_reply(M0),
                                     Acc <- Monad:get_local(),
                                     Monad:put_local([N|Acc]),
                                     Monad:pure_return(Val)
@@ -293,20 +300,22 @@ test_async_t_pmap_with_acc(Config) ->
                 Monad:put_local([]),
                 Monad:map(Promises, #{limit => 2})
             ]),
-    MR = async_r_t:new(identity_m),
-    Reply = Monad:wait(M1, 
-              fun({message, X}) -> 
-                      do([MR ||
-                             Acc <- MR:get_local(),
-                             MR:put_local([X|Acc])
-                         ]);
-                 (X) ->
-                      do([MR ||
-                             Acc <- MR:get_local(),
-                             return({X, Acc})
-                         ])
-              end
-             ),
+    MR = async_r_t:new(identity),
+    Reply = identity:run(
+              Monad:wait(
+                M1, 
+                fun({message, X}) -> 
+                        do([MR ||
+                               Acc <- MR:get_local(),
+                               MR:put_local([X|Acc])
+                           ]);
+                   (X) ->
+                        do([MR ||
+                               Acc <- MR:get_local(),
+                               return({X, Acc})
+                           ])
+                end
+               )),
     ?assertEqual({maps:from_list([{1, {error, hello}},
                                   {2, {error, hello}},
                                   {3, {error, hello}},
@@ -316,26 +325,26 @@ test_async_t_pmap_with_acc(Config) ->
                   [5, {5, message}, 4, {4, message}, 3, {3, message}, 2, {2, message}, 1, {1, message}]}, Reply).
                                
 test_local_acc_ref(_Config) ->
-    MR = async_r_t:new(identity_m),
+    MR = async_r_t:new(identity),
     Ref0 = make_ref(),
     Ref1 = make_ref(),
     M0 = do([MR ||
                 Ref <- MR:get_local_ref(),
                 MR:do_put_state(Ref)
             ]),
-    M1 = MR:local_ref(Ref1, M0),
+    M1 = async_r_t:local_ref(Ref1, M0),
     M2 = do([MR ||
-                R1 <- MR:local_ref(Ref1, MR:get_local_ref()),
+                R1 <- async_r_t:local_ref(Ref1, MR:get_local_ref()),
                 R0 <- MR:get_local_ref(),
                 MR:do_put_state({R0, R1})
             ]),
-    ?assertEqual(Ref0, MR:exec(M0, undefined, Ref0, undefined)),
-    ?assertEqual(Ref1, MR:exec(M1, undefined, Ref0, undefined)),
-    ?assertEqual({Ref0, Ref1}, MR:exec(M2, undefined, Ref0, undefined)).
+    ?assertEqual(Ref0, identity:run(async_r_t:exec(M0, undefined, Ref0, undefined))),
+    ?assertEqual(Ref1, identity:run(async_r_t:exec(M1, undefined, Ref0, undefined))),
+    ?assertEqual({Ref0, Ref1}, identity:run(async_r_t:exec(M2, undefined, Ref0, undefined))).
 
 test_async_t_local_acc_ref(_Config) ->
-    Monad = async_t:new(identity_m),
-    MR = async_r_t:new(identity_m),
+    Monad = async_t:new(identity),
+    MR = async_r_t:new(identity),
     Ref = make_ref(),
     M0 = do([Monad ||
                 Ref0 <- Monad:get_local_ref(),
@@ -348,11 +357,13 @@ test_async_t_local_acc_ref(_Config) ->
                 Ref2 <- Monad:get_local_ref(),
                 Monad:pure_return({Ref0, Ref1, Ref2})
             ]),
-    {{R0, R1, R2}, R3} = Monad:wait(M2, fun(X) -> 
-                                          do([MR || 
-                                                 MRRef <- MR:get_local_ref(),
-                                                 return({X, MRRef})])
-                                  end),
+    {{R0, R1, R2}, R3} = identity:run(
+                           Monad:wait(
+                             M2, fun(X) -> 
+                                         do([MR || 
+                                                MRRef <- MR:get_local_ref(),
+                                                return({X, MRRef})])
+                                 end)),
     ?assertEqual(Ref, R1),
     ?assertEqual(R0, R2),
     ?assertEqual(R0, R3).

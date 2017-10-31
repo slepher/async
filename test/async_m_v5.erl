@@ -18,16 +18,15 @@
 %%% API
 %%%===================================================================
 '>>='(X, Fun) ->
-    M = error_t:new(cont_t:new(async_r_m_v5)),
-    M:'>>='(X, Fun).
+    error_t:'>>='(X, Fun).
 
 return(A) ->
     M = error_t:new(cont_t:new(async_r_m_v5)),
-    M:return(A).
+    error_t:return(A, M).
 
 fail(R) ->
     M = error_t:new(cont_t:new(async_r_m_v5)),
-    M:fail(R).
+    error_t:fail(R, M).
 
 promise(Mref, Timeout) when is_reference(Mref) ->
     promise(fun() -> Mref end, Timeout);
@@ -53,7 +52,7 @@ promise_call(Process, Request, Timeout) ->
   promise(fun() -> async_gen_server_call(Process, Request) end, Timeout).    
 
 run(Promise, CC, Offset, State) ->
-    async_r_m_v5:run((cont_t:run_cont_t(error_t:run_error_t(Promise)))(CC), Offset, State).
+    async_r_m_v5:run(cont_t:run(error_t:run(Promise), CC), Offset, State).
 
 async_gen_server_call(Process, Request) ->
     do_call(Process, '$gen_call', Request).
@@ -64,9 +63,7 @@ do_call(Process, Label, Request) ->
     Mref.
 
 modify(S) ->
-    MC = cont_t:new(async_r_m_v5),
-    M = error_t:new(MC),
-    M:lift(MC:lift(async_r_m_v5:modify(S))).
+    error_t:lift(cont_t:lift(async_r_m_v5:modify(S))).
 
 execute_cc(CC, Reply, Offset, State) ->
     async_r_m_v5:run(CC(Reply), Offset, State).

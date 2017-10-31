@@ -19,7 +19,7 @@
 %%% API
 %%%===================================================================
 start() ->
-    application:start(async).
+    application:ensure_all_started(async).
 
 start_and_action(StartFun, ActionFun, Args) ->
     case StartFun() of
