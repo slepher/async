@@ -33,7 +33,7 @@
          message/2, hijack/1, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise/3, map/2, map/3, par/1, progn_par/1]).
 -export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
--export([exec/5, exec_cc/5, run/5, run_cc/2, run_with_cc/5, handle_info/4, wait_receive/4, map_async/2, map_cont/2]).
+-export([exec/5, exec_cc/5, run/5, run_cc/2, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/2, map_cont/2]).
 -export([state_callbacks_gs/1]).
 
 -opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
@@ -451,6 +451,7 @@ wait(X, Callback, Timeout, {?MODULE, _IM} = AT) ->
 -spec wait(async_t(S, A, M, A), integer(), S, integer() | infinity, M) -> monad:monadic(M, A).
 wait(X, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     wait(X, fun(A) -> A end, Offset, State, Timeout, AT).
+
 wait(X, Callback, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     CC = callback_to_cc(Callback, AT),
     wait_cc(X, CC, Offset, State, Timeout, AT).

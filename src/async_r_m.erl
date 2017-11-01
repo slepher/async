@@ -8,31 +8,15 @@
 %%%-------------------------------------------------------------------
 -module(async_r_m).
 
--compile({parse_transform, import_as}).
-
--import_as({async_r_t, [fmap/2, '<$'/2, '>>='/2, '>>'/2]}).
-
--define(ASYNC_R, {async_r_t, identity}).
-
 -behaviour(functor).
 -behaviour(monad).
 
--export([fmap/2, '<$'/2]).
--export(['>>='/2, '>>'/2, return/1]).
+-compile({parse_transform, monad_t_transform}).
 
-%%%===================================================================
-%%% API
-%%%===================================================================
-return(A) ->
-    async_r_t:return(A, ?ASYNC_R).
-
-
-%%--------------------------------------------------------------------
-%% @doc
-%% @spec
-%% @end
-%%--------------------------------------------------------------------
-
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
+-transform({async_r_t, [fmap/2, '<$'/2, '>>='/2, '>>'/2]}).
+-transform({async_r_t, true, [return/1]}).
+-transform({async_r_t, true, [do_get_state/0, do_put_state/1, do_modify_state/1]}).
+-transform({async_r_t, true, [get_state/0, put_state/1, modify_state/1]}).
+-transform({async_r_t, true, [get_local_ref/0, local_ref/1, local/1, get_local/0, put_local/1, modify_local/1]}).
+-transform({async_r_t, true, [find_ref/1, get_ref/2, modify_ref/2, put_ref/2, remove_ref/1]}).
+-transorrm({async_r_t, true, [], [eval/4, exec/4, run/4, map/2]}).
