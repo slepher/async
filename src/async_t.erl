@@ -7,23 +7,26 @@
 %%% Created :  9 Jun 2017 by Chen Slepher <slepher@issac.local>
 %%%-------------------------------------------------------------------
 -module(async_t).
+
 -compile({parse_transform, do}).
+
+-compile({parse_transform, monad_t_transform}).
 
 -behaviour(type).
 -behaviour(functor).
 -behaviour(monad).
 -behaviour(monad_trans).
+-behaviour(monad_fail).
 
 -export_type([async_t/4]).
 
 %% API
 -export([new/1, async_t/1, run_async_t/1]).
 -export([type/0]).
--export([fmap/2, '<$'/2]).
--export(['>>='/2, '>>'/2, return/1]).
--export([return/2, lift/1]).
+-export([fmap/3, '<$'/3]).
+-export(['>>='/3, '>>'/3, return/2]).
+-export([lift/2]).
 -export([lift_mr/1]).
--export([fail/1]).
 -export([fail/2]).
 
 -export([get_state/1, put_state/2, modify_state/2, 
@@ -35,6 +38,11 @@
 -export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
 -export([exec/5, exec_cc/5, run/5, run_cc/2, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/2, map_cont/2]).
 -export([state_callbacks_gs/1]).
+
+-transform({?MODULE, functor, [fmap/2, '<$'/2]}).
+-transform({?MODULE, monad,   ['>>='/2, '>>'/2, return/1]}).
+-transform({?MODULE, monad,   [lift/1]}).
+-transform({?MODULE, monad,   [fail/1]}).
 
 -opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
 
@@ -78,32 +86,27 @@ type() ->
     type:default_type(?MODULE).
 
 -spec fmap(fun((A) -> B), async_t(S, R, M, A)) -> async_t(S, R, M, B).
-fmap(F, ATA) ->
+fmap(F, ATA, {?MODULE, IM}) ->
     map_real(
       fun(RTA) ->
-              functor:fmap(F, RTA)
+              functor:fmap(F, RTA, IM)
       end, ATA).
 
-'<$'(ATB, ATA) ->
-    functor:'default_<$'(ATB, ATA, ?MODULE).
+'<$'(ATB, ATA, {?MODULE, _IM} = AT) ->
+    functor:'default_<$'(ATB, ATA, AT).
 
 -spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) )) -> async_t(S, R, M, B).
-'>>='(ATA, KATB) ->
-    real_to_async_t(monad:'>>='(async_to_real_t(ATA), fun(A) -> async_to_real_t(KATB(A)) end)).
+'>>='(ATA, KATB, {?MODULE, IM}) ->
+    RM = real_new(IM),
+    real_to_async_t(reply_t:'>>='(async_to_real_t(ATA), fun(A) -> async_to_real_t(KATB(A)) end, RM)).
 
-'>>'(ATA, ATB) ->
-    monad:'default_>>'(ATA, ATB, ?MODULE).
-
-return(A) ->
-    return(A, {?MODULE, monad}).
+'>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
+    monad:'default_>>'(ATA, ATB, AT).
 
 -spec return(A, M) -> async_t(_S, _R, M, A).
 return(A, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:return(A, MR)).
-
-fail(E) ->
-    fail(E, {?MODULE, monad}).
 
 -spec fail(any(), t(M)) -> async_t(_S, _R, M, _A).
 fail(X, {?MODULE, IM}) ->
@@ -111,8 +114,9 @@ fail(X, {?MODULE, IM}) ->
     real_to_async_t(reply_t:fail(X, Monad)).
 
 -spec lift(monad:monadic(M, A)) -> async_t(_S, _R, M, A).
-lift(MA) ->
-    lift_mr(async_r_t:lift(MA)).
+lift(MA, {?MODULE, IM}) ->
+    MR = async_r_t:new(IM),
+    lift_mr(async_r_t:lift(MA, MR)).
 
 -spec lift_mr(async_r_t:async_r_t(S, M, A)) -> async_t(S, _R, M, A).
 lift_mr(MRA) ->
@@ -155,13 +159,14 @@ local_ref(Ref, X, {?MODULE, _IM} = AT) ->
 -spec local(fun((T) -> T), async_t(S, R, M, A), M) -> async_t(S, R, M, A).
 local(F, ATA, {?MODULE, IM}) ->
     MR = async_r_t:new(IM),
+    M1 = cont_t:new(MR),
     Ask = fun() -> async_r_t:get_local_ref(MR) end,
-    Local = fun(IF, IMR) -> async_r_t:local(IF, IMR) end,
+    Local = fun(IF, IMR) -> async_r_t:local(IF, IMR, MR) end,
     map_real(
       fun(RTA) ->
               reply_t:map(
                 fun(Cont) ->
-                        cont_t:lift_local(Ask, Local, F, Cont)
+                        cont_t:lift_local(Ask, Local, F, Cont, M1)
                 end, RTA)
       end, ATA).
 
@@ -478,7 +483,7 @@ wait_receive(Offset, State, Timeout, {?MODULE, _IM} = AT) ->
 timeout_callbacks(Offset, State, {?MODULE, IM} = AT) ->
     {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
-    MResult = IM:return({ok, State}),
+    MResult = monad:return({ok, State}, IM),
     NMresult = 
         maps:fold(
           fun(MRef, #callback{}, MResultAcc) ->

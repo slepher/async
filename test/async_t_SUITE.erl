@@ -258,12 +258,12 @@ test_async_t_pmap(Config) ->
                 fun({message, X}) -> 
                         do([MR ||
                                Acc <- MR:get_local(),
-                                        MR:put_local([X|Acc])
+                               MR:put_local([X|Acc])
                            ]);
                    (X) ->
                         do([MR ||
                                Acc <- MR:get_local(),
-                                        return({X, Acc})
+                               return({X, Acc})
                            ])
                          end
                )),

@@ -11,6 +11,7 @@
 
 -compile({parse_transform, do}).
 -compile({parse_transform, cut}).
+-compile({parse_transform, monad_t_transform}).
 
 -behaviour(type).
 -behaviour(functor).
@@ -22,16 +23,26 @@
 %% API
 -export([new/1, async_r_t/1, run_async_r_t/1]).
 -export([type/0]).
--export([fmap/2, '<$'/2]).
--export(['>>='/2, '>>'/2, return/1]).
--export([return/2, lift/1]).
--export([fail/1, fail/2]).
+-export([fmap/3, '<$'/3]).
+-export(['>>='/3, '>>'/3, return/2]).
+-export([lift/2]).
+-export([fail/2]).
 -export([ask/1]).
 -export([do_get_state/1, do_put_state/2, do_modify_state/2]).
 -export([get_state/1, put_state/2, modify_state/2]).
--export([get_local_ref/1, local_ref/2, local/2, get_local/1, put_local/2, modify_local/2]).
+-export([get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]).
 -export([eval/4, exec/4, run/4, map/2]).
+
+-transform({?MODULE, functor, [fmap/2, '<$'/2]}).
+-transform({?MODULE, monad, ['>>='/2, '>>'/2, return/1]}).
+-transform({?MODULE, monad, [lift/1]}).
+-transform({?MODULE, monad_fail, [fail/1]}).
+-transform({?MODULE, monad, [ask/0]}).
+-transform({?MODULE, monad, [do_get_state/0, do_put_state/1, do_modify_state/1]}). 
+-transform({?MODULE, monad, [get_state/0, put_state/1, modify_state/1]}).
+-transform({?MODULE, monad, [get_local_ref/0, local_ref/2, local/2, get_local/0, put_local/1, modify_local/1]}).
+-transform({?MODULE, monad, [find_ref/1, get_ref/2, modify_ref/2, put_ref/2, remove_ref/1]}).
 
 -opaque async_r_t(S, M, A) :: {async_r_t, inner_async_r_t(S, M, A)}.
 
@@ -42,10 +53,9 @@
 -type callback_gs(S) :: 
         {fun((S) -> #{reference() => Val}), fun((#{reference() => Val}, S) -> S)}.
 
-%%%===================================================f================
+%%%===================================================================
 %%% API
 %%%===================================================================
-
 new(M) ->
     {?MODULE, M}.
 
@@ -61,37 +71,36 @@ type() ->
     type:default_type(?MODULE).
 
 -spec fmap(fun((A) -> B), async_r_t(S, M, A)) -> async_r_t(S, M, B).
-fmap(F, ARTA) ->
+fmap(F, ARTA, {?MODULE, IM}) ->
+    RM = new_real(IM),
     map_real(
       fun(STA) ->
-              state_t:fmap(F, STA)
+              state_t:fmap(F, STA, RM)
       end, ARTA).
 
-'<$'(ARTB, ARTA) ->
-    functor:'default_<$'(ARTB, ARTA, ?MODULE).
+'<$'(ARTB, ARTA, {?MODULE, _IM} = ART) ->
+    functor:'default_<$'(ARTB, ARTA, ART).
 
 -spec '>>='(async_r_t(S, M, A), fun( (A) -> async_r_t(S,  M, B) )) -> async_r_t(S, M, B).
-'>>='(ARTA, KARTB) ->
+'>>='(ARTA, KARTB, {?MODULE, IM}) ->
+    RM = new_real(IM),
     real_to_async_r_t(
-      state_t:'>>='(async_r_to_real_t(ARTA), fun(A) -> async_r_to_real_t(KARTB(A)) end)).
+      state_t:'>>='(async_r_to_real_t(ARTA), fun(A) -> async_r_to_real_t(KARTB(A)) end, RM)).
 
-'>>'(ARTA, ARTB) ->
-    monad:'default_>>'(ARTA, ARTB, ?MODULE).
-
-return(A) ->
-    return(A, {?MODULE, monad}).
+'>>'(ARTA, ARTB, {?MODULE, _IM} = ART) ->
+    monad:'default_>>'(ARTA, ARTB, ART).
 
 -spec return(A, t(M)) -> async_r_t(_S, M, A).
 return(A, {?MODULE, IM}) ->
     RealM = new_real(IM),
-    real_to_async_r_t(state_t:return(A, RealM)).
+    real_to_async_r_t(monad:return(A, RealM)).
 
 -spec lift(monad:monadic(M, A)) -> async_r_t(_S,  M, A).
-lift(MA) ->
-    real_to_async_r_t(state_t:lift(reader_t:lift(reader_t:lift(MA)))).
-
-fail(E) ->
-    fail(E, {?MODULE, monad_fail}).
+lift(MA, {?MODULE, IM}) ->
+    M0 = reader_t:new(IM),
+    M1 = reader_t:new(M0),
+    M2 = state_t:new(M1),
+    real_to_async_r_t(state_t:lift(reader_t:lift(reader_t:lift(MA, M0), M1), M2)).
 
 -spec fail(any(), M) -> async_r_t(_S, M, _A).
 fail(X, {?MODULE, IM}) ->
@@ -99,26 +108,20 @@ fail(X, {?MODULE, IM}) ->
     real_to_async_r_t(monad_fail:fail(X, RealM)).
 
 do_get_state({?MODULE, IM}) ->
-    M1 = reader_t:new(IM),
-    M2 = reader_t:new(M1),
-    M3 = state_t:new(M2),
-    real_to_async_r_t(monad_state:get(M3)).
+    RM = new_real(IM),
+    real_to_async_r_t(monad_state:get(RM)).
 
 do_put_state(State, {?MODULE, IM}) ->
-    M1 = reader_t:new(IM),
-    M2 = reader_t:new(M1),
-    M3 = state_t:new(M2),
-    real_to_async_r_t(monad_state:put(State, M3)).
+    RM = new_real(IM),
+    real_to_async_r_t(monad_state:put(State, RM)).
 
 do_modify_state(State, {?MODULE, IM}) ->
-    M1 = reader_t:new(IM),
-    M2 = reader_t:new(M1),
-    M3 = state_t:new(M2),
-    real_to_async_r_t(monad_state:modify(State, M3)).
+    RM = new_real(IM),
+    real_to_async_r_t(monad_state:modify(State, RM)).
 
 -spec get_state(M) -> async_r_t(S,  M, S).
-get_state({?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+get_state({?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, CallbacksSetter} <- ask(ART),
            State <- do_get_state(ART),
            begin
@@ -128,8 +131,8 @@ get_state({?MODULE, IM} = ART) ->
        ]).
 
 -spec put_state(S, M) -> async_r_t(S, M, ok).
-put_state(NState, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+put_state(NState, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, CallbacksSetter} <- ask(ART),
            State <- do_get_state(ART),
            begin 
@@ -151,8 +154,8 @@ put_state(NState, {?MODULE, IM} = ART) ->
        ]).
 
 -spec modify_state(fun((S) -> S), M) -> async_r_t(S, M, ok).
-modify_state(Fun, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+modify_state(Fun, {?MODULE, _IM} = ART) ->
+    do([ART ||
            State <- do_get_state(ART),
            put_state(Fun(State), ART)
        ]).
@@ -161,40 +164,44 @@ modify_state(Fun, {?MODULE, IM} = ART) ->
 get_local_ref({?MODULE, IM}) ->
     M1 = reader_t:new(IM),
     M2 = reader_t:new(M1),
-    real_to_async_r_t(state_t:lift(reader_t:ask(M2))).
+    M3 = state_t:new(M2),
+    real_to_async_r_t(state_t:lift(reader_t:ask(M2), M3)).
 
--spec local_ref(reference(), async_r_t(S, M, A)) -> async_r_t(S, M, A).
-local_ref(Ref, X) ->
-    local(fun(_) -> Ref end, X).
+-spec local_ref(reference(), async_r_t(S, M, A), t(M)) -> async_r_t(S, M, A).
+local_ref(Ref, X, {?MODULE, _IM} = ART) ->
+    local(fun(_) -> Ref end, X, ART).
 
--spec local(fun((R) -> R), async_r_t(S, M, A)) -> async_r_t(S, M, A).
-local(L, X) ->
-    real_to_async_r_t(
-      state_t:map(fun(IMS) -> reader_t:local(L, IMS) end, async_r_to_real_t(X))).
+-spec local(fun((R) -> R), async_r_t(S, M, A), t(M)) -> async_r_t(S, M, A).
+local(F, ARTA, {?MODULE, IM}) ->
+    RM = new_real(IM),
+    map_real(
+      fun(STA) ->
+              state_t:local(F, STA, RM)
+      end, ARTA).
 
 -spec get_local(M) -> async_r_t(_S, M, _C).
-get_local({?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} || 
+get_local({?MODULE, _IM} = ART) ->
+    do([ART || 
            Ref <- get_local_ref(ART),
            get_ref(Ref, undefined, ART)
        ]).
 
 -spec put_local(_C, M) -> async_r_t(_S, M, ok).
-put_local(Acc, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} || 
+put_local(Acc, {?MODULE, _IM} = ART) ->
+    do([ART || 
            Ref <- get_local_ref(ART),
            put_ref(Ref, Acc, ART)
        ]).
 
-modify_local(Fun, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+modify_local(Fun, {?MODULE, _IM} = ART) ->
+    do([ART ||
            Local <- get_local(ART),
            put_local(Fun(Local), ART)
        ]).
     
 -spec find_ref(reference(), M) -> async_r_t(_S, M, {ok, _A} | error).
-find_ref(MRef, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+find_ref(MRef, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, _CallbacksSetter} <- ask(ART),
            State <- do_get_state(ART),
            Callbacks = CallbacksGetter(State),
@@ -202,8 +209,8 @@ find_ref(MRef, {?MODULE, IM} = ART) ->
        ]).
 
 -spec get_ref(reference(), A, M) -> async_r_t(_S, M, A).
-get_ref(MRef, Default, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+get_ref(MRef, Default, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, _CallbacksSetter} <- ask(ART),
            State <- do_get_state(ART),
            Callbacks = CallbacksGetter(State),
@@ -211,8 +218,8 @@ get_ref(MRef, Default, {?MODULE, IM} = ART) ->
        ]).
 
 -spec put_ref(reference(), _A, M) -> async_r_t(_S, M, ok).
-put_ref(MRef, Data, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+put_ref(MRef, Data, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, CallbacksSetter} <- ask(ART),
            do_modify_state(
              fun(State) ->
@@ -223,8 +230,8 @@ put_ref(MRef, Data, {?MODULE, IM} = ART) ->
        ]).
 
 -spec modify_ref(reference(), fun((A) -> A), M) -> async_r_t(_S, M, ok).
-modify_ref(MRef, Fun, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+modify_ref(MRef, Fun, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, CallbacksSetter} <- ask(ART),
            do_modify_state(
              fun(State) ->
@@ -237,8 +244,8 @@ modify_ref(MRef, Fun, {?MODULE, IM} = ART) ->
        ]).
 
 -spec remove_ref(reference(), M) -> async_r_t(_S, M, ok).
-remove_ref(MRef, {?MODULE, IM} = ART) ->
-    do([{?MODULE, IM} ||
+remove_ref(MRef, {?MODULE, _IM} = ART) ->
+    do([ART ||
            {CallbacksGetter, CallbacksSetter} <- ask(ART),
            do_modify_state(
              fun(State) ->
@@ -293,6 +300,6 @@ map_real(F, ARTA) ->
 
 ask({?MODULE, IM}) ->
     M1 = reader_t:new(IM),
-    real_to_async_r_t(state_t:lift(reader_t:lift(reader_t:ask(M1)))).
-
-
+    M2 = reader_t:new(M1),
+    M3 = state_t:new(M2),
+    real_to_async_r_t(state_t:lift(reader_t:lift(reader_t:ask(M1), M2), M3)).

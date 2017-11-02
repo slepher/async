@@ -1,23 +1,15 @@
-%% The contents of this file are subject to the Mozilla Public License
-%% Version 1.1 (the "License"); you may not use this file except in
-%% compliance with the License. You may obtain a copy of the License
-%% at http://www.mozilla.org/MPL/
-%%
-%% Software distributed under the License is distributed on an "AS IS"
-%% basis, WITHOUT WARRANTY OF ANY KIND, either express or implied. See
-%% the License for the specific language governing rights and
-%% limitations under the License.
-%%
-%% The Original Code is Erlando.
-%%
-%% The Initial Developer of the Original Code is VMware, Inc.
-%% Copyright (c) 2011-2013 VMware, Inc.  All rights reserved.
-%%
-
+%%%-------------------------------------------------------------------
+%%% @author Chen Slepher <slepheric@gmail.com>
+%%% @copyright (C) 2017, Chen Slepher
+%%% @doc
+%%%
+%%% @end
+%%% Created : 14 Aug 2017 by Chen Slepher <slepheric@gmail.com>
+%%%-------------------------------------------------------------------
 -module(reply_t).
--compile({parse_transform, do}).
 
--export_type([reply_t/2, reply/1, final_reply/1, ok_reply/1, message_reply/0]).
+-compile({parse_transform, do}).
+-compile({parse_transform, monad_t_transform}).
 
 -behaviour(type).
 -behaviour(functor).
@@ -26,30 +18,36 @@
 -behaviour(monad_fail).
 -behaviour(monad_runner).
 
--export([new/1, reply_t/1, run_reply_t/1]).
--export([type/0]).
--export([fmap/2, '<$'/2]).
--export(['>>='/2, '>>'/2, return/1]).
--export([return/2, lift/1]).
--export([fail/1]).
--export([fail/2]).
--export([run_nargs/0, run_m/2]).
--export([pure_return/2, wrapped_return/2, lift_final/1]).
--export([run/1, map/2, with/2]).
+-export_type([reply_t/2, reply/1, final_reply/1, ok_reply/1, message_reply/0]).
 
 -opaque reply_t(M, A) :: {reply_t, inner_reply_t(M, A)}.
-
 -type reply(A) :: final_reply(A) | message_reply().
 -type final_reply(A) :: ok_reply(A) | error_m:error(any()).
 -type ok_reply(A) :: error_m:ok(A) | A.
 -type message_reply() :: {message, any()}.
-
-
 -type inner_reply_t(M, A) :: monad:monadic(M, reply(A)).
-
 -type t(M) :: {reply_t, M}.
-
 -spec new(M) -> TM when TM :: monad:monad(), M :: monad:monad().
+
+-export([new/1, reply_t/1, run_reply_t/1]).
+-export([type/0]).
+-export([fmap/3, '<$'/3]).
+% impl of monad.
+-export(['>>='/3, '>>'/3, return/2]).
+% impl of monad_trans.
+-export([lift/2]).
+% impl of monad_fail.
+-export([fail/2]).
+-export([run_nargs/0, run_m/2]).
+-export([pure_return/2, wrapped_return/2, lift_final/2]).
+-export([run/1, map/2, with/3]).
+
+-transform({?MODULE, [{?MODULE, functor}], [fmap/2, '<$'/2]}).
+-transform({?MODULE, [{?MODULE, monad}], ['>>='/2, '>>'/2, return/1]}).
+-transform({?MODULE, [{?MODULE, monad}], [lift/1]}).
+-transform({?MODULE, [{?MODULE, monad}], [fail/1]}).
+-transform({?MODULE, [{?MODULE, monad}], [pure_return/1, wrapped_return/1, lift_final/1, with/2]}).
+
 new(M) ->
     {?MODULE, M}.
 
@@ -69,19 +67,19 @@ type() ->
     type:default_type(?MODULE).
 
 -spec fmap(fun((A) -> B), reply_t(M, A)) -> reply_t(M, B).
-fmap(F, RTA) ->
+fmap(F, RTA, {?MODULE, IM}) ->
     map(
       fun(MA) ->
-              functor:fmap(F, MA)
+              functor:fmap(F, MA, IM)
       end, RTA).
 
-'<$'(RTB, RTA) ->
-    functor:'default_<$'(RTB, RTA, ?MODULE).
+'<$'(RTB, RTA, {?MODULE, _IM} = RT) ->
+    functor:'default_<$'(RTB, RTA, RT).
 
 -spec '>>='(reply_t(M, A), fun( (A) -> reply_t(M, B) )) -> reply_t(M, B).
-'>>='(RTA, KRTB) ->
+'>>='(RTA, KRTB, {?MODULE, IM}) ->
     reply_t(
-      do([monad ||
+      do([IM ||
              RA <- run_reply_t(RTA),
              case RA of
                  {error, _Err}    -> return(RA);
@@ -92,30 +90,24 @@ fmap(F, RTA) ->
              end
          ])).
 
-'>>'(RTA, RTB) ->
-    monad:'default_>>'(RTA, RTB, ?MODULE).
-
-return(A) ->
-    return(A, {?MODULE, monad}).
+'>>'(RTA, RTB, {?MODULE, _IM} = RT) ->
+    monad:'default_>>'(RTA, RTB, RT).
 
 -spec return(A, t(M)) -> reply_t(M, A).
 return(ok, {?MODULE, IM}) -> reply_t(monad:return(ok, IM));
 return(A , {?MODULE, IM}) -> reply_t(monad:return({ok, A}, IM)).
 
 -spec lift(monad:monadic(M, A)) -> reply_t(M, A).
-lift(MA) ->
+lift(MA, {?MODULE, IM}) ->
     reply_t(
-      do([monad || 
+      do([IM || 
              A <- MA,
-             return({ok, A})])).
-
-fail(E) ->
-    fail(E, {?MODULE, monad}).
+             return({ok, A})
+         ])).
 
 -spec fail(any(), t(M)) -> reply_t(M, _A).
 fail(E, {?MODULE, IM}) ->
     reply_t(monad:return({error, E}, IM)).
-
 
 run_nargs() ->
     0.
@@ -131,8 +123,8 @@ pure_return(A, {?MODULE, IM}) ->
 wrapped_return(A, {?MODULE, IM}) ->
     reply_t(monad:return(wrap_value(A), IM)).
 
--spec lift_final(reply_t(M, A)) -> reply_t(M, final_reply(A)).
-lift_final(RTA) ->
+-spec lift_final(reply_t(M, A), t(M)) -> reply_t(M, final_reply(A)).
+lift_final(RTA, {?MODULE, IM}) ->
     with(
       fun(A) ->
               case A of
@@ -141,7 +133,7 @@ lift_final(RTA) ->
                   A ->
                       {ok, A}
               end  
-      end, RTA).
+      end, RTA, {?MODULE, IM}).
 
 -spec run(reply_t(M, A)) -> inner_reply_t(M, A).
 run(EM) -> run_reply_t(EM).
@@ -150,11 +142,11 @@ run(EM) -> run_reply_t(EM).
 map(F, RTA) ->
     reply_t(F(run_reply_t(RTA))).
 
--spec with(fun((reply(A)) -> reply(B)), reply_t(M, A)) -> reply_t(M, B). 
-with(F, RTA) ->
+-spec with(fun((reply(A)) -> reply(B)), reply_t(M, A), t(M)) -> reply_t(M, B). 
+with(F, RTA, {?MODULE, IM}) ->
     map(
       fun(MA) ->
-              do([monad || 
+              do([IM || 
                      RA <- MA,
                      return(F(RA))
                  ])
