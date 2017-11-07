@@ -7,26 +7,44 @@
 %%% Created :  4 Jul 2017 by Chen Slepher <slepher@issac.local>
 %%%-------------------------------------------------------------------
 -module(async_m_v5).
+
+
+-erlando_type(?MODULE).
+
+-define(ASYNC_M, {error_t, {cont_t, {state_t, {reader_t, identity}}}}).
+-define(PG, [[], [?MODULE]]).
+
 -behaviour(monad).
 -compile({parse_transform, do}).
+-compile({parse_transform, monad_t_transform}).
+
 %% API
--export(['>>='/2, return/1, fail/1]).
 -export([promise/2, run/4, modify/1, execute_cc/4, callback_to_cc/1, handle_info/3]).
 -export([promise_call/2, promise_call/3]).
+
+-transform(#{remote => functor,
+             patterns_group => ?PG,
+             args => [?ASYNC_M],
+             behaviours => [functor]}).
+
+-transform(#{remote => applicative,
+             patterns_group => ?PG,
+             args => [?ASYNC_M],
+             behaviours => [applicative]}).
+
+-transform(#{remote => monad,
+             patterns_group => ?PG,
+             args => [?ASYNC_M],
+             behaviours => [monad]}).
+
+-transform(#{remote => monad_fail,
+             patterns_group => ?PG,
+             args => [?ASYNC_M],
+             behaviours => [monad_fail]}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-'>>='(X, Fun) ->
-    error_t:'>>='(X, Fun).
-
-return(A) ->
-    M = error_t:new(cont_t:new(async_r_m_v5)),
-    error_t:return(A, M).
-
-fail(R) ->
-    M = error_t:new(cont_t:new(async_r_m_v5)),
-    error_t:fail(R, M).
 
 promise(Mref, Timeout) when is_reference(Mref) ->
     promise(fun() -> Mref end, Timeout);

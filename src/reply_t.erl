@@ -8,15 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(reply_t).
 
--compile({parse_transform, do}).
--compile({parse_transform, monad_t_transform}).
-
--behaviour(type).
--behaviour(functor).
--behaviour(monad).
--behaviour(monad_trans).
--behaviour(monad_fail).
--behaviour(monad_runner).
+-erlando_type(?MODULE).
 
 -export_type([reply_t/2, reply/1, final_reply/1, ok_reply/1, message_reply/0]).
 
@@ -29,8 +21,18 @@
 -type t(M) :: {reply_t, M}.
 -spec new(M) -> TM when TM :: monad:monad(), M :: monad:monad().
 
+-compile({parse_transform, do}).
+-compile({parse_transform, monad_t_transform}).
+
+-behaviour(functor).
+-behaviour(monad).
+-behaviour(monad_trans).
+-behaviour(monad_fail).
+-behaviour(monad_runner).
+
+-define(PG, [[], [?MODULE]]).
+
 -export([new/1, reply_t/1, run_reply_t/1]).
--export([type/0]).
 -export([fmap/3, '<$'/3]).
 % impl of monad.
 -export(['>>='/3, '>>'/3, return/2]).
@@ -42,11 +44,10 @@
 -export([pure_return/2, wrapped_return/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
--transform({?MODULE, [{?MODULE, functor}], [fmap/2, '<$'/2]}).
--transform({?MODULE, [{?MODULE, monad}], ['>>='/2, '>>'/2, return/1]}).
--transform({?MODULE, [{?MODULE, monad}], [lift/1]}).
--transform({?MODULE, [{?MODULE, monad}], [fail/1]}).
--transform({?MODULE, [{?MODULE, monad}], [pure_return/1, wrapped_return/1, lift_final/1, with/2]}).
+-transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], 
+             tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
+-transform(#{patterns_group => ?PG, args => [{?MODULE, functor}], behaviours => [functor]}).
+-transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], behaviours => [monad, monad_trans, monad_fail]}).
 
 new(M) ->
     {?MODULE, M}.
@@ -62,9 +63,6 @@ run_reply_t({?MODULE, Inner}) ->
     Inner;
 run_reply_t(Other) ->
     exit({invalid_monad, Other}).
-
-type() ->
-    type:default_type(?MODULE).
 
 -spec fmap(fun((A) -> B), reply_t(M, A)) -> reply_t(M, B).
 fmap(F, RTA, {?MODULE, IM}) ->

@@ -8,21 +8,29 @@
 %%%-------------------------------------------------------------------
 -module(async_m_v4).
 
+-erlando_type(?MODULE).
+
 -behaviour(monad).
 
 %% API
--export(['>>='/2, return/1, fail/1]).
+-export(['>>='/3, '>>'/3, return/2, fail/2]).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
-'>>='(X, Fun) ->
+async_r_m(Inner) ->
+    {?MODULE, Inner}.
+
+'>>='(X, Fun, ?MODULE) ->
     then(X, Fun).
 
-return(A) ->
-    fun(Callback) -> Callback({ok, A}) end.
+'>>'(Xa, Xb, ?MODULE) ->
+    monad:'default_>>'(Xa, Xb, ?MODULE).
 
-fail(R) ->
+return(A, ?MODULE) ->
+    async_r_m(fun(Callback) -> Callback({ok, A}) end).
+
+fail(R, ?MODULE) ->
     fun(Callback) -> Callback({error, R}) end.
 
 then(Promise, Then) ->

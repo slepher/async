@@ -30,6 +30,7 @@ suite() ->
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
     async:start(),
+    ok = erlando_typeclass:register_modules([async_m_v4, async_r_m_v5, async_m_v5]),
     echo_server:start(echo_server),
     Config.
 

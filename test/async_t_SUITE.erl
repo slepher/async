@@ -13,6 +13,7 @@
 %% Note: This directive should only be used in test suites.
 -compile(export_all).
 -compile({parse_transform, do}).
+-compile({parse_transform, disable_tco}).
 
 -record(state, {callbacks = maps:new(), acc0 = [], acc = []}).
 
