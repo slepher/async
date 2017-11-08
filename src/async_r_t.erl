@@ -28,8 +28,6 @@
 -behaviour(monad).
 -behaviour(monad_trans).
 
--define(PG, [[], [?MODULE]]).
-
 %% API
 -export([new/1, async_r_t/1, run_async_r_t/1]).
 -export([fmap/3, '<$'/3]).
@@ -44,21 +42,16 @@
 -export([find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]).
 -export([eval/5, exec/5, run/5, map/3]).
 
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], 
-             tfunctions => [ask/1]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], 
-             tfunctions => [do_get_state/1, do_put_state/2, do_modify_state/2]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}],
-             tfunctions => [get_state/1, put_state/2, modify_state/2]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}],
+-transform(#{inner_type => monad, tfunctions => [ask/1]}).
+-transform(#{inner_type => monad, tfunctions => [do_get_state/1, do_put_state/2, do_modify_state/2]}).
+-transform(#{inner_type => monad, tfunctions => [get_state/1, put_state/2, modify_state/2]}).
+-transform(#{inner_type => monad, 
              tfunctions => [get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}],
-             tfunctions => [find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}],
-             tfunctions => [eval/5, exec/5, run/5, map/3]}).
+-transform(#{inner_type => monad, tfunctions => [find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]}).
+-transform(#{inner_type => monad, tfunctions => [eval/5, exec/5, run/5, map/3]}).
 
--transform(#{patterns_group => ?PG, args => [{?MODULE, functor}], behaviours => [functor]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], behaviours => [applicative, monad, monad_trans]}).
+-transform(#{inner_type => functor, behaviours => [functor]}).
+-transform(#{inner_type => monad, behaviours => [applicative, monad, monad_trans]}).
 
 %%%===================================================================
 %%% API

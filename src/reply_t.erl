@@ -30,8 +30,6 @@
 -behaviour(monad_fail).
 -behaviour(monad_runner).
 
--define(PG, [[], [?MODULE]]).
-
 -export([new/1, reply_t/1, run_reply_t/1]).
 -export([fmap/3, '<$'/3]).
 % impl of monad.
@@ -44,10 +42,9 @@
 -export([pure_return/2, wrapped_return/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], 
-             tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, functor}], behaviours => [functor]}).
--transform(#{patterns_group => ?PG, args => [{?MODULE, monad}], behaviours => [monad, monad_trans, monad_fail]}).
+-transform(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
+-transform(#{inner_type => functor, behaviours => [functor]}).
+-transform(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail]}).
 
 new(M) ->
     {?MODULE, M}.

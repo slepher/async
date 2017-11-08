@@ -15,8 +15,6 @@
 -behaviour(functor).
 -behaviour(monad).
 
--define(PG, [[], [?MODULE]]).
-
 -transform(#{remote => async_t, args => identity, 
              functions => [get_state/0, put_state/1, modify_state/1, 
                            find_ref/1, get_ref/2, put_ref/2, remove_ref/1, 
@@ -33,7 +31,7 @@
 -transform(#{remote => async_t, args => identity, extra_call => {identity, run},
              functions => [handle_info/3, run_info/3, wait_receive/3]}).
 
--transform(#{remote => async_t, patterns_group => ?PG, args => identity, 
+-transform(#{remote => async_t, inner_type => identity,
              behaviours => [functor, monad, monad_fail]}).
 
 %%%===================================================================

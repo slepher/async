@@ -11,8 +11,7 @@
 
 -erlando_type(?MODULE).
 
--define(ASYNC_M, {error_t, {cont_t, {state_t, {reader_t, identity}}}}).
--define(PG, [[], [?MODULE]]).
+-define(INNER, {cont_t, {state_t, {reader_t, identity}}}).
 
 -behaviour(monad).
 -compile({parse_transform, do}).
@@ -22,26 +21,7 @@
 -export([promise/2, run/4, modify/1, execute_cc/4, callback_to_cc/1, handle_info/3]).
 -export([promise_call/2, promise_call/3]).
 
--transform(#{remote => functor,
-             patterns_group => ?PG,
-             args => [?ASYNC_M],
-             behaviours => [functor]}).
-
--transform(#{remote => applicative,
-             patterns_group => ?PG,
-             args => [?ASYNC_M],
-             behaviours => [applicative]}).
-
--transform(#{remote => monad,
-             patterns_group => ?PG,
-             args => [?ASYNC_M],
-             behaviours => [monad]}).
-
--transform(#{remote => monad_fail,
-             patterns_group => ?PG,
-             args => [?ASYNC_M],
-             behaviours => [monad_fail]}).
-
+-transform(#{remote => error_t, inner_type => ?INNER, behaviours => [functor, applicative, monad, monad_fail]}).
 %%%===================================================================
 %%% API
 %%%===================================================================

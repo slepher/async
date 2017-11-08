@@ -70,8 +70,8 @@
              tfunctions => [exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
                             handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3]}).
 
--transform(#{patterns_group => ?PG, args => functor, behaviours => [functor]}).
--transform(#{patterns_group => ?PG, args => monad, behaviours => [monad, monad_trans, monad_fail, monad_cont]}).
+-transform(#{inner_type => functor, behaviours => [functor]}).
+-transform(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail, monad_cont]}).
 
 %%%===================================================================
 %%% API
