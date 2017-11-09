@@ -17,9 +17,9 @@
 -type final_reply(A) :: ok_reply(A) | error_m:error(any()).
 -type ok_reply(A) :: error_m:ok(A) | A.
 -type message_reply() :: {message, any()}.
--type inner_reply_t(M, A) :: monad:monadic(M, reply(A)).
+-type inner_reply_t(M, A) :: monad:m(M, reply(A)).
 -type t(M) :: {reply_t, M}.
--spec new(M) -> TM when TM :: monad:monad(), M :: monad:monad().
+-spec new(M) -> TM when TM :: monad:class(), M :: monad:class().
 
 -compile({parse_transform, do}).
 -compile({parse_transform, monad_t_transform}).
@@ -92,7 +92,7 @@ fmap(F, RTA, {?MODULE, IM}) ->
 return(ok, {?MODULE, IM}) -> reply_t(monad:return(ok, IM));
 return(A , {?MODULE, IM}) -> reply_t(monad:return({ok, A}, IM)).
 
--spec lift(monad:monadic(M, A)) -> reply_t(M, A).
+-spec lift(monad:m(M, A)) -> reply_t(M, A).
 lift(MA, {?MODULE, IM}) ->
     reply_t(
       do([IM || 
@@ -133,7 +133,7 @@ lift_final(RTA, {?MODULE, IM}) ->
 -spec run(reply_t(M, A)) -> inner_reply_t(M, A).
 run(EM) -> run_reply_t(EM).
 
--spec map(fun((monad:monadic(M, reply(A))) -> monad:monadic(N, reply(B))), reply_t(M, A)) -> reply_t(N, B). 
+-spec map(fun((monad:m(M, reply(A))) -> monad:m(N, reply(B))), reply_t(M, A)) -> reply_t(N, B). 
 map(F, RTA) ->
     reply_t(F(run_reply_t(RTA))).
 

@@ -27,6 +27,7 @@
 -compile({parse_transform, monad_t_transform}).
 
 -behaviour(functor).
+-behaviour(applicative).
 -behaviour(monad).
 -behaviour(monad_trans).
 -behaviour(monad_fail).
@@ -34,12 +35,13 @@
 
 -define(PG, [[], [?MODULE]]).
 
--record(callback, {cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:monad(), A)),
+-record(callback, {cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:class(), A)),
                    acc_ref :: reference()}).
 
 %% API
 -export([new/1, async_t/1, run_async_t/1]).
 -export([fmap/3, '<$'/3]).
+-export([pure/2, '<*>'/3, lift_a2/4, '*>'/3, '<*'/3]).
 -export(['>>='/3, '>>'/3, return/2]).
 -export([lift/2]).
 -export([lift_mr/2]).
@@ -71,13 +73,13 @@
                             handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3]}).
 
 -transform(#{inner_type => functor, behaviours => [functor]}).
--transform(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail, monad_cont]}).
+-transform(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
 
 %%%===================================================================
 %%% API
 %%%===================================================================
 
--spec new(M) -> TM when TM :: monad:monad(), M :: monad:monad().
+-spec new(M) -> TM when TM :: monad:class(), M :: monad:class().
 new(M) ->
     {?MODULE, M}.
 
@@ -103,6 +105,25 @@ fmap(F, ATA, {?MODULE, IM}) ->
 '<$'(ATB, ATA, {?MODULE, _IM} = AT) ->
     functor:'default_<$'(ATB, ATA, AT).
 
+pure(A, {?MODULE, IM}) ->
+    RM = real_new(IM),
+    real_to_async_t(applicative:pure(A, RM)).
+
+'<*>'(ARTF, ARTA, {?MODULE, IM}) ->
+    STF = async_to_real_t(ARTF),
+    STA = async_to_real_t(ARTA),
+    RM = real_new(IM),
+    real_to_async_t(applicative:'<*>'(STF, STA, RM)).
+
+lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
+    applicative:default_lift_a2(F, ARTA, ARTB, AT).
+
+'*>'(ARTA, ARTB, {?MODULE, _IM} = AT) ->
+    applicative:'default_*>'(ARTA, ARTB, AT).
+
+'<*'(ARTB, ARTA, {?MODULE, _IM} = AT) ->
+    applicative:'default_<*'(ARTB, ARTA, AT).
+
 -spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) )) -> async_t(S, R, M, B).
 '>>='(ATA, KATB, {?MODULE, IM}) ->
     RM = real_new(IM),
@@ -121,7 +142,7 @@ fail(E, {?MODULE, IM}) ->
     RM = real_new(IM),
     real_to_async_t(monad_fail:fail(E, RM)).
 
--spec lift(monad:monadic(M, A)) -> async_t(_S, _R, M, A).
+-spec lift(monad:m(M, A)) -> async_t(_S, _R, M, A).
 lift(MA, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:lift(MA, MR), AT).
@@ -407,7 +428,7 @@ handle_message(X, MessageHandler, {?MODULE, _IM} = AT) ->
 hijack(MR, {?MODULE, _IM}) ->
     async_t(fun(_K) -> MR end).
 
--spec map_async(fun((monad:monadic(M, {A, S})) -> monad:monadic(M, {A, S})), async_t(R, S, M, A), t(M)) -> async_t(R, S, M, A).
+-spec map_async(fun((monad:m(M, {A, S})) -> monad:m(M, {A, S})), async_t(R, S, M, A), t(M)) -> async_t(R, S, M, A).
 map_async(F, ATA, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     NF = fun(AsyncR) ->
@@ -454,22 +475,22 @@ run_cc(X, CC, {?MODULE, _IM}) ->
     CTA = reply_t:run(async_to_real_t(X)),
     cont_t:run(CTA, CC).
 
--spec wait(async_t(_S, A, M, A), M) -> monad:monadic(M, A).
+-spec wait(async_t(_S, A, M, A), M) -> monad:m(M, A).
 wait(X, {?MODULE, _IM} = AT) ->
     wait(X, infinity, AT).
 
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> monad:monadic(M, A);
-          (async_t(_S, _R, M, A), integer() | infinity, M) -> monad:monadic(M, A).
+-spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> monad:m(M, A);
+          (async_t(_S, _R, M, A), integer() | infinity, M) -> monad:m(M, A).
 wait(X, Callback, {?MODULE, _IM} = AT) when is_function(Callback) ->
     wait(X, Callback, infinity, AT);
 wait(X, Timeout, {?MODULE, _IM} = AT) ->
     wait(X, 2, {state, maps:new()}, Timeout, AT).
 
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer() | infinity, M) -> monad:monadic(M, A).
+-spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer() | infinity, M) -> monad:m(M, A).
 wait(X, Callback, Timeout, {?MODULE, _IM} = AT) ->
     wait(X, Callback, 2, {state, maps:new()}, Timeout, AT).
 
--spec wait(async_t(S, A, M, A), integer(), S, integer() | infinity, M) -> monad:monadic(M, A).
+-spec wait(async_t(S, A, M, A), integer(), S, integer() | infinity, M) -> monad:m(M, A).
 wait(X, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     wait(X, fun(A) -> A end, Offset, State, Timeout, AT).
 
@@ -477,12 +498,12 @@ wait(X, Callback, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     CC = callback_to_cc(Callback, AT),
     wait_cc(X, CC, Offset, State, Timeout, AT).
 
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer(), S, integer() | infinity, M) -> monad:monadic(M, R).
+-spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer(), S, integer() | infinity, M) -> monad:m(M, R).
 wait_cc(X, CC, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     MResult = run_with_cc(X, CC, Offset, State, AT),
     wait_mresult(MResult, Offset, State, Timeout, AT).
 
--spec wait_receive(integer(), _S, integer() | infinity, M) -> monad:monadic(M, _A).
+-spec wait_receive(integer(), _S, integer() | infinity, M) -> monad:m(M, _A).
 wait_receive(Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     receive 
         Info ->
@@ -531,14 +552,14 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
            end
        ]).
 
--spec handle_info(_Info, integer(), S, M) -> monad:monadic(M, S).
+-spec handle_info(_Info, integer(), S, M) -> monad:m(M, S).
 handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
     do([IM || 
            {_A, NState} <- run_info(Info, Offset, State, AT),
            return(NState)
        ]).
 
--spec run_info(any(), integer(), S, M) -> monad:monadic(M, {_A, S}).
+-spec run_info(any(), integer(), S, M) -> monad:m(M, {_A, S}).
 run_info(Info, Offset, State, {?MODULE, IM}) ->
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),

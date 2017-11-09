@@ -6,7 +6,6 @@
 %%% @end
 %%% Created :  9 Jun 2017 by Chen Slepher <slepher@issac.local>
 %%%-------------------------------------------------------------------
-
 -module(async_r_t).
 
 -erlando_type(?MODULE).
@@ -15,7 +14,7 @@
 -opaque async_r_t(S, M, A) :: {async_r_t, inner_async_r_t(S, M, A)}.
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 -type inner_async_r_t(S, M, A) :: 
-        fun((S) -> fun((reference()) -> fun((callback_gs(S)) -> monad:monadic(M, {S, A})))).
+        fun((S) -> fun((reference()) -> fun((callback_gs(S)) -> monad:m(M, {S, A})))).
 -type callback_gs(S) :: 
         {fun((S) -> #{reference() => Val}), fun((#{reference() => Val}, S) -> S)}.
 
@@ -69,7 +68,7 @@ run_async_r_t(Other) ->
 
 -spec fmap(fun((A) -> B), async_r_t(S, M, A)) -> async_r_t(S, M, B).
 fmap(F, ARTA, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     map_real(
       fun(STA) ->
               state_t:fmap(F, STA, RM)
@@ -79,13 +78,13 @@ fmap(F, ARTA, {?MODULE, IM}) ->
     functor:'default_<$'(ARTB, ARTA, ART).
 
 pure(A, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(applicative:pure(A, RM)).
 
 '<*>'(ARTF, ARTA, {?MODULE, IM}) ->
     STF = async_r_to_real_t(ARTF),
     STA = async_r_to_real_t(ARTA),
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(applicative:'<*>'(STF, STA, RM)).
 
 lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = ART) ->
@@ -99,7 +98,7 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = ART) ->
 
 -spec '>>='(async_r_t(S, M, A), fun( (A) -> async_r_t(S,  M, B) )) -> async_r_t(S, M, B).
 '>>='(ARTA, KARTB, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(
       state_t:'>>='(async_r_to_real_t(ARTA), fun(A) -> async_r_to_real_t(KARTB(A)) end, RM)).
 
@@ -108,10 +107,10 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = ART) ->
 
 -spec return(A, t(M)) -> async_r_t(_S, M, A).
 return(A, {?MODULE, IM}) ->
-    RealM = new_real(IM),
+    RealM = real_new(IM),
     real_to_async_r_t(monad:return(A, RealM)).
 
--spec lift(monad:monadic(M, A)) -> async_r_t(_S,  M, A).
+-spec lift(monad:m(M, A)) -> async_r_t(_S,  M, A).
 lift(MA, {?MODULE, IM}) ->
     M0 = reader_t:new(IM),
     M1 = reader_t:new(M0),
@@ -120,19 +119,19 @@ lift(MA, {?MODULE, IM}) ->
 
 -spec fail(any(), M) -> async_r_t(_S, M, _A).
 fail(X, {?MODULE, IM}) ->
-    RealM = new_real(IM),
+    RealM = real_new(IM),
     real_to_async_r_t(monad_fail:fail(X, RealM)).
 
 do_get_state({?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(monad_state:get(RM)).
 
 do_put_state(State, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(monad_state:put(State, RM)).
 
 do_modify_state(State, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     real_to_async_r_t(monad_state:modify(State, RM)).
 
 -spec get_state(M) -> async_r_t(S,  M, S).
@@ -189,7 +188,7 @@ local_ref(Ref, X, {?MODULE, _IM} = ART) ->
 
 -spec local(fun((R) -> R), async_r_t(S, M, A), t(M)) -> async_r_t(S, M, A).
 local(F, ARTA, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     map_real(
       fun(STA) ->
               monad_reader:local(F, STA, RM)
@@ -272,25 +271,25 @@ remove_ref(MRef, {?MODULE, _IM} = ART) ->
        ]).
 
 eval(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     NStateV = state_t:eval(async_r_to_real_t(X), State, RM),
     reader_t:run(reader_t:run(NStateV, Acc), CallbacksGS).
 
--spec exec(async_r_t(S, M, _A), callback_gs(S), _Acc, S) -> monad:monadic(M, S).
+-spec exec(async_r_t(S, M, _A), callback_gs(S), _Acc, S) -> monad:m(M, S).
 exec(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     NStateV = state_t:exec(async_r_to_real_t(X), State, RM),
     reader_t:run(reader_t:run(NStateV, Acc), CallbacksGS).
 
--spec run(async_r_t(S, M, A), callback_gs(S), _Acc, S) -> monad:monadic(M, {A, S}).
+-spec run(async_r_t(S, M, A), callback_gs(S), _Acc, S) -> monad:m(M, {A, S}).
 run(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     NStateV = state_t:run(async_r_to_real_t(X), State, RM),
     reader_t:run(reader_t:run(NStateV, Acc), CallbacksGS).
 
--spec map(fun((monad:monadic(M, {A, S})) -> monad:monadic(N, {B, S})), async_r_t(S, M, A)) -> async_r_t(S, N, B).
+-spec map(fun((monad:m(M, {A, S})) -> monad:m(N, {B, S})), async_r_t(S, M, A)) -> async_r_t(S, N, B).
 map(F, X, {?MODULE, IM}) ->
-    RM = new_real(IM),
+    RM = real_new(IM),
     F1 = fun(R1) -> reader_t:map(F, R1) end,
     F2 = fun(R2) -> reader_t:map(F1, R2) end,
     real_to_async_r_t(state_t:map(F2, async_r_to_real_t(X), RM)).
@@ -304,7 +303,7 @@ map(F, X, {?MODULE, IM}) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-new_real(M) ->
+real_new(M) ->
     state_t:new(reader_t:new(reader_t:new(M))).
 
 -spec async_r_to_real_t(async_r_t(S, M, A)) -> state_t:state_t(S, M, A).
