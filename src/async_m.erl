@@ -8,7 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(async_m).
 
--erlando_type(?MODULE).
+-erlando_type({?MODULE, []}).
 
 -compile({parse_transform, monad_t_transform}).
 

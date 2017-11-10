@@ -9,7 +9,7 @@
 -module(async_m_v5).
 
 
--erlando_type(?MODULE).
+-erlando_type({?MODULE, []}).
 
 -define(INNER, {cont_t, {state_t, {reader_t, identity}}}).
 
