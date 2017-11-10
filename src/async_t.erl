@@ -204,7 +204,7 @@ local(F, ATA, {?MODULE, IM}) ->
       fun(RTA) ->
               reply_t:map(
                 fun(Cont) ->
-                        cont_t:lift_local(Ask, Local, F, Cont, M1)
+                        monad_reader_instance:lift_local(Ask, Local, F, Cont, M1)
                 end, RTA)
       end, ATA).
 
