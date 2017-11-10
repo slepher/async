@@ -33,8 +33,7 @@
 -behaviour(monad_fail).
 -behaviour(monad_cont).
 
--define(PG, [[], [?MODULE]]).
-
+-include_lib("erlando/include/erlando.hrl").
 -record(callback, {cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:class(), A)),
                    acc_ref :: reference()}).
 
@@ -88,7 +87,7 @@ async_t(Inner) ->
     {?MODULE, Inner}.
 
 -spec run_async_t(async_t(S, R, M, A)) -> inner_async_t(S, R, M, A).
-run_async_t({undetermined, _} = UA) ->
+run_async_t(#undetermined{} = UA) ->
     run_async_t(undetermined:run(UA, ?MODULE));
 run_async_t({?MODULE, Inner}) ->
     Inner;

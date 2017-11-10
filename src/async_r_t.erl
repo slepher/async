@@ -27,6 +27,8 @@
 -behaviour(monad).
 -behaviour(monad_trans).
 
+-include_lib("erlando/include/erlando.hrl").
+
 %% API
 -export([new/1, async_r_t/1, run_async_r_t/1]).
 -export([fmap/3, '<$'/3]).
@@ -61,6 +63,8 @@ new(M) ->
 async_r_t(Inner) ->
     {?MODULE, Inner}.
 
+run_async_r_t(#undetermined{} = UA) ->
+    run_async_r_t(undetermined:run(UA, ?MODULE));
 run_async_r_t({?MODULE, Inner}) ->
     Inner;
 run_async_r_t(Other) ->

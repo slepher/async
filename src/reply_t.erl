@@ -30,6 +30,8 @@
 -behaviour(monad_fail).
 -behaviour(monad_runner).
 
+-include_lib("erlando/include/erlando.hrl").
+
 -export([new/1, reply_t/1, run_reply_t/1]).
 -export([fmap/3, '<$'/3]).
 % impl of monad.
@@ -54,7 +56,7 @@ reply_t(Inner) ->
     {?MODULE, Inner}.
 
 -spec run_reply_t(reply_t(M, A)) -> inner_reply_t(M, A).
-run_reply_t({undetermined, _} = UA) ->
+run_reply_t(#undetermined{} = UA) ->
     run_reply_t(undetermined:run(UA, ?MODULE));
 run_reply_t({?MODULE, Inner}) ->
     Inner;
