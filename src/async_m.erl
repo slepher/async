@@ -15,6 +15,9 @@
 -behaviour(functor).
 -behaviour(monad).
 
+-export([return_error_m/1]).
+-export([then/2, then/4]).
+
 -transform(#{remote => async_t, args => identity, 
              functions => [get_state/0, put_state/1, modify_state/1, 
                            find_ref/1, get_ref/2, put_ref/2, remove_ref/1, 
@@ -37,7 +40,14 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+return_error_m(Value) ->
+    lift_reply(Value).
 
+then(Monad, Callback) ->
+    '>>='(Monad, Callback).
+
+then(Monad, Callback, Offset, State) ->
+    exec(Monad, Callback, Offset, State).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
