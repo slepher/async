@@ -1,4 +1,4 @@
-%%%-------------------------------------------------------------------
+%%-------------------------------------------------------------------
 %%% @author Chen Slepher <slepher@issac.local>
 %%% @copyright (C) 2017, Chen Slepher
 %%% @doc
@@ -52,9 +52,8 @@
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
 -export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
          message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
--export([promise/2, promise/3, map/2, map/3, par/2, progn_par/2]).
--export([wait/2, wait/3, wait/4, wait/5, wait/6, wait_cc/6]).
--export([exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3]).
+-export([promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]).
+-export([wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
 
 -transform(#{args => monad, 
@@ -66,10 +65,10 @@
              tfunctions => [lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
                             message/2, hijack/2, pass/1, handle_message/3, provide_message/3]}).
 
--transform(#{args => monad, tfunctions => [par/2, progn_par/2]}).
+-transform(#{args => monad, tfunctions => [promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]}).
 -transform(#{args => monad, 
-             tfunctions => [exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
-                            handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3]}).
+             tfunctions => [wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
+                            handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
 
 -transform(#{inner_type => functor, behaviours => [functor]}).
 -transform(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
@@ -263,11 +262,11 @@ message(A, {?MODULE, _IM} = AT) ->
 
 -spec promise(any(), M) -> async_t(_S, _R, M, _A).
 promise(MRef, {?MODULE, _IM} = Monad) ->
-    promise(MRef, infinity, Monad).
+    promise_t(MRef, infinity, Monad).
 
--spec promise(any(), integer(), M) -> async_t(_S, _R, M, _A);
+-spec promise_t(any(), integer(), M) -> async_t(_S, _R, M, _A);
              (any(), infinity, M) -> async_t(_S, _R, M, _A).
-promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
+promise_t(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
     MR = async_r_t:new(IM),
     async_t(fun(K) ->
                  case Action() of
@@ -283,17 +282,17 @@ promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
                          K(Value)
                  end
          end);
-promise(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) ->
-    promise(fun() -> MRef end, Timeout, Monad);
-promise(Value, _Timeout, {?MODULE, _M} = Monad) ->
+promise_t(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) ->
+    promise_t(fun() -> MRef end, Timeout, Monad);
+promise_t(Value, _Timeout, {?MODULE, _M} = Monad) ->
     pure_return(Value, Monad).
 
--spec map([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
+-spec map_promises([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
          (#{Key => async_t(S, R, M, A)}, M) -> async_t(S, R, M, #{Key => A}).
-map(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
+map_promises(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
     NPromises = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
     do([{?MODULE, IM} || 
-           Value <- lift_reply(map(NPromises, AT), AT),
+           Value <- lift_reply(map_promises(NPromises, AT), AT),
            case Value of
                {message, {_Key, Message}} ->
                    message(Message, AT);
@@ -301,14 +300,14 @@ map(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
                   pure_return(maps:values(Value), AT)
            end
        ]);
-map(Promises, {?MODULE, _M} = Monad) when is_map(Promises) ->
-    map(Promises, #{}, Monad).
+map_promises(Promises, {?MODULE, _M} = Monad) when is_map(Promises) ->
+    map_promises_t(Promises, #{}, Monad).
 
--spec map(#{Key => async_t(S, R, M, A)}, 
+-spec map_promises_t(#{Key => async_t(S, R, M, A)}, 
           #{cc => fun((Key, A) -> async_r_t:async_r_t(S, M, _IM)),
             acc0 => Acc, limit => integer()}, M) -> 
                  async_t(S, R, M, Acc).
-map(Promises, Options, {?MODULE, IM} = AT) ->
+map_promises_t(Promises, Options, {?MODULE, IM} = AT) ->
     WRef = make_ref(),
     PRef = make_ref(),
     CRef = make_ref(),
@@ -474,31 +473,21 @@ run_cc(X, CC, {?MODULE, _IM}) ->
     CTA = reply_t:run(async_to_real_t(X)),
     cont_t:run(CTA, CC).
 
--spec wait(async_t(_S, A, M, A), M) -> monad:m(M, A).
-wait(X, {?MODULE, _IM} = AT) ->
-    wait(X, infinity, AT).
+wait(ATA, {?MODULE, _IM} = AT) ->
+    wait_t(ATA, #{}, AT).
 
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> monad:m(M, A);
-          (async_t(_S, _R, M, A), integer() | infinity, M) -> monad:m(M, A).
-wait(X, Callback, {?MODULE, _IM} = AT) when is_function(Callback) ->
-    wait(X, Callback, infinity, AT);
-wait(X, Timeout, {?MODULE, _IM} = AT) ->
-    wait(X, 2, {state, maps:new()}, Timeout, AT).
-
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer() | infinity, M) -> monad:m(M, A).
-wait(X, Callback, Timeout, {?MODULE, _IM} = AT) ->
-    wait(X, Callback, 2, {state, maps:new()}, Timeout, AT).
-
--spec wait(async_t(S, A, M, A), integer(), S, integer() | infinity, M) -> monad:m(M, A).
-wait(X, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
-    wait(X, fun(A) -> A end, Offset, State, Timeout, AT).
-
-wait(X, Callback, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
-    CC = callback_to_cc(Callback, AT),
-    wait_cc(X, CC, Offset, State, Timeout, AT).
-
--spec wait(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer(), S, integer() | infinity, M) -> monad:m(M, R).
-wait_cc(X, CC, Offset, State, Timeout, {?MODULE, _IM} = AT) ->
+wait_t(X, Opts, {?MODULE, _IM} = AT) ->
+    Callback = maps:get(callback, Opts, fun(A) -> A end),
+    State = maps:get(state, Opts, {state, maps:new()}),
+    Offset = maps:get(offset, Opts, 2),
+    Timeout = maps:get(timeout, Opts, infinity),
+    CC = 
+        case maps:find(cc, Opts) of
+            {ok, Val} ->
+                Val;
+            error ->
+                callback_to_cc(Callback, AT)
+        end,
     MResult = run_with_cc(X, CC, Offset, State, AT),
     wait_mresult(MResult, Offset, State, Timeout, AT).
 

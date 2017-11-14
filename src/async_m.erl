@@ -26,11 +26,9 @@
              functions => [lift_reply/1, lift_final_reply/1, pure_return/1, wrapped_return/1,
                            message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
 -transform(#{remote => async_t, args => identity, 
-             functions =>[promise/1, promise/2, map/1, map/2, par/1, progn_par/1]}).
--transform(#{remote => async_t, args => identity, extra_call => {identity, run}, 
-             functions => [wait/1, wait/2, wait/3, wait/4, wait/5, wait_cc/5]}).
+             functions =>[promise/1, promise_t/2, map_promises/1, map_promises_t/2, par/1, progn_par/1, callback_to_cc/1]}).
 -transform(#{remote => async_t, args => identity, extra_call => {identity, run},
-             functions => [exec/4, exec_cc/4, run/4, run_cc/2, run_with_cc/4]}).
+             functions => [wait/1, wait_t/2, exec/4, exec_cc/4, run/4, run_cc/2, run_with_cc/4]}).
 -transform(#{remote => async_t, args => identity, extra_call => {identity, run},
              functions => [handle_info/3, run_info/3, wait_receive/3]}).
 
@@ -44,7 +42,8 @@ return_error_m(Value) ->
     lift_reply(Value).
 
 then(Monad, Callback) ->
-    '>>='(Monad, Callback).
+    CC = callback_to_cc(Callback),
+    '>>='(Monad, CC).
 
 then(Monad, Callback, Offset, State) ->
     exec(Monad, Callback, Offset, State).
