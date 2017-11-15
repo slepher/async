@@ -81,7 +81,7 @@ handle_call(request1, From, State) ->
                    promise3(Reply2)
                ]),
     Callback = 
-        fun({ok, Reply}, #state{status = Status} = S) ->
+        fun({right, Reply}, #state{status = Status} = S) ->
                 gen_server:reply(From, {ok, {Status, Reply}}),
                 S;
            ({error, Reason}, S) ->
@@ -99,7 +99,7 @@ handle_call(request2, From, State) ->
                    Reply2 <- promise2(Reply1),
                    promise3(Reply2)
                ]),
-    CC = fun({ok, Reply}) ->
+    CC = fun({right, Reply}) ->
                  do([async_r_m_v5 ||
                         #state{status = Status} <- async_r_m_v5:get(),
                         begin
@@ -115,13 +115,13 @@ handle_call(request2, From, State) ->
     {noreply, NState}.
 
 promise1() ->
-    async_m_v5:promise_call(echo_server, {echo, {ok, request1}}).
+    async_m_v5:promise_call(echo_server, {echo, {right, request1}}).
 
 promise2(Value1) ->
-    async_m_v5:promise_call(echo_server, {echo, {ok, {Value1, then, request2}}}).
+    async_m_v5:promise_call(echo_server, {echo, {right, {Value1, then, request2}}}).
 
 promise3(Value2) ->
-    async_m_v5:promise_call(echo_server, {echo, {ok, {Value2, then, request3}}}).
+    async_m_v5:promise_call(echo_server, {echo, {right, {Value2, then, request3}}}).
 
 
 %%--------------------------------------------------------------------

@@ -43,7 +43,7 @@ return_error_m(Value) ->
 
 then(Monad, Callback) ->
     CC = callback_to_cc(Callback),
-    '>>='(Monad, CC).
+    '>>='(lift_reply(Monad), CC).
 
 then(Monad, Callback, Offset, State) ->
     exec(Monad, Callback, Offset, State).
