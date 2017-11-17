@@ -17,6 +17,7 @@
 
 -export([return_error_m/1]).
 -export([then/2, then/4]).
+-export([promise/2]).
 
 -transform(#{remote => async_t, args => identity, 
              functions => [get_state/0, put_state/1, modify_state/1, 
@@ -47,6 +48,9 @@ then(Monad, Callback) ->
 
 then(Monad, Callback, Offset, State) ->
     exec(Monad, Callback, Offset, State).
+
+promise(Async, Timeout) ->
+    promise_t(Async, Timeout).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
