@@ -20,7 +20,7 @@
 
 -compile({parse_transform, do}).
 -compile({parse_transform, cut}).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, function_generator}).
 
 -behaviour(functor).
 -behaviour(applicative).
@@ -43,16 +43,15 @@
 -export([find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]).
 -export([eval/5, exec/5, run/5, map/3]).
 
--transform(#{inner_type => monad, tfunctions => [ask/1]}).
--transform(#{inner_type => monad, tfunctions => [do_get_state/1, do_put_state/2, do_modify_state/2]}).
--transform(#{inner_type => monad, tfunctions => [get_state/1, put_state/2, modify_state/2]}).
--transform(#{inner_type => monad, 
-             tfunctions => [get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]}).
--transform(#{inner_type => monad, tfunctions => [find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]}).
--transform(#{inner_type => monad, tfunctions => [eval/5, exec/5, run/5, map/3]}).
-
--transform(#{inner_type => functor, behaviours => [functor]}).
--transform(#{inner_type => monad, behaviours => [applicative, monad, monad_trans]}).
+-gen_fun(#{inner_type => monad, sfunctions => [ask/1]}).
+-gen_fun(#{inner_type => monad, sfunctions => [do_get_state/1, do_put_state/2, do_modify_state/2]}).
+-gen_fun(#{inner_type => monad, sfunctions => [get_state/1, put_state/2, modify_state/2]}).
+-gen_fun(#{inner_type => monad, 
+             sfunctions => [get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]}).
+-gen_fun(#{inner_type => monad, sfunctions => [find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]}).
+-gen_fun(#{inner_type => monad, sfunctions => [eval/5, exec/5, run/5, map/3]}).
+-gen_fun(#{inner_type => functor, behaviours => [functor]}).
+-gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans]}).
 
 %%%===================================================================
 %%% API

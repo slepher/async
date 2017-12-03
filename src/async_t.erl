@@ -24,7 +24,7 @@
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 
 -compile({parse_transform, do}).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, function_generator}).
 
 -behaviour(functor).
 -behaviour(applicative).
@@ -56,22 +56,22 @@
 -export([wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
 
--transform(#{args => monad, 
-             tfunctions => [get_state/1, put_state/2, modify_state/2, 
+-gen_fun(#{args => monad, 
+             sfunctions => [get_state/1, put_state/2, modify_state/2, 
                             find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
                             get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]}).
 
--transform(#{args => monad, 
-             tfunctions => [lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
+-gen_fun(#{args => monad, 
+             sfunctions => [lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
                             message/2, hijack/2, pass/1, handle_message/3, provide_message/3]}).
 
--transform(#{args => monad, tfunctions => [promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]}).
--transform(#{args => monad, 
-             tfunctions => [wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
+-gen_fun(#{args => monad, sfunctions => [promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]}).
+-gen_fun(#{args => monad, 
+             sfunctions => [wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
                             handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
 
--transform(#{inner_type => functor, behaviours => [functor]}).
--transform(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
+-gen_fun(#{inner_type => functor, behaviours => [functor]}).
+-gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
 
 %%%===================================================================
 %%% API

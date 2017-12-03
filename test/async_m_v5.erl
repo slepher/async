@@ -15,13 +15,13 @@
 
 -behaviour(monad).
 -compile({parse_transform, do}).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, function_generator}).
 
 %% API
 -export([promise/2, run/4, modify/1, execute_cc/4, callback_to_cc/1, handle_info/3]).
 -export([promise_call/2, promise_call/3]).
 
--transform(#{remote => error_t, inner_type => ?INNER, behaviours => [functor, applicative, monad, monad_fail]}).
+-gen_fun(#{remote => error_t, inner_type => ?INNER, behaviours => [functor, applicative, monad, monad_fail]}).
 %%%===================================================================
 %%% API
 %%%===================================================================

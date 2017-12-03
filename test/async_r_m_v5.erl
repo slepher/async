@@ -10,7 +10,7 @@
 
 -erlando_type({?MODULE, []}).
 
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, function_generator}).
 
 -behaviour(monad).
 -behaviour(monad_state).
@@ -22,35 +22,35 @@
 -export([run/3]).
 
 %% API
--transform(#{remote => functor,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             behaviours => [functor]}).
+-gen_fun(#{remote => functor,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           behaviours => [functor]}).
 
--transform(#{remote => applicative,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             behaviours => [applicative]}).
+-gen_fun(#{remote => applicative,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           behaviours => [applicative]}).
 
--transform(#{remote => monad,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             behaviours => [monad]}).
+-gen_fun(#{remote => monad,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           behaviours => [monad]}).
 
--transform(#{remote => monad_state,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             behaviours => [monad_state]}).
+-gen_fun(#{remote => monad_state,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           behaviours => [monad_state]}).
 
--transform(#{remote => monad_state,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             tfunctions => [modify/2]}).
+-gen_fun(#{remote => monad_state,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           sfunctions => [modify/2]}).
 
--transform(#{remote => monad_reader,
-             patterns_group => ?PG,
-             args => [?ASYNC_R_M_5],
-             behaviours => [monad_reader]}).
+-gen_fun(#{remote => monad_reader,
+           patterns_group => ?PG,
+           args => [?ASYNC_R_M_5],
+           behaviours => [monad_reader]}).
 
 %%%===================================================================
 %%% API

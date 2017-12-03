@@ -22,7 +22,7 @@
 -spec new(M) -> TM when TM :: monad:class(), M :: monad:class().
 
 -compile({parse_transform, do}).
--compile({parse_transform, monad_t_transform}).
+-compile({parse_transform, function_generator}).
 
 -behaviour(functor).
 -behaviour(monad).
@@ -44,9 +44,9 @@
 -export([pure_return/2, wrapped_return/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
--transform(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
--transform(#{inner_type => functor, behaviours => [functor]}).
--transform(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail]}).
+-gen_fun(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
+-gen_fun(#{inner_type => functor, behaviours => [functor]}).
+-gen_fun(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail]}).
 
 new(M) ->
     {?MODULE, M}.
