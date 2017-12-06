@@ -11,6 +11,7 @@
 %% API
 -export([call/2]).
 -export([promise_call/2, promise_call/3]).
+-export([promise_channel_call/4]).
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -31,6 +32,9 @@ promise_call(Name, Request, Timeout) ->
       fun() ->
               call(Name, Request)
       end, Timeout).
+
+promise_channel_call(Channel, Name, Request, Timeout) ->
+    async_channel:call(Channel, Name, '$gen_call', Request, Timeout).
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================

@@ -56,15 +56,36 @@ init([]) ->
 
     SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
 
-    AWSup  =  {'async_worker_sup', {supervisor, start_link,
-                                    [{local, async_worker_sup}, ?MODULE, [async_worker_sup]]},
-               transient, infinity, supervisor, []},
-    {ok, {SupFlags, [AWSup]}};
+    AWSup  =  #{id => async_worker_sup,
+                start => {supervisor, start_link,
+                          [{local, async_worker_sup}, ?MODULE, [async_worker_sup]]},
+                restart => transient,
+                shutdown => infinity,
+                type =>  supervisor,
+                modules => []},
+    ACWSup = #{id => async_channel_worker_sup,
+               start => {supervisor, start_link, 
+                         [{local, async_channel_sup}, 
+                          ?MODULE, [async_channel_sup]]},
+               restart => transient,
+               shutdown => infinity,
+               type => supervisor,
+               modules => []},
+    {ok, {SupFlags, [AWSup, ACWSup]}};
 
 init([async_worker_sup]) ->
-    {ok, {{simple_one_for_one, 10, 10},
-          [{undefined, {async_worker, start_link, []}, temporary, 5000, worker, [async_worker]}]
-         }}.
+    {ok,
+     {#{strategy => simple_one_for_one},
+      [#{id => undefined, start => {async_worker, start_link, []}, 
+         restart => temporary}]
+     }};
+init([async_channel_sup]) ->
+    {ok, 
+     {#{strategy => simple_one_for_one},
+      [#{id => undefined, start => {async_channel, start_link, []}}]
+     }}.
+              
+           
 
 
 %%%===================================================================
