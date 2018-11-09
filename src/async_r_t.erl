@@ -46,8 +46,7 @@
 -gen_fun(#{inner_type => monad, sfunctions => [ask/1]}).
 -gen_fun(#{inner_type => monad, sfunctions => [do_get_state/1, do_put_state/2, do_modify_state/2]}).
 -gen_fun(#{inner_type => monad, sfunctions => [get_state/1, put_state/2, modify_state/2]}).
--gen_fun(#{inner_type => monad, 
-             sfunctions => [get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]}).
+-gen_fun(#{inner_type => monad, sfunctions => [get_local_ref/1, local_ref/3, local/3, get_local/1, put_local/2, modify_local/2]}).
 -gen_fun(#{inner_type => monad, sfunctions => [find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]}).
 -gen_fun(#{inner_type => monad, sfunctions => [eval/5, exec/5, run/5, map/3]}).
 -gen_fun(#{inner_type => functor, behaviours => [functor]}).

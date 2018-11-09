@@ -36,12 +36,7 @@
 start(_StartType, _StartArgs) ->
     case async_sup:start_link() of
         {ok, Pid} ->
-            case erlando_typeclass:register_application(async) of
-                ok ->
-                    {ok, Pid};
-                {error, Reason} ->
-                    {error, Reason}
-            end;
+            {ok, Pid};
         Error ->
             Error
     end.
