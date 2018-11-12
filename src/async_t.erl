@@ -560,10 +560,10 @@ run_info(Info, Offset, State, {?MODULE, IM}) ->
                     async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
                 error ->
                     %% TODO : fix this.
-                    monad:return({ok, State}, IM)
+                    monad:return(State, IM)
             end;
         unhandled ->
-            unhandled
+            monad:return(unhandled, IM)
     end.
 
 %%--------------------------------------------------------------------
