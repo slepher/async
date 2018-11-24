@@ -14,6 +14,7 @@
 
 -behaviour(functor).
 -behaviour(monad).
+-behaviour(monad_fail).
 
 -export([return_error_m/1]).
 -export([then/2, then/4]).
