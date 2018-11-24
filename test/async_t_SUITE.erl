@@ -11,9 +11,9 @@
 -suite_defaults([{timetrap, {minutes, 10}}]).
 
 %% Note: This directive should only be used in test suites.
+-compile(nowarn_export_all).
 -compile(export_all).
 -compile({parse_transform, do}).
--compile({parse_transform, disable_tco}).
 
 -record(state, {callbacks = maps:new(), acc0 = [], acc = []}).
 
@@ -227,13 +227,13 @@ test_async_t_par(_Config) ->
                          #{callback =>
                                fun({message, M}) ->
                                        do([MR ||
-                                              MR:put_local(M),
-                                              MR:return(ok)
+                                              async_r_t:put_local(M, MR),
+                                              return(ok)
                                           ]);
                                   (Reply) ->
                                        do([MR ||
-                                              Acc <- MR:get_local(),
-                                              MR:return({Acc, Reply})
+                                              Acc <- async_r_t:get_local(MR),
+                                              return({Acc, Reply})
                                           ])
                                end}),
     ?assertEqual({hello_message, {error, hello}}, Reply).
@@ -253,12 +253,12 @@ test_async_t_pmap(Config) ->
               #{callback =>
                     fun({message, X}) -> 
                             do([MR ||
-                                   Acc <- MR:get_local(),
-                                   MR:put_local([X|Acc])
+                                   Acc <- async_r_t:get_local(MR),
+                                   async_r_t:put_local([X|Acc], MR)
                                ]);
                        (X) ->
                             do([MR ||
-                                   Acc <- MR:get_local(),
+                                   Acc <- async_r_t:get_local(MR),
                                    return({X, Acc})
                                ])
                     end
@@ -301,12 +301,12 @@ test_async_t_pmap_with_acc(Config) ->
                #{callback =>
                      fun({message, X}) -> 
                              do([MR ||
-                                    Acc <- MR:get_local(),
-                                    MR:put_local([X|Acc])
+                                    Acc <- async_r_t:get_local(MR),
+                                    async_r_t:put_local([X|Acc], MR)
                                 ]);
                         (X) ->
                              do([MR ||
-                                    Acc <- MR:get_local(),
+                                    Acc <- async_r_t:get_local(MR),
                                     return({X, Acc})
                                 ])
                      end
