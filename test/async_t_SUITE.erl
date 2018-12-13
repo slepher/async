@@ -102,7 +102,8 @@ end_per_testcase(_TestCase, _Config) ->
 %%--------------------------------------------------------------------
 all() ->
     [test_async_t, test_chain_async, test_chain_async_fail, 
-     test_async_t_with_timeout, 
+     test_async_then,
+     test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,
      test_async_t_par, test_async_t_pmap, test_async_t_pmap_with_acc, 
      test_async_t_pmap_with_timeout,
@@ -148,6 +149,28 @@ test_chain_async_fail(Config) when is_list(Config) ->
     Reply = async_m:wait(M0),
     ?assertEqual({error, world}, Reply).
 
+test_async_then() ->
+    [{doc, "test async then"}].
+
+test_async_then(_Config) ->
+    %M0 = async_m:fail(fail),
+    M1 = async_m:return(ok),
+    Callback = 
+        fun(Reply) ->
+                case Reply of
+                    {ok, ok} ->
+                        {ok, other_ok};
+                    {error, fail} ->
+                        {error, other_fail}
+                end
+        end,
+    %M2 = async_m:then(M0, Callback),
+    M3 = async_m:then(M1, Callback),
+    %Reply0 = async_m:wait_t(M2, #{timeout => 500}),
+    Reply1 = async_m:wait_t(M3, #{timeout => 500}),
+    %?assertEqual({error, other_fail}, Reply0),
+    ?assertEqual({ok, other_ok}, Reply1).
+
 test_async_t_with_timeout() ->
     [{doc, "test async with timeout"}].
 
@@ -163,6 +186,27 @@ test_async_t_with_timeout(Config) when is_list(Config) ->
                ]),
     Reply = async_m:wait_t(M0, #{timeout => 500}),
     ?assertEqual({error, timeout}, Reply).
+
+test_async_t_with_self_message() ->
+    [{doc, "test async_t with self message"}].
+
+test_async_t_with_self_message(Config) ->
+    EchoServer = proplists:get_value(echo_server, Config),
+    MRef = echo_server:echo(EchoServer, hello),
+    M0 = do([async_m ||
+                R1 <- async_m:promise(MRef),
+                async_m:add_message({r1_message, R1}),
+                async_m:return(R1)
+            ]),
+    Reply = async_m:wait_t(M0,
+                           #{callback =>
+                                 fun({ok, R}, #state{acc = Acc}) ->
+                                         [R|Acc];
+                                    ({message, {r1_message, Message}}, #state{acc = Acc} = State)->
+                                         NAcc = [{r1_message, Message}|Acc],
+                                         State#state{acc = NAcc}
+                                 end, offset => #state.callbacks, state => #state{}}),
+    ?assertEqual([hello, {r1_message, hello}], Reply).
 
 test_async_t_with_message() ->
     [{doc, "test async_t with message"}].

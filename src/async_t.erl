@@ -50,10 +50,12 @@
 -export([get_state/1, put_state/2, modify_state/2, 
          find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
--export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
-         message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
+-export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2, wrapped_lift_mr/2,
+         message/2, add_message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]).
--export([wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
+-export([wait/2, wait_t/3, 
+         update/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
+         handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
 
 -gen_fun(#{args => monad, 
@@ -158,6 +160,12 @@ lift_mr(MRA, {?MODULE, IM}) ->
     RT = reply_t:new(CT),
     real_to_async_t(monad_trans:lift(monad_trans:lift(MRA, CT), RT)).
 
+wrapped_lift_mr(MRA, {?MODULE, IM}) ->
+    ART = async_r_t:new(IM),
+    CT = cont_t:new(ART),
+    RT = reply_t:new(CT),
+    real_to_async_t(reply_t:lift_wrapped(monad_trans:lift(MRA, CT), RT)).
+
 -spec get_state(M) -> async_t(S, _R, M, S).
 get_state({?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
@@ -235,8 +243,8 @@ remove_ref(MRef, {?MODULE, IM} = AT) ->
 lift_reply(ATA, {?MODULE, IM}) ->
     RT = real_new(IM),
     map_real(
-      fun(RTA) ->
-              reply_t:lift(reply_t:run_reply_t(RTA), RT)
+      fun({reply_t, CTA}) ->
+              reply_t:lift(CTA, RT)
       end, ATA).
 
 -spec lift_final_reply(async_t(S, R, M, A), M) -> async_t(S, R, M, reply_t:final_reply(A)).
@@ -259,6 +267,9 @@ wrapped_return(A, {?MODULE, IM}) ->
 -spec message(A, M) -> async_t(_S, _R, M, A).
 message(A, {?MODULE, _IM} = AT) ->
     pure_return({message, A}, AT).
+
+add_message(A, {?MODULE, _IM} = AT) ->
+    async_t:progn_par([async_t:message(A, AT), async_t:return(ok, AT)]).
 
 -spec promise(any(), M) -> async_t(_S, _R, M, _A).
 promise(MRef, {?MODULE, _IM} = Monad) ->
@@ -415,7 +426,8 @@ handle_message(X, MessageHandler, {?MODULE, _IM} = AT) ->
     NMessageHandler = callback_to_cc(MessageHandler, AT),
     do([AT ||
            Value <- lift_reply(X, AT),
-           case Value of               {message, Message} ->
+           case Value of               
+               {message, Message} ->
                    hijack(NMessageHandler(Message), AT);
                Reply ->
                    pure_return(Reply, AT)
@@ -444,6 +456,14 @@ map_cont(F, ATA, {?MODULE, _IM}) ->
 pass({?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     hijack(async_r_t:return(ok, MR), AT).
+
+update(X, Callback, {?MODULE, _IM} = AT) ->
+    CC = callback_to_cc(Callback, AT),
+    KAsyncT = 
+        fun(A) ->
+                wrapped_lift_mr(CC(A), AT)
+        end,
+    '>>='(lift_reply(X, AT), KAsyncT, AT).
 
 exec(X, Callback, Offset, State, {?MODULE, _IM} = AT) ->
     CC = callback_to_cc(Callback, AT),

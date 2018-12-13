@@ -13,6 +13,7 @@
 %% API
 -export([call/3, message/2, promise_action/2, start_and_action/3]).
 -export([promise_mref/1, promise_mref/2]).
+-export([then/2, exec/4]).
 -export([start/0]).
 
 %%%===================================================================
@@ -68,6 +69,18 @@ promise_mref(MRef) ->
 
 promise_mref(MRef, Timeout) ->
     async_m:promise(MRef, Timeout).
+
+then(MRef, Callback) when is_reference(MRef) ->
+    async_m:then(promise_mref(MRef), Callback);
+
+then({async_t, _} = Monad, Callback) ->
+    async_m:then(Monad, Callback).
+
+exec(MRef, Callback, Offset, State) when is_reference(MRef) ->
+    async_m:exec(promise_mref(MRef), Callback, Offset, State);
+
+exec({async_t, _} = Monad, Callback, Offset, State) ->
+    async_m:exec(Monad, Callback, Offset, State).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

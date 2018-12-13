@@ -41,7 +41,7 @@
 % impl of monad_fail.
 -export([fail/2]).
 -export([run_nargs/0, run_m/2]).
--export([pure_return/2, wrapped_return/2, lift_final/2]).
+-export([pure_return/2, wrapped_return/2,  lift_wrapped/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
 -gen_fun(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
@@ -100,6 +100,14 @@ lift(MA, {?MODULE, IM}) ->
       do([IM || 
              A <- MA,
              return({ok, A})
+         ])).
+
+-spec lift_wrapped(monad:m(M, A), t(M)) -> reply_t(M, A).
+lift_wrapped(MA, {?MODULE, IM}) ->
+    reply_t(
+      do([IM || 
+             A <- MA,
+             monad:return(wrap_value(A), IM)
          ])).
 
 -spec fail(any(), t(M)) -> reply_t(M, _A).
