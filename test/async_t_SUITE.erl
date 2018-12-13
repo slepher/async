@@ -153,7 +153,7 @@ test_async_then() ->
     [{doc, "test async then"}].
 
 test_async_then(_Config) ->
-    %M0 = async_m:fail(fail),
+    M0 = async_m:fail(fail),
     M1 = async_m:return(ok),
     Callback = 
         fun(Reply) ->
@@ -164,11 +164,11 @@ test_async_then(_Config) ->
                         {error, other_fail}
                 end
         end,
-    %M2 = async_m:then(M0, Callback),
+    M2 = async_m:then(M0, Callback),
     M3 = async_m:then(M1, Callback),
-    %Reply0 = async_m:wait_t(M2, #{timeout => 500}),
+    Reply0 = async_m:wait_t(M2, #{timeout => 500}),
     Reply1 = async_m:wait_t(M3, #{timeout => 500}),
-    %?assertEqual({error, other_fail}, Reply0),
+    ?assertEqual({error, other_fail}, Reply0),
     ?assertEqual({ok, other_ok}, Reply1).
 
 test_async_t_with_timeout() ->
