@@ -24,9 +24,11 @@
            functions => [get_state/0, put_state/1, modify_state/1, 
                          find_ref/1, get_ref/2, put_ref/2, remove_ref/1, 
                          get_local/0, put_local/1, modify_local/1, local_ref/2, local/2, get_local_ref/0]}).
+
 -gen_fun(#{remote => async_t, args => identity, 
-           functions => [lift_reply/1, lift_final_reply/1, pure_return/1, wrapped_return/1, lift_mr/1, pure_lift_mr/1,
+           functions => [lift_reply/1, lift_final_reply/1, pure_return/1, wrapped_return/1, lift_mr/1, wrapped_lift_mr/1,
                          message/1, add_message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
+
 -gen_fun(#{remote => async_t, args => identity, 
            functions =>[promise/1, promise_t/2, map_promises/1, map_promises_t/2,
                         par/1, progn_par/1, callback_to_cc/1, update/2]}).
