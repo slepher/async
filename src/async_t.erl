@@ -688,7 +688,12 @@ handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) or is_int
             error
     end;
 handle_a(MRef, _Reply, Callbacks) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    erlang:demonitor(MRef, [flush]),
+    case MRef of
+        MRef when is_reference(MRef) ->
+            erlang:demonitor(MRef, [flush]);
+        _ ->
+            ok
+    end,
     case async_util:find(MRef, Callbacks) of
         {ok, #callback{cc = Callback, acc_ref = Acc}} ->
             NCallbacks = async_util:remove(MRef, Callbacks),
