@@ -281,7 +281,7 @@ promise_t(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
     MR = async_r_t:new(IM),
     async_t(fun(K) ->
                  case Action() of
-                     MRef when is_reference(MRef) ->
+                     MRef when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
                          do([{async_r_t, IM} || 
                                 AccRef <- async_r_t:get_local_ref(MR),
                                 begin 
@@ -293,7 +293,7 @@ promise_t(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
                          K(Value)
                  end
          end);
-promise_t(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) ->
+promise_t(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     promise_t(fun() -> MRef end, Timeout, Monad);
 promise_t(Value, _Timeout, {?MODULE, _M} = Monad) ->
     pure_return(Value, Monad).
