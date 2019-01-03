@@ -579,8 +579,7 @@ run_info(Info, Offset, State, {?MODULE, IM}) ->
                     ARTA = Callback(A),
                     async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
                 error ->
-                    %% TODO : fix this.
-                    monad:return({ok, State}, IM)
+                    monad:return({ok, unhandled}, IM)
             end;
         unhandled ->
             monad:return({ok, unhandled}, IM)
@@ -672,23 +671,23 @@ callback_to_cc(Callback, {?MODULE, IM}) when is_function(Callback, 2) ->
 callback_to_cc(Callback, {?MODULE, _IM}) ->
     exit({invalid_callback, Callback}).
 
-info_to_a({message, MRef, Message}) when is_reference(MRef) ->
+info_to_a({message, MRef, Message}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     {MRef, {message, Message}};
-info_to_a({MRef, Reply}) when is_reference(MRef) ->
+info_to_a({MRef, Reply}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     {MRef, Reply};
-info_to_a({'DOWN', MRef, _, _, Reason}) when is_reference(MRef) ->
+info_to_a({'DOWN', MRef, _, _, Reason}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     {MRef, {error, {process_down, Reason}}};
 info_to_a(_Info) ->
     unhandled.
 
-handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) ->
+handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     case async_util:find(MRef, Callbacks) of
         {ok, #callback{cc = Callback, acc_ref = Acc}} ->
             {Callback, Acc, Callbacks};
         error ->
             error
     end;
-handle_a(MRef, _Reply, Callbacks) when is_reference(MRef) ->
+handle_a(MRef, _Reply, Callbacks) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
     erlang:demonitor(MRef, [flush]),
     case async_util:find(MRef, Callbacks) of
         {ok, #callback{cc = Callback, acc_ref = Acc}} ->
