@@ -35,7 +35,7 @@
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
            functions => [wait/1, wait_t/2, exec/4, exec_cc/4, run/4, run_cc/2, run_with_cc/4]}).
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
-             functions => [handle_info/3, run_info/3, wait_receive/3]}).
+             functions => [handle_info/3, run_info/3, handle_reply/4, run_reply/4, wait_receive/3]}).
 
 -gen_fun(#{remote => async_t, inner_type => identity,
            behaviours => [functor, monad, monad_fail]}).

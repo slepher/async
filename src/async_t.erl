@@ -55,7 +55,8 @@
 -export([promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
          update/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
-         handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
+         handle_info/4, run_info/4, handle_reply/5, run_reply/5,
+         wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
 
 -gen_fun(#{args => monad, 
@@ -561,27 +562,36 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
        ]).
 
 -spec handle_info(_Info, integer(), S, M) -> monad:m(M, S).
-handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
-    do([IM || 
-           {_A, NState} <- run_info(Info, Offset, State, AT),
-           return(NState)
-       ]).
+handle_info(Info, Offset, State, {?MODULE, _IM} = AT) ->
+    MResult = run_info(Info, Offset, State, AT),
+    exec_mresult(MResult, AT).
 
--spec run_info(any(), integer(), S, M) -> monad:m(M, {_A, S}).
-run_info(Info, Offset, State, {?MODULE, IM}) ->
+run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
+    case info_to_reply(Info) of
+        {ReplyType, Ref, Reply} ->
+            Opts = #{offset => Offset, ref => monitored_reference, type => ReplyType},
+            run_reply(Ref, Reply, State, Opts, AT);
+        unhandled ->
+            %% A is ok, state is unhandled
+            monad:return({ok, unhandled}, IM)
+    end.
+
+handle_reply(Ref, Reply, State, Opts, {?MODULE, _IM} = AT) when is_map(Opts) ->
+    MResult = run_reply(Ref, Reply, State, Opts, AT),
+    exec_mresult(MResult, AT).
+
+-spec run_reply(any(), any(), S, map(), M) -> monad:m(M, {_A, S}).
+run_reply(MRef, A, State, #{offset := Offset} = Opts, {?MODULE, IM}) ->
+    ReplyType = maps:get(type, Opts, reply),
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
-    case info_to_a(Info) of
-        {MRef, A} ->
-            case handle_a(MRef, A, Callbacks) of
-                {Callback, AccRef, NCallbacks} ->
-                    NState = CallbacksS(NCallbacks, State),
-                    ARTA = Callback(A),
-                    async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
-                error ->
-                    monad:return({ok, unhandled}, IM)
-            end;
-        unhandled ->
+    case handle_reference(MRef, Callbacks, Opts) of
+        {ok, Callback, AccRef, NCallbacks} ->
+            NState = CallbacksS(NCallbacks, State),
+            ARTA = execute_callback_a(Callback, ReplyType, A),
+            async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
+        error ->
+            %% A is ok, state is unhandled
             monad:return({ok, unhandled}, IM)
     end.
 
@@ -671,36 +681,64 @@ callback_to_cc(Callback, {?MODULE, IM}) when is_function(Callback, 2) ->
 callback_to_cc(Callback, {?MODULE, _IM}) ->
     exit({invalid_callback, Callback}).
 
-info_to_a({message, MRef, Message}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    {MRef, {message, Message}};
-info_to_a({MRef, Reply}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    {MRef, Reply};
-info_to_a({'DOWN', MRef, _, _, Reason}) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    {MRef, {error, {process_down, Reason}}};
-info_to_a(_Info) ->
+info_to_reply({message, MRef, Message}) ->
+    {message, MRef, Message};
+info_to_reply({MRef, Reply}) ->
+    {reply, MRef, Reply};
+info_to_reply({'DOWN', MRef, _, _, Reason}) ->
+    {reply, MRef, {error, {process_down, Reason}}};
+info_to_reply(_Info) ->
     unhandled.
 
-handle_a(MRef, {message, _Message}, Callbacks) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    case async_util:find(MRef, Callbacks) of
-        {ok, #callback{cc = Callback, acc_ref = Acc}} ->
-            {Callback, Acc, Callbacks};
-        error ->
-            error
-    end;
-handle_a(MRef, _Reply, Callbacks) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    case MRef of
-        MRef when is_reference(MRef) ->
-            erlang:demonitor(MRef, [flush]);
-        _ ->
-            ok
-    end,
-    case async_util:find(MRef, Callbacks) of
-        {ok, #callback{cc = Callback, acc_ref = Acc}} ->
-            NCallbacks = async_util:remove(MRef, Callbacks),
-            {Callback, Acc, NCallbacks};
-        error ->
+exec_mresult(MResult, {?MODULE, IM}) ->
+    do([IM || 
+           {_A, NState} <- MResult,
+           return(NState)
+       ]).
+
+handle_reference(MRef, Callbacks, #{type := ReplyType} = Opts) ->
+    case match_reference(MRef, Opts) of
+        true ->
+            case async_util:find(MRef, Callbacks) of
+                {ok, #callback{cc = Callback, acc_ref = Acc}} ->
+                    demonitor_ref(MRef, Opts),
+                    NCallbacks = 
+                        case ReplyType of
+                            reply ->
+                                async_util:remove(MRef, Callbacks);
+                            message ->
+                                Callbacks
+                        end,
+                    {ok, Callback, Acc, NCallbacks};
+                error ->
+                    error
+            end;
+        false ->
             error
     end.
+
+match_reference(Ref, #{ref := monitored_reference}) when is_reference(Ref) ->
+    true;
+match_reference(Ref, #{ref := reference}) when is_reference(Ref) ->
+    true;
+match_reference(Ref, #{ref := integer}) when is_integer(Ref) ->
+    true;
+match_reference(Ref, #{ref := binary}) when is_binary(Ref) ->
+    true;
+match_reference(_,   #{ref := all}) ->
+    true;
+match_reference(_,   #{}) ->
+    false.
+
+demonitor_ref(MRef, #{type := reply, ref := monitored_reference}) when is_reference(MRef) ->
+    erlang:demonitor(MRef, [flush]);
+demonitor_ref(_Ref, #{}) ->
+    ok.
+
+execute_callback_a(Callback, message, A) ->
+    Callback({message, A});
+execute_callback_a(Callback, reply, A) ->
+    Callback(A).
 
 callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(Timeout) ->
     Timer = erlang:send_after(Timeout, self(), {MRef, {error, wait_timeout}}),
