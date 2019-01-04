@@ -562,9 +562,8 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
        ]).
 
 -spec handle_info(_Info, integer(), S, M) -> monad:m(M, S).
-handle_info(Info, Offset, State, {?MODULE, _IM} = AT) ->
-    MResult = run_info(Info, Offset, State, AT),
-    exec_mresult(MResult, AT).
+handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
+    functor:fmap(fun({_A, NState}) -> NState end, run_info(Info, Offset, State, AT), IM).
 
 run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
     case info_to_reply(Info) of
@@ -576,13 +575,16 @@ run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
             monad:return({ok, unhandled}, IM)
     end.
 
-handle_reply(Ref, Reply, State, Opts, {?MODULE, _IM} = AT) when is_map(Opts) ->
-    MResult = run_reply(Ref, Reply, State, Opts, AT),
-    exec_mresult(MResult, AT).
+-spec handle_reply(any(), _A, integer(), S, M) -> monad:m(M, S).
+handle_reply(Ref, Reply, State, Opts, {?MODULE, IM} = AT) when is_map(Opts) ->
+    functor:fmap(fun({_A, NState}) -> NState end, run_reply(Ref, Reply, State, Opts, AT), IM).
 
 -spec run_reply(any(), any(), S, map(), M) -> monad:m(M, {_A, S}).
-run_reply(MRef, A, State, #{offset := Offset} = Opts, {?MODULE, IM}) ->
-    ReplyType = maps:get(type, Opts, reply),
+run_reply(MRef, A, State, Opts, {?MODULE, _IM} = AT) ->
+    NOpts = maps:merge(#{type => reply}, Opts),
+    run_reply_1(MRef, A, State, NOpts, AT).
+
+run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MODULE, IM}) ->
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
     case handle_reference(MRef, Callbacks, Opts) of
@@ -689,12 +691,6 @@ info_to_reply({'DOWN', MRef, _, _, Reason}) ->
     {reply, MRef, {error, {process_down, Reason}}};
 info_to_reply(_Info) ->
     unhandled.
-
-exec_mresult(MResult, {?MODULE, IM}) ->
-    do([IM || 
-           {_A, NState} <- MResult,
-           return(NState)
-       ]).
 
 handle_reference(MRef, Callbacks, #{type := ReplyType} = Opts) ->
     case match_reference(MRef, Opts) of
