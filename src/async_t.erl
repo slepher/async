@@ -54,7 +54,7 @@
          message/2, add_message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
-         update/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
+         update_cc/3, exec_cc/5, run_cc/3, run_with_cc/5, 
          handle_info/4, run_info/4, handle_reply/5, run_reply/5,
          wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
@@ -458,28 +458,18 @@ pass({?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     hijack(async_r_t:return(ok, MR), AT).
 
-update(X, Callback, {?MODULE, _IM} = AT) ->
-    CC = callback_to_cc(Callback, AT),
+update_cc(X, CC, {?MODULE, _IM} = AT) ->
     KAsyncT = 
         fun(A) ->
                 wrapped_lift_mr(CC(A), AT)
         end,
     '>>='(lift_reply(X, AT), KAsyncT, AT).
 
-exec(X, Callback, Offset, State, {?MODULE, _IM} = AT) ->
-    CC = callback_to_cc(Callback, AT),
-    exec_cc(X, CC, Offset, State, AT).
-
 exec_cc(X, CC, Offset, State, {?MODULE, IM} = AT) ->
     do([IM ||
            {_A, NState} <- run_with_cc(X, CC, Offset, State, AT),
            return(NState)
        ]).
-    
--spec run(async_t(S, R, M, A), callback_or_cc(S, R, M, A), integer(), S, M) -> S.
-run(X, Callback, Offset, State, {?MODULE, _IM} = AT) ->
-    CC = callback_to_cc(Callback, AT),
-    run_with_cc(X, CC, Offset, State, AT).
 
 -spec run_with_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), integer(), S, _MT) -> S.
 run_with_cc(X, CC, Offset, State, {?MODULE, _IM} = AT) ->

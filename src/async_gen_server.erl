@@ -12,6 +12,7 @@
 -export([call/2]).
 -export([promise_call/2, promise_call/3]).
 -export([promise_channel_call/4]).
+-export([default_callback/1]).
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -35,6 +36,13 @@ promise_call(Name, Request, Timeout) ->
 
 promise_channel_call(Channel, Name, Request, Timeout) ->
     async_channel:call(Channel, Name, '$gen_call', Request, Timeout).
+
+default_callback(From) ->
+    fun({message, Message}) ->
+            async:message(From, Message);
+       (Reply) ->
+            gen_server:reply(From, Reply)
+    end.
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
