@@ -86,7 +86,7 @@ callback_to_cc(Callback) when is_function(Callback, 2) ->
                                true ->
                                    do([async_r_m ||
                                           async_r_m:put_state(NState),
-                                          async_r_m:return(NState)
+                                          async_r_m:return(A)
                                       ]);
                                false ->
                                    async_r_m:return(NState)
