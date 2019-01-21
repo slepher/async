@@ -23,7 +23,8 @@
 -type async_t_cc(S, R, M, A) :: fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)).
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 
--compile({parse_transform, do}).
+%-compile({parse_transform, do}).
+-include_lib("erlando/include/do.hrl").
 -compile({parse_transform, function_generator}).
 
 -behaviour(functor).
@@ -69,9 +70,10 @@
                             message/2, hijack/2, pass/1, handle_message/3, provide_message/3]}).
 
 -gen_fun(#{args => monad, sfunctions => [promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]}).
+
 -gen_fun(#{args => monad, 
-             sfunctions => [wait/2, wait_t/3, exec/5, exec_cc/5, run/5, run_cc/3, run_with_cc/5, 
-                            handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
+           sfunctions => [wait/2, wait_t/3, exec_cc/5, run_cc/3, run_with_cc/5, 
+                          handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
 
 -gen_fun(#{inner_type => functor, behaviours => [functor]}).
 -gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
