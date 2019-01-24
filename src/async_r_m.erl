@@ -10,7 +10,7 @@
 
 -erlando_type({?MODULE, []}).
 
--compile({parse_transform, function_generator}).
+-include_lib("erlando/include/gen_fun.hrl").
 
 -behaviour(functor).
 -behaviour(monad).

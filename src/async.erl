@@ -8,7 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(async).
 
--compile({parse_transform, do}).
+-include_lib("erlando/include/do.hrl").
 
 %% API
 -export([call/3, message/2, promise_action/2, start_and_action/3]).

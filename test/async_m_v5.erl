@@ -14,8 +14,8 @@
 -define(INNER, {cont_t, {state_t, {reader_t, identity}}}).
 
 -behaviour(monad).
--compile({parse_transform, do}).
--compile({parse_transform, function_generator}).
+-include_lib("erlando/include/do.hrl").
+-include_lib("erlando/include/gen_fun.hrl").
 
 %% API
 -export([promise/2, run/4, modify/1, execute_cc/4, callback_to_cc/1, handle_info/3]).

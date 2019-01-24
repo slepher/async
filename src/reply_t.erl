@@ -21,8 +21,8 @@
 -type t(M) :: {reply_t, M}.
 -spec new(M) -> TM when TM :: monad:class(), M :: monad:class().
 
--compile({parse_transform, do}).
--compile({parse_transform, function_generator}).
+-include_lib("erlando/include/do.hrl").
+-include_lib("erlando/include/gen_fun.hrl").
 
 -behaviour(functor).
 -behaviour(monad).

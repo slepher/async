@@ -9,7 +9,7 @@
 -module(async_v4).
 
 -behaviour(gen_server).
--compile({parse_transform, do}).
+-include_lib("erlando/include/do.hrl").
 
 %% API
 -export([start/0, start_link/0]).

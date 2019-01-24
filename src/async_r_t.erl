@@ -18,9 +18,9 @@
 -type callback_gs(S) :: 
         {fun((S) -> #{reference() => Val}), fun((#{reference() => Val}, S) -> S)}.
 
--compile({parse_transform, do}).
+-include_lib("erlando/include/do.hrl").
 -compile({parse_transform, cut}).
--compile({parse_transform, function_generator}).
+-include_lib("erlando/include/gen_fun.hrl").
 
 -behaviour(functor).
 -behaviour(applicative).

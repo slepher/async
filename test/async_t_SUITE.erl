@@ -13,7 +13,7 @@
 %% Note: This directive should only be used in test suites.
 -compile(nowarn_export_all).
 -compile(export_all).
--compile({parse_transform, do}).
+-include_lib("erlando/include/do.hrl").
 
 -record(state, {callbacks = maps:new(), acc0 = [], acc = []}).
 

@@ -23,8 +23,8 @@
 -type async_t_cc(S, R, M, A) :: fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)).
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 
--compile({parse_transform, do}).
--compile({parse_transform, function_generator}).
+-include_lib("erlando/include/do.hrl").
+-include_lib("erlando/include/gen_fun.hrl").
 
 -behaviour(functor).
 -behaviour(applicative).
