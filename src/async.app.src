@@ -9,7 +9,7 @@
 
 {application, async, [
     {description, "Async Monad"},
-    {vsn, "0.3.0"},
+    {vsn, "0.3.1"},
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
     {registered, []},
