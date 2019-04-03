@@ -1,16 +1,17 @@
 %%%-------------------------------------------------------------------
-%%% @author Chen Slepher <slepher@issac.local>
-%%% @copyright (C) 2017, Chen Slepher
+%%% @author Chen Slepher <slepheric@gmail.com>
+%%% @copyright (C) 2019, Chen Slepher
 %%% @doc
 %%%
 %%% @end
-%%% Created :  4 Jul 2017 by Chen Slepher <slepher@issac.local>
+%%% Created :  3 Apr 2019 by Chen Slepher <slepheric@gmail.com>
 %%%-------------------------------------------------------------------
--module(async_histories_SUITE).
+-module(async_macro_SUITE).
 
+-compile(nowarn_export_all).
 -compile(export_all).
 
--include_lib("eunit/include/eunit.hrl").
+-include("async.hrl").
 -include_lib("common_test/include/ct.hrl").
 
 %%--------------------------------------------------------------------
@@ -29,7 +30,6 @@ suite() ->
 %% @end
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
-    async:start(),
     echo_server:start(echo_server),
     Config.
 
@@ -110,7 +110,7 @@ groups() ->
 %% @end
 %%--------------------------------------------------------------------
 all() -> 
-    [test_v1, test_v2, test_v3, test_v4, test_v5].
+    [my_test_case].
 
 %%--------------------------------------------------------------------
 %% @spec TestCase() -> Info
@@ -119,7 +119,6 @@ all() ->
 %%--------------------------------------------------------------------
 my_test_case() -> 
     [].
-
 %%--------------------------------------------------------------------
 %% @spec TestCase(Config0) ->
 %%               ok | exit() | {skip,Reason} | {comment,Comment} |
@@ -128,30 +127,16 @@ my_test_case() ->
 %% Reason = term()
 %% Comment = term()
 %% @end
-%%--------------------------------------------------------------------
-test_v1(_Config) -> 
-    {ok, _} = async_v1:start(),
-    Reply = gen_server:call(async_v1, request1),
-    ?assertEqual({ok, {{request1, then, request2}, then, request3}}, Reply).
 
-test_v2(_Config) -> 
-    {ok, _} = async_v2:start(),
-    Reply = gen_server:call(async_v2, request1),
-    ?assertEqual({ok, {{request1, then, request2}, then, request3}}, Reply).
-
-test_v3(_Config) -> 
-    {ok, _} = async_v3:start(),
-    Reply = gen_server:call(async_v3, request1),
-    ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply).
-
-test_v4(_Config) -> 
-    {ok, _} = async_v4:start(),
-    Reply = gen_server:call(async_v4, request1),
-    ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply).
-
-test_v5(_Config) -> 
-    {ok, _} = async_v5:start(),
-    Reply1 = gen_server:call(async_v5, request1),
-    ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply1),
-    Reply2 = gen_server:call(async_v5, request2),
-    ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply2).
+my_test_case(_Config) -> 
+    Promise = 
+        async_do(
+          [ monad || 
+              A <- async_ext:return(hello),
+              B <- async_m:return(world),
+              C <- async_ext:return(foo),
+              D <- async_m:promise(echo_server:echo(echo_server, bar)),
+              return({A, B, C, D})
+          ]),
+    D = async_m:wait(Promise),
+    {ok, {hello, world, foo, bar}} = D.

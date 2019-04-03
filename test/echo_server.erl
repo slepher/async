@@ -11,7 +11,7 @@
 -behaviour(gen_server).
 
 %% API
--export([echo_with_messages/3, delayed_echo/3, echo/2]).
+-export([echo_with_messages/3, delayed_echo/3, echo/2, stop/1]).
 -export([start/0, start_link/0, start/1, start_link/1]).
 
 %% gen_server callbacks
@@ -30,6 +30,9 @@ delayed_echo(Echo, Timeout, Request) ->
 
 echo(Echo, Request) ->
     async_gen_server:call(Echo, {echo, Request}).
+
+stop(Echo) ->
+    gen_server:call(Echo, stop).
 %%%===================================================================
 %%% API
 %%%===================================================================
@@ -98,6 +101,8 @@ handle_call({delayed_echo, Timeout, Request}, From, State) ->
 handle_call({echo, Request}, _From, State) ->
     Reply = Request,
     {reply, Reply, State};
+handle_call(stop, _From, State) ->
+    {stop, normal, ok, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {invalid_request, Request}}, State}.
 

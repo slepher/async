@@ -295,7 +295,6 @@ map(F, X, {?MODULE, IM}) ->
     F1 = fun(R1) -> reader_t:map(F, R1) end,
     F2 = fun(R2) -> reader_t:map(F1, R2) end,
     real_to_async_r_t(state_t:map(F2, async_r_to_real_t(X), RM)).
-
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
