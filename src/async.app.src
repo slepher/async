@@ -1,6 +1,6 @@
 {application, async, [
     {description, "Async Monad"},
-    {vsn, "0.3.3"},
+    {vsn, "0.3.4"},
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
     {registered, []},
