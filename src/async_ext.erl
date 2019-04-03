@@ -27,7 +27,7 @@
 %%% API
 %%%===================================================================
 '>>='({async_t, _} = AsyncM, K, {?MODULE, _IM}) ->
-    NK = fun(A) ->
+    K1 = fun(A) ->
                  case K(A) of
                      {async_t, _} = Async ->
                          Async;
@@ -35,7 +35,7 @@
                          async_t:pure_return(B)
                  end
          end,
-    async_t:'>>='(AsyncM, NK);
+    async_t:'>>='(AsyncM, K1);
 '>>='(Value, K, {?MODULE, _IM}) ->
     error_m:'>>='(Value, K).
 

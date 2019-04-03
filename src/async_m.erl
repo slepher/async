@@ -23,6 +23,7 @@
 -export([update/2, exec/4, run/4]).
 -export([promise/2]).
 -export([callback_to_cc/1]).
+-export([map_promises/2]).
 
 -gen_fun(#{remote => async_t, args => identity, 
            functions => [get_state/0, put_state/1, modify_state/1, 
@@ -34,7 +35,7 @@
                          message/1, add_message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
 
 -gen_fun(#{remote => async_t, args => identity, 
-           functions =>[promise/1, promise_t/2, map_promises/1, map_promises_t/2,
+           functions =>[promise/1, promise/2, map_promises/1, map_promises/2,
                         par/1, progn_par/1, update_cc/2]}).
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
            functions => [wait/1, wait_t/2,  exec_cc/4, run_cc/2, run_with_cc/4]}).
@@ -117,10 +118,6 @@ exec(X, Callback, Offset, State) ->
 run(Async, Callback, Offset, State) ->
     CC = callback_to_cc(Callback),
     run_with_cc(Async, CC, Offset, State).
-
-promise(Async, Timeout) ->
-    promise_t(Async, Timeout).    
-
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

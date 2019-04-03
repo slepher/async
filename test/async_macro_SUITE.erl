@@ -30,6 +30,7 @@ suite() ->
 %% @end
 %%--------------------------------------------------------------------
 init_per_suite(Config) ->
+    erlang:system_flag(backtrace_depth, 20),
     echo_server:start(echo_server),
     Config.
 
@@ -111,7 +112,6 @@ groups() ->
 %%--------------------------------------------------------------------
 all() -> 
     [my_test_case].
-
 %%--------------------------------------------------------------------
 %% @spec TestCase() -> Info
 %% Info = [tuple()]

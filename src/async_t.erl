@@ -52,7 +52,7 @@
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
 -export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2, wrapped_lift_mr/2,
          message/2, add_message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
--export([promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]).
+-export([promise/2, promise/3, map_promises/2, map_promises/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
          update_cc/3, exec_cc/5, run_cc/3, run_with_cc/5, 
          handle_info/4, run_info/4, handle_reply/5, run_reply/5,
@@ -68,7 +68,7 @@
              sfunctions => [lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2,
                             message/2, hijack/2, pass/1, handle_message/3, provide_message/3]}).
 
--gen_fun(#{args => monad, sfunctions => [promise/2, promise_t/3, map_promises/2, map_promises_t/3, par/2, progn_par/2]}).
+-gen_fun(#{args => monad, sfunctions => [par/2, progn_par/2]}).
 
 -gen_fun(#{args => monad, 
            sfunctions => [wait/2, wait_t/3, exec_cc/5, run_cc/3, run_with_cc/5, 
@@ -129,7 +129,8 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
 -spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) )) -> async_t(S, R, M, B).
 '>>='(ATA, KATB, {?MODULE, IM}) ->
     RM = real_new(IM),
-    real_to_async_t(monad:'>>='(async_to_real_t(ATA), fun(A) -> async_to_real_t(KATB(A)) end, RM)).
+    KATB1 = fun(A) -> async_to_real_t(KATB(A)) end,
+    real_to_async_t(monad:'>>='(async_to_real_t(ATA), KATB1, RM)).
 
 '>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
     monad:'default_>>'(ATA, ATB, AT).
@@ -275,11 +276,11 @@ add_message(A, {?MODULE, _IM} = AT) ->
 
 -spec promise(any(), M) -> async_t(_S, _R, M, _A).
 promise(MRef, {?MODULE, _IM} = Monad) ->
-    promise_t(MRef, infinity, Monad).
+    promise(MRef, infinity, Monad).
 
--spec promise_t(any(), integer(), M) -> async_t(_S, _R, M, _A);
+-spec promise(any(), integer(), M) -> async_t(_S, _R, M, _A);
              (any(), infinity, M) -> async_t(_S, _R, M, _A).
-promise_t(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
+promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
     MR = async_r_t:new(IM),
     async_t(fun(K) ->
                  case Action() of
@@ -295,9 +296,9 @@ promise_t(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0)->
                          K(Value)
                  end
          end);
-promise_t(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
-    promise_t(fun() -> MRef end, Timeout, Monad);
-promise_t(Value, _Timeout, {?MODULE, _M} = Monad) ->
+promise(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
+    promise(fun() -> MRef end, Timeout, Monad);
+promise(Value, _Timeout, {?MODULE, _M} = Monad) ->
     pure_return(Value, Monad).
 
 -spec map_promises([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
@@ -314,13 +315,13 @@ map_promises(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
            end
        ]);
 map_promises(Promises, {?MODULE, _M} = Monad) when is_map(Promises) ->
-    map_promises_t(Promises, #{}, Monad).
+    map_promises(Promises, #{}, Monad).
 
--spec map_promises_t(#{Key => async_t(S, R, M, A)}, 
+-spec map_promises(#{Key => async_t(S, R, M, A)}, 
           #{cc => fun((Key, A) -> async_r_t:async_r_t(S, M, _IM)),
             acc0 => Acc, limit => integer()}, M) -> 
                  async_t(S, R, M, Acc).
-map_promises_t(Promises, Options, {?MODULE, IM} = AT) ->
+map_promises(Promises, Options, {?MODULE, IM} = AT) ->
     WRef = make_ref(),
     PRef = make_ref(),
     CRef = make_ref(),
