@@ -299,10 +299,8 @@ test_async_t_progn_par(_Config) ->
     ?assertEqual({hello_message, {error, hello}}, Reply).
 
 test_async_t_pmap_0(_Config) ->
-    %EchoServer = proplists:get_value(echo_server, Config),
     MR = async_r_t:new(identity),
     M0 = async_m:pure_return(ok),
-    %M0 = async_m:pure_return(ok),
     Promises = lists:duplicate(8, M0),
     M1 = async_m:map_promises(Promises),
     Reply = async_m:wait_t(
