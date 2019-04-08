@@ -129,7 +129,7 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
 -spec '>>='(async_t(S, R, M, A), fun( (A) -> async_t(S, R, M, B) )) -> async_t(S, R, M, B).
 '>>='(ATA, KATB, {?MODULE, IM}) ->
     RM = real_new(IM),
-    KATB1 = fun(A) -> async_to_real_t(KATB(A)) end,
+    KATB1 = fun(A) -> async_to_real_t(run_k(A, KATB)) end,
     real_to_async_t(monad:'>>='(async_to_real_t(ATA), KATB1, RM)).
 
 '>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
@@ -332,8 +332,6 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) ->
         maps:map(
           fun(Key, Promise) ->
                   do([AT ||
-                         Working <- get_ref(WRef, [], AT),
-                         put_ref(WRef, [Key|Working], AT),
                          lift_final_reply(
                            provide_message(
                              Promise,
@@ -346,25 +344,22 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) ->
                              0 ->
                                  case lists:delete(Key, NWorking) of
                                      [] ->
-                                         do([{?MODULE, IM} ||
-                                                Completed <- get_ref(CRef, maps:new(), AT),
-                                                remove_ref(WRef, AT),
-                                                remove_ref(CRef, AT),
-                                                pure_return(Completed, AT)
-                                            ]);
+                                         remove_ref(WRef, AT);
                                      NNWorking ->
-                                         do([{?MODULE, IM} ||
-                                                put_ref(WRef, NNWorking, AT),
-                                                pass(AT)
-                                            ])
+                                         put_ref(WRef, NNWorking, AT)
                                  end;
                              _ ->
                                  PKey = lists:nth(1, maps:keys(Pending)), 
-                                 PendingPromise = maps:get(PKey, Pending, undefined),
+                                 PendingPromise = maps:get(PKey, Pending),
                                  NPending = maps:remove(PKey, Pending),
                                  do([{?MODULE, IM} ||
-                                        put_ref(PRef, NPending, AT),
-                                        put_ref(WRef, lists:delete(Key, NWorking), AT),
+                                        case maps:size(NPending) of
+                                            0 ->
+                                                remove_ref(PRef, AT);
+                                            _ ->
+                                                put_ref(PRef, NPending, AT)
+                                        end,
+                                        put_ref(WRef, lists:delete(Key, [PKey|NWorking]), AT),
                                         PendingPromise
                                     ])
                          end
@@ -374,8 +369,22 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) ->
     do([{?MODULE, IM} ||
            put_ref(CRef, Acc0, AT),
            put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
-           par(maps:values(maps:with(WPromiseKeys, NPromises)), AT)
+           put_ref(WRef, WPromiseKeys, AT),
+           par_acc(CRef, maps:values(maps:with(WPromiseKeys, NPromises)), AT)
        ]).
+
+par_acc(CRef, [Promise|T], {?MODULE, _IM} = AT) ->
+    do([AT ||
+           Promise,
+           par_acc(CRef, T, AT)
+       ]);
+par_acc(CRef, [], AT) ->
+    do([AT ||
+           Completed <- get_ref(CRef, maps:new(), AT),
+           remove_ref(CRef, AT),
+           pure_return(Completed, AT)
+       ]).
+           
 
 %% provide extra message and return origin value
 -spec provide_message(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, A)), M) -> async_t(S, R, M, A).
@@ -405,9 +414,9 @@ provide_message(Promise, Then, {?MODULE, _IM} = AT) ->
 par(Promises, {?MODULE, _IM} = AT) ->
     async_t(
       fun(CC) ->
-              traversable:sequence(
-                lists:map(fun(Promise) -> run_cc(Promise, CC, AT) end, Promises))
+              traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC, AT) end, Promises))
       end).
+    
 
 %% acts like par, but only return last value of promises
 %% the name of progn is from lisp
@@ -771,3 +780,6 @@ remove_ref_after_cc(Ref, CC, {?MODULE, IM}) ->
 
 map_real(F, ATA) ->
     real_to_async_t(F(async_to_real_t(ATA))).
+
+run_k(A, K) ->
+    K(A).

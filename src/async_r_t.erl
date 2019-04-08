@@ -102,7 +102,7 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = ART) ->
 '>>='(ARTA, KARTB, {?MODULE, IM}) ->
     RM = real_new(IM),
     real_to_async_r_t(
-      state_t:'>>='(async_r_to_real_t(ARTA), fun(A) -> async_r_to_real_t(KARTB(A)) end, RM)).
+      state_t:'>>='(async_r_to_real_t(ARTA), fun(A) -> async_r_to_real_t(run_k(A,KARTB)) end, RM)).
 
 '>>'(ARTA, ARTB, {?MODULE, _IM} = ART) ->
     monad:'default_>>'(ARTA, ARTB, ART).
@@ -323,3 +323,6 @@ ask({?MODULE, IM}) ->
     M2 = reader_t:new(M1),
     M3 = state_t:new(M2),
     real_to_async_r_t(state_t:lift(reader_t:lift(reader_t:ask(M1), M2), M3)).
+
+run_k(A, K) ->
+    K(A).

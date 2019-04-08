@@ -40,6 +40,7 @@ suite() ->
 init_per_suite(Config) ->
     async:start(),
     {ok, PId} = echo_server:start(),
+    erlang:system_flag(backtrace_depth, 200),
     [{echo_server, PId}|Config].
 
 %%--------------------------------------------------------------------
@@ -105,7 +106,7 @@ all() ->
      test_async_then,
      test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,
-     test_async_t_par, test_async_t_pmap, test_async_t_pmap_with_acc, 
+     test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap, test_async_t_pmap_with_acc, 
      test_async_t_pmap_with_timeout,
      test_local_acc_ref, test_async_t_local_acc_ref].
 
@@ -262,7 +263,22 @@ test_async_t_with_message_handler(Config) ->
                                end, offset => #state.callbacks, state => #state{}}),
     ?assertEqual({{hello, world, world}, lists:duplicate(8, message), lists:duplicate(5, message)}, Reply).
 
-test_async_t_par(_Config) ->
+%% test_async_t_par(Config) ->
+%%     EchoServer = proplists:get_value(echo_server, Config),
+%%     M0 = async_m:promise(fun() -> echo_server:echo(EchoServer, {ok, hello}) end),
+%%     Promises = lists:map(fun(_) -> do([async_m || M0, async_m:pass()]) end, lists:seq(1, 5)),
+%%     NPromises = Promises ++ [async_m:pure_return(10)],
+%%     M1 = async_m:par(NPromises),
+%%     Reply = async_m:wait_t(
+%%               M1,
+%%               #{callback =>
+%%                     fun(Reply) ->
+%%                             async_r_t:return(Reply)
+%%                     end}),
+%%     ?assertEqual([1,2,3,4,5], Reply).
+
+test_async_t_progn_par(_Config) ->
+
     MR = async_r_t:new(identity),
     M1 = async_t:progn_par(
                   [async_m:message(hello_message),
@@ -282,6 +298,22 @@ test_async_t_par(_Config) ->
                                end}),
     ?assertEqual({hello_message, {error, hello}}, Reply).
 
+test_async_t_pmap_0(_Config) ->
+    %EchoServer = proplists:get_value(echo_server, Config),
+    MR = async_r_t:new(identity),
+    M0 = async_m:pure_return(ok),
+    %M0 = async_m:pure_return(ok),
+    Promises = lists:duplicate(8, M0),
+    M1 = async_m:map_promises(Promises),
+    Reply = async_m:wait_t(
+              M1,
+              #{cc =>
+                       fun(X) ->
+                               monad:return(X, MR)
+                    end
+               }),
+    ?assertEqual(lists:duplicate(8, ok), Reply).
+
 test_async_t_pmap(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
     Monad = async_t:new(identity),
@@ -293,8 +325,8 @@ test_async_t_pmap(Config) ->
                 async_m:map_promises(Promises)
             ]),
     Reply = async_m:wait_t(
-              M1, 
-              #{callback =>
+              M1,
+              #{cc =>
                     fun({message, X}) -> 
                             do([MR ||
                                    Acc <- async_r_t:get_local(MR),
@@ -329,14 +361,14 @@ test_async_t_pmap_with_acc(Config) ->
                          MA = 
                              do([Monad || 
                                     Val <- async_t:lift_final_reply(M0),
-                                    Acc <- async_m:get_local(),
-                                    async_m:put_local([N|Acc]),
+                                    {AccN, AccT} <- async_m:get_local(),
+                                    async_m:put_local({[N|AccN], AccT}),
                                     async_m:pure_return(Val)
                                 ]),
                          maps:put(N, MA, Acc0)
                  end, maps:new(), lists:seq(1, 5)),
     M1 = do([Monad ||
-                async_m:put_local([]),
+                async_m:put_local({[], []}),
                 async_m:map_promises(Promises, #{limit => 2})
             ]),
     MR = async_r_t:new(identity),
@@ -345,8 +377,8 @@ test_async_t_pmap_with_acc(Config) ->
                #{callback =>
                      fun({message, X}) -> 
                              do([MR ||
-                                    Acc <- async_r_t:get_local(MR),
-                                    async_r_t:put_local([X|Acc], MR)
+                                    {AccN, AccT} <- async_r_t:get_local(MR),
+                                    async_r_t:put_local({AccN, [X|AccT]}, MR)
                                 ]);
                         (X) ->
                              do([MR ||
@@ -355,13 +387,18 @@ test_async_t_pmap_with_acc(Config) ->
                                 ])
                      end
                 }),
-    ?assertEqual({maps:from_list([{1, {error, hello}},
+    {Result, {N, T}} = Reply,
+    
+    ?assertEqual(maps:from_list([{1, {error, hello}},
                                   {2, {error, hello}},
                                   {3, {error, hello}},
                                   {4, {error, hello}},
                                   {5, {error, hello}}
-                                 ]), 
-                  [5, {5, message}, 4, {4, message}, 3, {3, message}, 2, {2, message}, 1, {1, message}]}, Reply).
+                                 ]), Result),
+    ?assertEqual([1,2,3,4,5], lists:usort(N)),
+    ?assertEqual([{1, message},{2, message}, {3, message}, {4, message}, {5,message}], lists:usort(T)),
+    ok.
+
                                
 test_local_acc_ref(_Config) ->
     Ref0 = make_ref(),
