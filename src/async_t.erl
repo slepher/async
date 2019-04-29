@@ -50,7 +50,7 @@
 -export([get_state/1, put_state/2, modify_state/2, 
          find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
--export([lift_reply/2, lift_final_reply/2, pure_return/2, wrapped_return/2, wrapped_lift_mr/2,
+-export([lift_reply/2, lift_final_reply/2, pure_return/2, ok/1, wrapped_return/2, wrapped_lift_mr/2,
          message/2, add_message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
 -export([promise/2, promise/3, map_promises/2, map_promises/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
@@ -263,6 +263,9 @@ pure_return(A, {?MODULE, IM}) ->
     RealM = real_new(IM),
     real_to_async_t(reply_t:pure_return(A, RealM)).
 
+ok({?MODULE, _IM} = AT) ->
+    pure_return(ok, AT).
+
 wrapped_return(A, {?MODULE, IM}) ->
     RealM = real_new(IM),
     real_to_async_t(reply_t:wrapped_return(A, RealM)).
@@ -303,25 +306,14 @@ promise(Value, _Timeout, {?MODULE, _M} = Monad) ->
 
 -spec map_promises([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
          (#{Key => async_t(S, R, M, A)}, M) -> async_t(S, R, M, #{Key => A}).
-map_promises(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
-    NPromises = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
-    do([{?MODULE, IM} || 
-           Value <- lift_reply(map_promises(NPromises, AT), AT),
-           case Value of
-               {message, {_Key, Message}} ->
-                   message(Message, AT);
-               _ ->
-                  pure_return(maps:values(Value), AT)
-           end
-       ]);
-map_promises(Promises, {?MODULE, _M} = Monad) when is_map(Promises) ->
+map_promises(Promises, {?MODULE, _M} = Monad) ->
     map_promises(Promises, #{}, Monad).
 
 -spec map_promises(#{Key => async_t(S, R, M, A)}, 
           #{cc => fun((Key, A) -> async_r_t:async_r_t(S, M, _IM)),
             acc0 => Acc, limit => integer()}, M) -> 
                  async_t(S, R, M, Acc).
-map_promises(Promises, Options, {?MODULE, IM} = AT) ->
+map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
     WRef = make_ref(),
     PRef = make_ref(),
     CRef = make_ref(),
@@ -371,6 +363,17 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) ->
            put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
            put_ref(WRef, WPromiseKeys, AT),
            par_acc(CRef, maps:values(maps:with(WPromiseKeys, NPromises)), AT)
+       ]);
+map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
+    Promises1 = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
+    do([{?MODULE, IM} || 
+           Value <- lift_reply(map_promises(Promises1, Options, AT), AT),
+           case Value of
+               {message, {_Key, Message}} ->
+                   message(Message, AT);
+               _ ->
+                  pure_return(maps:values(Value), AT)
+           end
        ]).
 
 par_acc(CRef, [Promise|T], {?MODULE, _IM} = AT) ->
@@ -738,7 +741,7 @@ execute_callback_a(Callback, reply, A) ->
     Callback(A).
 
 callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(Timeout) ->
-    Timer = erlang:send_after(Timeout, self(), {MRef, {error, wait_timeout}}),
+    Timer = erlang:send_after(Timeout, self(), {MRef, {error, timeout}}),
     fun(A) ->
             _ = erlang:cancel_timer(Timer),
             Callback(A)

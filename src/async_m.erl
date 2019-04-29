@@ -17,6 +17,7 @@
 -behaviour(monad).
 -behaviour(monad_fail).
 
+-export([to_async/1]).
 -export([struct/1]).
 -export([return_error_m/1]).
 -export([then/2, then/4]).
@@ -31,7 +32,7 @@
                          get_local/0, put_local/1, modify_local/1, local_ref/2, local/2, get_local_ref/0]}).
 
 -gen_fun(#{remote => async_t, args => identity, 
-           functions => [lift_reply/1, lift_final_reply/1, pure_return/1, wrapped_return/1, lift_mr/1, wrapped_lift_mr/1,
+           functions => [lift_reply/1, lift_final_reply/1, pure_return/1, ok/0, wrapped_return/1, lift_mr/1, wrapped_lift_mr/1,
                          message/1, add_message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
 
 -gen_fun(#{remote => async_t, args => identity, 
@@ -48,6 +49,15 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
+to_async({async_t, _} = Async) ->
+    Async;
+to_async({ok, Val}) ->
+    return(Val);
+to_async({error, Reason}) ->
+    fail(Reason);
+to_async(Val) ->
+    pure_return(Val).
+
 struct(#{} = Map) ->
     Map#{'__struct__' => async_m}.
 

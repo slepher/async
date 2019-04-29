@@ -39,7 +39,7 @@ call(Name, Label, Request) when is_atom(Name) ->
         Pid when is_pid(Pid) ->
             do_call(Pid, Label, Request);
         undefined ->
-            {error, noproc}
+            {error, {noproc, Name}}
     end;
 %% Global by name
 call({global, _Name}=Process, Label, Request) ->
