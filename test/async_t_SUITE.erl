@@ -107,7 +107,7 @@ all() ->
      test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,
      test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap, test_async_t_pmap_with_acc, 
-     test_async_t_pmap_with_timeout,
+     test_async_t_pmap_with_timeout, test_async_t_lift_final,
      test_local_acc_ref, test_async_t_local_acc_ref].
 
 %% Test cases starts here.
@@ -311,6 +311,20 @@ test_async_t_pmap_0(_Config) ->
                     end
                }),
     ?assertEqual(lists:duplicate(8, ok), Reply).
+
+test_async_t_lift_final(Config) ->
+    EchoServer = proplists:get_value(echo_server, Config),
+    Monad = async_t:new(identity),
+    M0 = async_m:promise(echo_server:echo(EchoServer, {error, failed})),
+    M1 = 
+        do([async_m ||
+               {error, failed} <- async_m:lift_final_reply(M0),
+               async_m:return(failed)
+           ]),
+    Reply = async_m:wait(M1),
+    ?assertEqual({ok, failed}, Reply),
+    ok.
+    
 
 test_async_t_pmap(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
