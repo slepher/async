@@ -28,6 +28,7 @@
 -behaviour(monad).
 -behaviour(monad_trans).
 -behaviour(monad_fail).
+-behaviour(monad_error).
 -behaviour(monad_runner).
 
 -include_lib("erlando/include/erlando.hrl").
@@ -40,13 +41,14 @@
 -export([lift/2]).
 % impl of monad_fail.
 -export([fail/2]).
+-export([throw_error/2, catch_error/3]).
 -export([run_nargs/0, run_m/2]).
 -export([pure_return/2, wrapped_return/2,  lift_wrapped/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
 -gen_fun(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
 -gen_fun(#{inner_type => functor, behaviours => [functor]}).
--gen_fun(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail]}).
+-gen_fun(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail, monad_error]}).
 
 new(M) ->
     {?MODULE, M}.
@@ -114,6 +116,20 @@ lift_wrapped(MA, {?MODULE, IM}) ->
 fail(E, {?MODULE, IM}) ->
     reply_t(monad:return({error, E}, IM)).
 
+throw_error(E, {?MODULE, IM}) ->
+    fail(E, {?MODULE, IM}).
+
+catch_error(RTA, ERTB, {?MODULE, IM} = ReplyT) ->
+    reply_t(
+      do([IM || 
+             RA <- run_reply_t(RTA),
+             case RA of
+                 {error, Reason}    -> run_reply_t(try_emb(Reason, ERTB, ReplyT));
+                 _      -> return(RA)
+             end
+       ])).
+
+
 run_nargs() ->
     0.
 
@@ -171,4 +187,10 @@ wrap_value(Value) ->
             {ok, Other}
     end.
 
-
+try_emb(Reason, EMB, ReplyT) ->
+    try
+        EMB(Reason)
+    catch
+        error:function_clause ->
+            throw_error(Reason, ReplyT)
+    end.

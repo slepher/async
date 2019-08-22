@@ -31,6 +31,7 @@
 -behaviour(monad).
 -behaviour(monad_trans).
 -behaviour(monad_fail).
+-behaviour(monad_error).
 -behaviour(monad_cont).
 
 -include_lib("erlando/include/erlando.hrl").
@@ -45,6 +46,7 @@
 -export([lift/2]).
 -export([lift_mr/2]).
 -export([fail/2]).
+-export([throw_error/2, catch_error/3]).
 -export([callCC/2]).
 
 -export([get_state/1, put_state/2, modify_state/2, 
@@ -75,7 +77,7 @@
                           handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
 
 -gen_fun(#{inner_type => functor, behaviours => [functor]}).
--gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_cont]}).
+-gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_error, monad_cont]}).
 
 %%%===================================================================
 %%% API
@@ -144,6 +146,13 @@ return(A, {?MODULE, IM} = AT) ->
 fail(E, {?MODULE, IM}) ->
     RM = real_new(IM),
     real_to_async_t(monad_fail:fail(E, RM)).
+
+throw_error(E, {?MODULE, IM}) ->
+    fail(E, {?MODULE, IM}).
+
+catch_error(ATA, EATB, {?MODULE, IM}) ->
+    RM = real_new(IM),
+    real_to_async_t(monad_error:catch_error(async_to_real_t(ATA), fun(E) -> async_to_real_t(EATB(E)) end, RM)).
 
 -spec lift(monad:m(M, A)) -> async_t(_S, _R, M, A).
 lift(MA, {?MODULE, IM} = AT) ->

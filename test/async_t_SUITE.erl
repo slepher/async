@@ -103,7 +103,7 @@ end_per_testcase(_TestCase, _Config) ->
 %%--------------------------------------------------------------------
 all() ->
     [test_async_t, test_chain_async, test_chain_async_fail, 
-     test_async_then,
+     test_async_monad_error, test_async_then,
      test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,
      test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap, test_async_t_pmap_with_acc, 
@@ -149,6 +149,45 @@ test_chain_async_fail(Config) when is_list(Config) ->
                ]),
     Reply = async_m:wait(M0),
     ?assertEqual({error, world}, Reply).
+
+test_async_monad_error() ->
+    [].
+
+test_async_monad_error(Config) when is_list(Config) ->
+    EchoServer = proplists:get_value(echo_server, Config),
+    MRef = echo_server:echo(EchoServer, {ok, hello}),
+    M0 = monad_error:catch_error(
+           do([async_m || 
+                  async_m:put_local([]),
+                  R1 <- async_m:promise(MRef),
+                  async_m:modify_local(
+                    fun(Local) ->
+                            [a|Local]
+                    end),
+                  R2 <-
+                      monad_error:catch_error(
+                        async_m:promise(echo_server:echo(EchoServer, {error, world1})),
+                        fun(world) ->
+                                async_m:promise(echo_server:echo(EchoServer, hello2))
+                        end),
+                  async_m:modify_local(
+                    fun(Local) ->
+                            [b|Local]
+                    end),
+                  R3 <- async_m:promise(echo_server:echo(EchoServer, hello)),
+                  return({R1, R2, R3})
+              ]),
+           fun(world1) ->
+                   do([async_m ||
+                          async_m:modify_local(
+                            fun(Local) ->
+                                    [c|Local]
+                            end),
+                          async_m:get_local()
+                      ])
+           end),
+    Reply = async_m:wait(M0),
+    ?assertEqual({ok, [c, a]}, Reply).
 
 test_async_then() ->
     [{doc, "test async then"}].
