@@ -450,6 +450,7 @@ handle_message(X, MessageHandler, {?MODULE, _IM} = AT) ->
     NMessageHandler = callback_to_cc(MessageHandler, AT),
     do([AT ||
            Value <- lift_reply(X, AT),
+           ok = io:format("value is ~p~n", [Value]),
            case Value of               
                {message, Message} ->
                    hijack(NMessageHandler(Message), AT);
@@ -559,18 +560,23 @@ timeout_callbacks(Offset, State, {?MODULE, IM} = AT) ->
 wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
     do([IM ||
            {A, NState} <- MResult,
-           case async_util:same_type_state(NState, State) of
-               true ->
-                   {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
-                   Callbacks = CallbacksG(NState),
-                   case async_util:callback_exists(Callbacks) of
+           case NState of
+               unhandled ->
+                   wait_receive(Offset, State, Timeout, AT);
+               _ ->
+                   case async_util:same_type_state(NState, State) of
                        true ->
-                           wait_receive(Offset, NState, Timeout, AT);
+                           {CallbacksG, _CallbacksS} = state_callbacks_gs(Offset),
+                           Callbacks = CallbacksG(NState),
+                           case async_util:callback_exists(Callbacks) of
+                               true ->
+                                   wait_receive(Offset, NState, Timeout, AT);
+                               false ->
+                                   return(A)
+                           end;
                        false ->
                            return(A)
-                   end;
-               false ->
-                   return(A)
+                   end
            end
        ]).
 
