@@ -450,7 +450,6 @@ handle_message(X, MessageHandler, {?MODULE, _IM} = AT) ->
     NMessageHandler = callback_to_cc(MessageHandler, AT),
     do([AT ||
            Value <- lift_reply(X, AT),
-           ok = io:format("value is ~p~n", [Value]),
            case Value of               
                {message, Message} ->
                    hijack(NMessageHandler(Message), AT);
