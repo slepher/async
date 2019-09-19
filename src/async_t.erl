@@ -396,6 +396,14 @@ par_acc(CRef, [], AT) ->
            remove_ref(CRef, AT),
            pure_return(Completed, AT)
        ]).
+
+%par_acc(CRef, Promises, {?MODULE, _IM} = AT) ->
+%   do([AT ||
+%           par(Promises),
+%           Completed <- get_ref(CRef, maps:new(), AT),
+%           remove_ref(CRef, AT),
+%           pure_return(Completed, AT)
+%      ]).
            
 
 %% provide extra message and return origin value
@@ -528,13 +536,15 @@ wait_t(X, Opts, {?MODULE, _IM} = AT) ->
 -spec wait_receive(integer(), _S, integer() | infinity, M) -> monad:m(M, _A).
 wait_receive(Offset, State, Timeout, {?MODULE, _IM} = AT) ->
     receive 
-        Info ->
-            case run_info(Info, Offset, State, AT) of
-                unhandled ->
-                    wait_receive(Offset, State, Timeout, AT);
-                MResult ->
-                    wait_mresult(MResult, Offset, State, Timeout, AT)
-            end
+        {message, Ref, _Message} = Info when is_reference(Ref) ->
+            MResult = run_info(Info, Offset, State, AT),
+            wait_mresult(MResult, Offset, State, Timeout, AT);
+        {Ref, _Reply} = Info when is_reference(Ref) ->
+            MResult = run_info(Info, Offset, State, AT),
+            wait_mresult(MResult, Offset, State, Timeout, AT);
+        {'DOWN', Ref, _Pid, _Type, _Reason} = Info when is_reference(Ref) ->
+            MResult = run_info(Info, Offset, State, AT),
+            wait_mresult(MResult, Offset, State, Timeout, AT)
     after Timeout ->
             timeout_callbacks(Offset, State, AT)
     end.

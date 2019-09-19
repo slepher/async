@@ -16,6 +16,7 @@
 -behaviour(functor).
 -behaviour(monad).
 -behaviour(monad_fail).
+-behaviour(monad_error).
 
 -export([to_async/1]).
 -export([struct/1]).
@@ -37,14 +38,14 @@
 
 -gen_fun(#{remote => async_t, args => identity, 
            functions =>[promise/1, promise/2, map_promises/1, map_promises/2,
-                        par/1, progn_par/1, update_cc/2]}).
+                        par/1, progn_par/1, update_cc/2, callCC/1]}).
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
            functions => [wait/1, wait_t/2,  exec_cc/4, run_cc/2, run_with_cc/4]}).
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
              functions => [handle_info/3, run_info/3, handle_reply/4, run_reply/4, wait_receive/3]}).
 
 -gen_fun(#{remote => async_t, inner_type => identity,
-           behaviours => [functor, monad, monad_fail]}).
+           behaviours => [functor, monad, monad_fail, monad_error]}).
 
 %%%===================================================================
 %%% API
