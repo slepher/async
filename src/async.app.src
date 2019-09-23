@@ -1,6 +1,10 @@
 {application, async, [
     {description, "Async Monad"},
-    {vsn, "0.4.3"},
+<<<<<<< HEAD
+    {vsn, "0.4.4"},
+=======
+    {vsn, "0.4.2"},
+>>>>>>> parent of c09b81d... bump 0.4.3
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
     {registered, []},
