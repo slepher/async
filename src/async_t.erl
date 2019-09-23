@@ -396,41 +396,43 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
 
 par_acc(CRef, Promises, AT) ->
     do([AT ||
-           par_acc_1(maps:values(Promises), AT),
+           par_acc_1(Promises, AT),
            Completed <- get_ref(CRef, maps:new(), AT),
            remove_ref(CRef, AT),
            pure_return(Completed, AT)
        ]).
 
-par_acc_1([], {?MODULE, _IM}) ->
-    async_t(
-      fun(CC) ->
-              CC(ok)
-      end);
 par_acc_1(Promises, {?MODULE, IM} = AT) ->
     Len = maps:size(Promises),
     async_t(
       fun(CC) ->
-              Ref = make_ref(),
-              AsyncRT = {async_r_t, IM},
-              CC1 = fun({message, _M} = Message) ->
-                            CC(Message); 
-                       (A) -> 
-                            do([AsyncRT ||
-                                   Acc <- async_r_t:get_ref(Ref, 0, AsyncRT),
-                                   Acc1 = Acc + 1,
-                                   case Acc1 of
-                                       Len ->
-                                           CC(A);
-                                       _ ->
-                                           async_r_t:put_ref(Ref, Acc1, AsyncRT)
-                                   end
-                               ])
-                    end,
-              %% traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC1, AT) end, maps:values(Promises)))
-              sequence_run_cc(Promises, CC1, AsyncRT, AT)
+              case Len of
+                  0 ->
+                      CC(ok);
+                  _ ->
+                      Ref = make_ref(),
+                      AsyncRT = {async_r_t, IM},
+                      CC1 = fun({message, _M} = Message) ->
+                                    CC(Message); 
+                               (A) -> 
+                                    do([AsyncRT ||
+                                           Acc <- async_r_t:get_ref(Ref, 0, AsyncRT),
+                                           Acc1 = Acc + 1,
+                                           case Acc1 of
+                                               Len ->
+                                                   CC(A);
+                                               _ ->
+                                                   async_r_t:put_ref(Ref, Acc1, AsyncRT)
+                                           end
+                                       ])
+                            end,
+                      %% traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC1, AT) end, maps:values(Promises)))
+                      sequence_run_cc(maps:values(Promises), CC1, AsyncRT, AT)
+              end
       end).
 
+sequence_run_cc([], CC, _AsyncRT, _AT) ->
+    CC(ok);
 sequence_run_cc([Promise], CC, _AsyncRT, AT) ->
     run_cc(Promise, CC, AT);
 sequence_run_cc([Promise|T], CC, AsyncRT, AT) ->
