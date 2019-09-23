@@ -54,7 +54,7 @@
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
 -export([lift_reply/2, lift_final_reply/2, pure_return/2, ok/1, wrapped_return/2, wrapped_lift_mr/2,
          message/2, add_message/2, hijack/2, pass/1, handle_message/3, provide_message/3]).
--export([promise/2, promise/3, map_promises/2, map_promises/3, par/2, progn_par/2]).
+-export([promise/2, promise/3, promise_sleep/2, map_promises/2, map_promises/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
          update_cc/3, exec_cc/5, run_cc/3, run_with_cc/5, 
          handle_info/4, run_info/4, handle_reply/5, run_reply/5,
@@ -313,6 +313,14 @@ promise(MRef, Timeout, {?MODULE, _M} = Monad) when is_reference(MRef) or is_inte
 promise(Value, _Timeout, {?MODULE, _M} = Monad) ->
     pure_return(Value, Monad).
 
+promise_sleep(Time, {?MODULE, _IM} = Monad) ->
+    F = fun() ->
+                Ref = make_ref(),
+                erlang:send_after(Time, self(), {Ref, ok}),
+                Ref
+        end,
+    promise(F, Monad).
+
 -spec map_promises([async_t(S, R, M, A)], M) -> async_t(S, R, M, [A]);
          (#{Key => async_t(S, R, M, A)}, M) -> async_t(S, R, M, #{Key => A}).
 map_promises(Promises, {?MODULE, _M} = Monad) ->
@@ -371,7 +379,7 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
            put_ref(CRef, Acc0, AT),
            put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
            put_ref(WRef, WPromiseKeys, AT),
-           par_acc(CRef, maps:values(maps:with(WPromiseKeys, NPromises)), AT)
+           par_acc(CRef, maps:with(WPromiseKeys, NPromises), AT)
        ]);
 map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
     Promises1 = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
@@ -381,21 +389,56 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
                {message, {_Key, Message}} ->
                    message(Message, AT);
                _ ->
-                  pure_return(maps:values(Value), AT)
+                   pure_return(maps:values(Value), AT)
            end
        ]).
 
-par_acc(CRef, [Promise|T], {?MODULE, _IM} = AT) ->
+
+par_acc(CRef, Promises, AT) ->
     do([AT ||
-           Promise,
-           par_acc(CRef, T, AT)
-       ]);
-par_acc(CRef, [], AT) ->
-    do([AT ||
+           par_acc_1(maps:values(Promises), AT),
            Completed <- get_ref(CRef, maps:new(), AT),
            remove_ref(CRef, AT),
            pure_return(Completed, AT)
        ]).
+
+par_acc_1([], {?MODULE, _IM}) ->
+    async_t(
+      fun(CC) ->
+              CC(ok)
+      end);
+par_acc_1(Promises, {?MODULE, IM} = AT) ->
+    Len = maps:size(Promises),
+    async_t(
+      fun(CC) ->
+              Ref = make_ref(),
+              AsyncRT = {async_r_t, IM},
+              CC1 = fun({message, _M} = Message) ->
+                            CC(Message); 
+                       (A) -> 
+                            do([AsyncRT ||
+                                   Acc <- async_r_t:get_ref(Ref, 0, AsyncRT),
+                                   Acc1 = Acc + 1,
+                                   case Acc1 of
+                                       Len ->
+                                           CC(A);
+                                       _ ->
+                                           async_r_t:put_ref(Ref, Acc1, AsyncRT)
+                                   end
+                               ])
+                    end,
+              %% traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC1, AT) end, maps:values(Promises)))
+              sequence_run_cc(Promises, CC1, AsyncRT, AT)
+      end).
+
+sequence_run_cc([Promise], CC, _AsyncRT, AT) ->
+    run_cc(Promise, CC, AT);
+sequence_run_cc([Promise|T], CC, AsyncRT, AT) ->
+    do([AsyncRT ||
+           run_cc(Promise, CC, AT),
+           sequence_run_cc(T, CC, AsyncRT, AT)
+       ]).
+
 
 %par_acc(CRef, Promises, {?MODULE, _IM} = AT) ->
 %   do([AT ||
@@ -436,21 +479,25 @@ par(Promises, {?MODULE, _IM} = AT) ->
       fun(CC) ->
               traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC, AT) end, Promises))
       end).
-    
 
 %% acts like par, but only return last value of promises
 %% the name of progn is from lisp
 -spec progn_par([async_t(S, R, M, A)], t(M)) -> async_t(S, R, M, A).
 progn_par([], {?MODULE, _IM}) ->
     exit(invalid_progn_list);
+%% progn_par(Promises, {?MODULE, _IM} = AT) when is_list(Promises) ->
+%%     do([AT ||
+%%            Values <- par(Promises, AT),
+%%            async_t:pure_return(lists:nth(length(Values), Values), AT)
+%%        ]).
 progn_par(Promises, {?MODULE, IM} = AT) when is_list(Promises) ->
     map_async(
-      fun(MA) -> 
+      fun(MA) ->
               do([IM ||
                      {Values, S} <- MA,
                      return({lists:nth(length(Values), Values), S})
                  ])
-      end, 
+      end,
       par(Promises, AT), AT).
 
 -spec handle_message(async_t(S, R, M, A), callback_or_cc(S, R, M, A), M) -> async_t(S, R, M, A).

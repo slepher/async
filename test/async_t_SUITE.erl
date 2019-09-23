@@ -321,7 +321,7 @@ test_async_t_progn_par(_Config) ->
     MR = async_r_t:new(identity),
     M1 = async_t:progn_par(
                   [async_m:message(hello_message),
-                   async_m:fail(hello)]),
+                   async_m:fail(hello)], async_t:new(identity)),
     Reply = async_m:wait_t(M1,
                          #{callback =>
                                fun({message, M}) ->
@@ -339,21 +339,20 @@ test_async_t_progn_par(_Config) ->
 
 test_async_t_pmap_0(_Config) ->
     MR = async_r_t:new(identity),
-    M0 = async_m:pure_return(ok),
+    M0 = async_m:pure_return(ok_1),
     Promises = lists:duplicate(8, M0),
     M1 = async_m:map_promises(Promises),
     Reply = async_m:wait_t(
               M1,
               #{cc =>
-                       fun(X) ->
-                               monad:return(X, MR)
+                    fun(X) ->
+                            monad:return(X, MR)
                     end
                }),
-    ?assertEqual(lists:duplicate(8, ok), Reply).
+    ?assertEqual(lists:duplicate(8, ok_1), Reply).
 
 test_async_t_lift_final(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
-    Monad = async_t:new(identity),
     M0 = async_m:promise(echo_server:echo(EchoServer, {error, failed})),
     M1 = 
         do([async_m ||

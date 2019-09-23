@@ -37,7 +37,7 @@
                          message/1, add_message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
 
 -gen_fun(#{remote => async_t, args => identity, 
-           functions =>[promise/1, promise/2, map_promises/1, map_promises/2,
+           functions =>[promise/1, promise/2, promise_sleep/1, map_promises/1, map_promises/2,
                         par/1, progn_par/1, update_cc/2, callCC/1]}).
 -gen_fun(#{remote => async_t, args => identity, extra_call => {identity, run},
            functions => [wait/1, wait_t/2,  exec_cc/4, run_cc/2, run_with_cc/4]}).
