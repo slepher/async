@@ -124,7 +124,7 @@ catch_error(RTA, ERTB, {?MODULE, IM} = ReplyT) ->
       do([IM || 
              RA <- run_reply_t(RTA),
              case RA of
-                 {error, Reason}    -> run_reply_t(try_emb(Reason, ERTB, ReplyT));
+                 {error, Reason} -> run_reply_t(try_emb(Reason, ERTB, ReplyT));
                  _      -> return(RA)
              end
        ])).
@@ -189,7 +189,7 @@ wrap_value(Value) ->
 
 try_emb(Reason, EMB, ReplyT) ->
     try
-        EMB(Reason)
+        undetermined:run(EMB(Reason), ReplyT)
     catch
         error:function_clause ->
             throw_error(Reason, ReplyT)

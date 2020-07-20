@@ -60,6 +60,7 @@
          handle_info/4, run_info/4, handle_reply/5, run_reply/5,
          wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]).
 -export([state_callbacks_gs/1]).
+-export([update_callbacks/3]).
 
 -gen_fun(#{args => monad, 
              sfunctions => [get_state/1, put_state/2, modify_state/2, 
@@ -82,7 +83,6 @@
 %%%===================================================================
 %%% API
 %%%===================================================================
-
 -spec new(M) -> TM when TM :: monad:class(), M :: monad:class().
 new(M) ->
     {?MODULE, M}.
@@ -674,6 +674,15 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
             monad:return({ok, unhandled}, IM)
     end.
 
+update_callbacks(Fun, Callbacks, {?MODULE, IM}) ->
+    maps:map(
+      fun(_Ref, #callback{cc = CC} = Callback) ->
+              CC1 =
+                  fun(A) ->
+                          async_r_t:modify_state(Fun, CC(A), {async_r_t, IM})
+                  end,
+              Callback#callback{cc = CC1}
+          end, Callbacks).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

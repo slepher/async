@@ -40,8 +40,8 @@ remote_promise_wait(Promise, Ref, Self) ->
               try 
                   async_m:wait_t(Promise, #{callback => Callback})
               catch
-                  _:Exception:_StrackTrace ->
-                      Self ! {Ref, {error, Exception}}
+                  Class:Exception:StackTrace ->
+                      Self ! {Ref, {error, {Class, Exception, StackTrace}}}
               end
       end).
 %%--------------------------------------------------------------------
