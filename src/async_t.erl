@@ -351,17 +351,20 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
                          NWorking <- get_ref(WRef, [], AT),
                          case maps:size(Pending) of
                              0 ->
-                                 case lists:delete(Key, NWorking) of
-                                     [] ->
-                                         remove_ref(WRef, AT);
-                                     NNWorking ->
-                                         put_ref(WRef, NNWorking, AT)
-                                 end;
+                                 do([AT ||
+                                        remove_ref(PRef, AT),
+                                        case lists:delete(Key, NWorking) of
+                                            [] ->
+                                                remove_ref(WRef, AT);
+                                            NNWorking ->
+                                                put_ref(WRef, NNWorking, AT)
+                                        end
+                                    ]);
                              _ ->
                                  PKey = lists:nth(1, maps:keys(Pending)), 
                                  PendingPromise = maps:get(PKey, Pending),
                                  NPending = maps:remove(PKey, Pending),
-                                 do([{?MODULE, IM} ||
+                                 do([AT ||
                                         case maps:size(NPending) of
                                             0 ->
                                                 remove_ref(PRef, AT);
@@ -426,19 +429,25 @@ par_acc_1(Promises, {?MODULE, IM} = AT) ->
                                            end
                                        ])
                             end,
-                      %% traversable:sequence(lists:map(fun(Promise) -> run_cc(Promise, CC1, AT) end, maps:values(Promises)))
-                      sequence_run_cc(maps:values(Promises), CC1, AsyncRT, AT)
+                      sequence_run_cc(maps:values(Promises), CC1, Ref, AsyncRT, AT)
               end
       end).
 
-sequence_run_cc([], CC, _AsyncRT, _AT) ->
-    CC(ok);
-sequence_run_cc([Promise], CC, _AsyncRT, AT) ->
-    run_cc(Promise, CC, AT);
-sequence_run_cc([Promise|T], CC, AsyncRT, AT) ->
+sequence_run_cc([], CC, Ref, AsyncRT, _AT) ->
+    do([AsyncRT ||
+           async_r_t:remove_ref(Ref, AsyncRT),
+           CC(ok)
+       ]);
+sequence_run_cc([Promise], CC, Ref, AsyncRT, AT) ->
+    do([AsyncRT ||
+           Return <- run_cc(Promise, CC, AT),
+           async_r_t:remove_ref(Ref, AsyncRT),
+           async_r_t:return(Return, AsyncRT)
+       ]);
+sequence_run_cc([Promise|T], CC, Ref, AsyncRT, AT) ->
     do([AsyncRT ||
            run_cc(Promise, CC, AT),
-           sequence_run_cc(T, CC, AsyncRT, AT)
+           sequence_run_cc(T, CC, Ref, AsyncRT, AT)
        ]).
 
 
