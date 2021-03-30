@@ -423,33 +423,28 @@ par_acc_1(Promises, {?MODULE, IM} = AT) ->
                                            Acc1 = Acc + 1,
                                            case Acc1 of
                                                Len ->
-                                                   CC(A);
+                                                   do([async_r_t ||
+                                                          async_r_t:remove_ref(Ref, AsyncRT),
+                                                          CC(A)
+                                                      ]);
                                                _ ->
                                                    async_r_t:put_ref(Ref, Acc1, AsyncRT)
                                            end
                                        ])
                             end,
-                      sequence_run_cc(maps:values(Promises), CC1, Ref, AsyncRT, AT)
+                      sequence_run_cc(maps:values(Promises), CC1, AsyncRT, AT)
               end
       end).
 
-sequence_run_cc([], CC, Ref, AsyncRT, _AT) ->
-    do([AsyncRT ||
-           async_r_t:remove_ref(Ref, AsyncRT),
-           CC(ok)
-       ]);
-sequence_run_cc([Promise], CC, Ref, AsyncRT, AT) ->
-    do([AsyncRT ||
-           Return <- run_cc(Promise, CC, AT),
-           async_r_t:remove_ref(Ref, AsyncRT),
-           async_r_t:return(Return, AsyncRT)
-       ]);
-sequence_run_cc([Promise|T], CC, Ref, AsyncRT, AT) ->
+sequence_run_cc([], CC, _AsyncRT, _AT) ->
+    CC(ok);
+sequence_run_cc([Promise], CC, _AsyncRT, AT) ->
+    run_cc(Promise, CC, AT);
+sequence_run_cc([Promise|T], CC, AsyncRT, AT) ->
     do([AsyncRT ||
            run_cc(Promise, CC, AT),
-           sequence_run_cc(T, CC, Ref, AsyncRT, AT)
+           sequence_run_cc(T, CC, AsyncRT, AT)
        ]).
-
 
 %par_acc(CRef, Promises, {?MODULE, _IM} = AT) ->
 %   do([AT ||
@@ -458,7 +453,6 @@ sequence_run_cc([Promise|T], CC, Ref, AsyncRT, AT) ->
 %           remove_ref(CRef, AT),
 %           pure_return(Completed, AT)
 %      ]).
-           
 
 %% provide extra message and return origin value
 -spec provide_message(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, A)), M) -> async_t(S, R, M, A).
