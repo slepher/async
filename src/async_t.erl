@@ -524,9 +524,9 @@ handle_all(X, Handler, {?MODULE, _IM} = AT) ->
            Value <- lift_reply(X, AT),
            case Value of
                {message, Message} ->
-                   hijack(Handler1(Message), AT);
+                   hijack(Handler1({message, Message}), AT);
                Reply ->
-                   pure_return(Handler1(Reply), AT)
+                   lift_mr(Handler1(Reply), AT)
            end
        ]).
 
