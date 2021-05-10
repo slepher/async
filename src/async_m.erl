@@ -34,7 +34,7 @@
 
 -gen_fun(#{remote => async_t, args => identity, 
            functions => [lift_reply/1, lift_final_reply/1, pure_return/1, ok/0, wrapped_return/1, lift_mr/1, wrapped_lift_mr/1,
-                         message/1, add_message/1, hijack/1, pass/0, handle_message/2, provide_message/2]}).
+                         message/1, add_message/1, hijack/1, pass/0, handle_message/2, handle_all/2, provide_message/2]}).
 
 -gen_fun(#{remote => async_t, args => identity, 
            functions =>[promise/1, promise/2, promise_sleep/1, map_promises/1, map_promises/2,
