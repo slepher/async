@@ -69,7 +69,12 @@ run_reply_t(Other) ->
 fmap(F, RTA, {?MODULE, IM}) ->
     map(
       fun(MA) ->
-              functor:fmap(F, MA, IM)
+              functor:fmap(
+                fun({ok, A}) -> {ok, F(A)};
+                   ({error, Reason}) -> {error, Reason};
+                   ({message, M}) -> {message, M};
+                   (Other) -> F(Other)
+                end, MA, IM)
       end, RTA).
 
 '<$'(RTB, RTA, {?MODULE, _IM} = RT) ->
