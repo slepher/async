@@ -53,7 +53,8 @@
          find_ref/2, get_ref/3, put_ref/3, remove_ref/2, 
          get_local/1, put_local/2, modify_local/2, local_ref/3, local/3, get_local_ref/1]).
 -export([lift_reply/2, lift_final_reply/2, pure_return/2, ok/1, wrapped_return/2, wrapped_lift_mr/2,
-         message/2, add_message/2, hijack/2, pass/1, handle_message/3, handle_all/3, provide_message/3]).
+         message/2, add_message/2, hijack/2, pass/1, handle_message/3, handle_all/3]).
+-export([with_message/3, with_final/3, with_all/3, provide_message/3]).
 -export([promise/2, promise/3, promise_sleep/2, map_promises/2, map_promises/3, par/2, progn_par/2]).
 -export([wait/2, wait_t/3, 
          update_cc/3, exec_cc/5, run_cc/3, run_with_cc/5, 
@@ -474,6 +475,30 @@ provide_message(Promise, Then, {?MODULE, _IM} = AT) ->
               end
              ], AT)
       ]).
+
+with_message(Promise, Then, {?MODULE, _IM} = AT) ->
+    with_all(
+      Promise,
+      fun({message, Message}) ->
+              Then(Message);
+         (Value) ->
+              async_m:pure_return(Value)
+      end, AT).
+
+with_final(Promise, Then, {?MODULE, _IM} = AT) ->
+    async_t:'>>='(lift_final_reply(Promise, AT), Then, AT).
+
+with_all(Promise, Then, {?MODULE, _IM} = AT) ->
+    async_t:'>>='(
+      lift_reply(Promise, AT),
+      fun({message, Message}) ->
+              do([AT ||
+                     Then({message, Message}),
+                     pass(AT)
+                 ]);
+         (Value) ->
+              Then(Value)
+      end).
 
 %% this is a dangerous function, only one should return A | {ok, A} | {error, E}
 %% others should return {message, IM} or use pass()

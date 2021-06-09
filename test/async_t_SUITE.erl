@@ -105,7 +105,7 @@ all() ->
     [test_async_t, test_chain_async, test_chain_async_fail, 
      test_async_monad_error, test_async_then,
      test_async_t_with_timeout, test_async_t_with_self_message,
-     test_async_t_with_message, test_async_t_with_message_handler,
+     test_async_t_with_message, test_async_t_with_message_handler,test_async_t_with_message_function,
      test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap, test_async_t_pmap_with_acc, 
      test_async_t_pmap_with_timeout, test_async_t_lift_final,
      test_local_acc_ref, test_async_t_local_acc_ref].
@@ -276,17 +276,20 @@ test_async_t_with_message_handler(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
     MRef = echo_server:echo_with_messages(EchoServer, [message, message], hello),
     M0 = do([async_m || 
+                %% 2 messages added here
                 R1 <- async_m:promise(MRef),
                 R2 <- async_m:handle_message(
-                           do([async_m ||
-                                  async_m:promise(echo_server:echo_with_messages(
-                                                  EchoServer, lists:duplicate(5, message), world)),
-                                  async_m:promise(echo_server:echo_with_messages(
-                                                  EchoServer, lists:duplicate(3, message), world))
-                              ]),
-                           fun(Message, #state{acc0 = Acc0} = State) ->
-                                   State#state{acc0 = [Message|Acc0]}
-                           end),
+                        %% 8 messages added here, but acced to acc0
+                        do([async_m ||
+                               async_m:promise(echo_server:echo_with_messages(
+                                                 EchoServer, lists:duplicate(5, message), world)),
+                               async_m:promise(echo_server:echo_with_messages(
+                                                 EchoServer, lists:duplicate(3, message), world))
+                           ]),
+                        fun(Message, #state{acc0 = Acc0} = State) ->
+                                State#state{acc0 = [Message|Acc0]}
+                        end),
+                %% 3 messages added here
                 R3 <- async_m:promise(
                            echo_server:echo_with_messages(
                              EchoServer, lists:duplicate(3, message), world)),
@@ -300,7 +303,49 @@ test_async_t_with_message_handler(Config) ->
                                        NAcc = [Message|Acc],
                                        State#state{acc = NAcc}
                                end, offset => #state.callbacks, state => #state{}}),
+    %% 8 message acced first 5 messages final
     ?assertEqual({{hello, world, world}, lists:duplicate(8, message), lists:duplicate(5, message)}, Reply).
+
+test_async_t_with_message_function(Config) ->
+    EchoServer = proplists:get_value(echo_server, Config),
+    MRef = echo_server:echo_with_messages(EchoServer, [message, message], hello),
+    M0 = do([async_m || 
+                %% 2 messages added here
+                R1 <- async_m:promise(MRef),
+                R2 <- async_m:with_message(
+                        %% 8 messages added here, but acced to acc0
+                        do([async_m ||
+                               async_m:promise(echo_server:echo_with_messages(
+                                                 EchoServer, lists:duplicate(5, message), world)),
+                               async_m:promise(echo_server:echo_with_messages(
+                                                 EchoServer, lists:duplicate(3, message), world))
+                           ]),
+                        fun(Message) ->
+                                %% get 2 messages for each message in with_message, so extra 16 messages added here
+                                do([async_m ||
+                                       async_m:add_message(Message),
+                                       async_m:add_message(Message),
+                                       #state{acc0 = Acc0} = State <- async_m:get_state(),
+                                       async_m:put_state(State#state{acc0 = [Message|Acc0]})
+                                   ])
+                        end),
+                %% get 3 messages added here
+                R3 <- async_m:promise(
+                           echo_server:echo_with_messages(
+                             EchoServer, lists:duplicate(3, message), world)),
+                return({R1, R2, R3})
+               ]),
+    Reply = async_m:wait_t(M0,
+                         #{callback =>
+                               fun({ok, R}, #state{acc0 = Acc0, acc = Acc}) ->
+                                       {R, Acc0, Acc};
+                                  ({message, Message}, #state{acc = Acc} = State)->
+                                       NAcc = [Message|Acc],
+                                       State#state{acc = NAcc}
+                               end, offset => #state.callbacks, state => #state{}}),
+    %% 8 message acced first 21 messages final
+    ?assertEqual({{hello, world, world}, lists:duplicate(8, message), lists:duplicate(21, message)}, Reply).
+
 
 %% test_async_t_par(Config) ->
 %%     EchoServer = proplists:get_value(echo_server, Config),
