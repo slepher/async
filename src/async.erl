@@ -59,7 +59,12 @@ call(Name, _Label, _Request) ->
     {error, {invalid_process_name, Name}}.
 
 message({PId, MRef}, Message) ->
-    catch PId ! {message, MRef, Message}.
+    try
+        PId ! {message, MRef, Message}
+    catch
+        error:Reason:Stacktrace ->
+            {'EXIT', {Reason, Stacktrace}}
+    end.
 
 promise_action(Action, Timeout) ->
     async_m:promise(Action, Timeout).
