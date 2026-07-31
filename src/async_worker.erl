@@ -38,7 +38,7 @@ promise(Action) ->
     end.
 
 start() ->
-    supervisor:start_child(atask_worker_sup, []).
+    async_worker_sup:start_child().
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server

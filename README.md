@@ -25,11 +25,12 @@ the generic `async_t` monad transformer.
 
 ## Status and compatibility
 
-The application version in this repository is `0.5.2`.
+The application version in this repository is `0.5.3`.
 
-The project does not currently declare a minimum Erlang/OTP version. Its source
-contains both modern maps and legacy OTP supervision patterns, so applications
-should compile and test it against their chosen OTP release.
+The project does not currently declare a minimum Erlang/OTP version. Its
+supervision tree uses map child specifications and ordinary `one_for_one`
+supervisors for both static and dynamic children. Applications should compile
+and test it against their chosen OTP release.
 
 ## Installation
 
@@ -37,7 +38,7 @@ Add the Git repository to `rebar.config`:
 
 ```erlang
 {deps, [
-    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.2"}}}
+    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.3"}}}
 ]}.
 ```
 
@@ -560,6 +561,26 @@ rebar3 dialyzer
 The test suites cover transformer state, promise chaining, errors, messages,
 timeouts, asynchronous accumulation, bounded concurrency, and historical API
 versions.
+
+For Docker-based compatibility testing across multiple Erlang/OTP versions:
+
+```powershell
+.\ci_scripts\sync_ci.ps1
+.\ci_scripts\build.ps1
+.\ci_scripts\run.ps1 -NoView
+```
+
+`ci_scripts/sync_ci.ps1` first runs `rebar3 get-deps`, then resolves the
+selected `astranaut` dependency through `_build/default`. A fetched dependency
+is read from `lib/astranaut`; a local checkout is discovered through the
+`checkouts/astranaut/src` link, preserving uncommitted checkout changes. This
+repository owns
+`ci_scripts/ci-env.conf.example`; the ignored `ci_scripts/ci-env.conf`
+contains local overrides. The sync script never replaces these
+project-specific configuration files. Re-run it when the upstream CI file set
+changes.
+
+On Bash, use `bash ./ci_scripts/sync_ci.sh` instead.
 
 On modern OTP releases, Dialyzer may report legacy opaque/generated-code
 warnings that are independent of compilation and Common Test results.

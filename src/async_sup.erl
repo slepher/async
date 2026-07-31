@@ -50,39 +50,27 @@ start_link() ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    RestartStrategy = one_for_one,
-    MaxRestarts = 1000,
-    MaxSecondsBetweenRestarts = 3600,
-    SupFlags = {RestartStrategy, MaxRestarts, MaxSecondsBetweenRestarts},
-    AWSup  =  #{id => async_worker_sup,
-                start => local_sup_start(async_worker_sup, []),
-                restart => transient,
-                shutdown => infinity,
-                type =>  supervisor,
-                modules => []},
-    ACWSup = #{id => async_channel_worker_sup,
-               start => local_sup_start(async_channel_sup, []),
-               restart => transient,
-               shutdown => infinity,
-               type => supervisor,
-               modules => []},
-    {ok, {SupFlags, [AWSup, ACWSup]}};
-
-init([async_worker_sup]) ->
-    {ok,
-     {#{strategy => simple_one_for_one},
-      [#{id => undefined, start => {async_worker, start_link, []}, 
-         restart => temporary}]
-     }};
-
-init([async_channel_sup]) ->
-    {ok, 
-     {#{strategy => simple_one_for_one},
-      [#{id => undefined, start => {async_channel, start_link, []}}]
-     }}.
-
-%%%===================================================================
-%%% Internal functions
-%%%===================================================================
-local_sup_start(Module, Args) ->
-    {supervisor, start_link, [{local, Module}, ?MODULE, [Module|Args]]}.
+    SupFlags = #{
+        strategy => one_for_one,
+        intensity => 10,
+        period => 5
+    },
+    Children = [
+        #{
+            id => async_worker_sup,
+            start => {async_worker_sup, start_link, []},
+            restart => permanent,
+            shutdown => infinity,
+            type => supervisor,
+            modules => [async_worker_sup]
+        },
+        #{
+            id => async_channel_sup,
+            start => {async_channel_sup, start_link, []},
+            restart => permanent,
+            shutdown => infinity,
+            type => supervisor,
+            modules => [async_channel_sup]
+        }
+    ],
+    {ok, {SupFlags, Children}}.

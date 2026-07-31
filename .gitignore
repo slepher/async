@@ -10,3 +10,7 @@ deps
 _build
 _checkouts
 rebar.lock
+/ci_scripts/*
+!/ci_scripts/ci-env.conf.example
+!/ci_scripts/sync_ci.ps1
+!/ci_scripts/sync_ci.sh

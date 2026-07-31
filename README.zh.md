@@ -24,10 +24,11 @@ Monad 值：一个 promise 可以依次产生零条或多条进度消息，最�
 
 ## 状态与兼容性
 
-当前仓库中的应用版本是 `0.5.2`。
+当前仓库中的应用版本是 `0.5.3`。
 
-项目目前没有声明最低 Erlang/OTP 版本。源码同时使用了现代 map 和较早期的
-OTP supervisor 模式，因此使用方应在自己的目标 OTP 版本上编译并运行测试。
+项目目前没有声明最低 Erlang/OTP 版本。监督树使用 map child spec，并以普通
+`one_for_one` supervisor 管理静态和动态子进程。使用方应在自己的目标 OTP
+版本上编译并运行测试。
 
 ## 安装
 
@@ -35,7 +36,7 @@ OTP supervisor 模式，因此使用方应在自己的目标 OTP 版本上编译
 
 ```erlang
 {deps, [
-    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.2"}}}
+    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.3"}}}
 ]}.
 ```
 
@@ -542,6 +543,24 @@ rebar3 dialyzer
 
 测试套件覆盖 Transformer 状态、promise 链、错误、消息、超时、异步累计、
 有限并发和历史 API 版本。
+
+如需在多个 Erlang/OTP 版本上进行 Docker 兼容性测试：
+
+```powershell
+.\ci_scripts\sync_ci.ps1
+.\ci_scripts\build.ps1
+.\ci_scripts\run.ps1 -NoView
+```
+
+`ci_scripts/sync_ci.ps1` 会先执行 `rebar3 get-deps`，再通过
+`_build/default` 解析 Rebar3 实际选中的 `astranaut` 依赖：远端依赖来自
+`lib/astranaut`，本地 checkout 则通过 `checkouts/astranaut/src` 的链接
+反查源码根目录，因此可以保留尚未提交的 checkout 修改。本仓库只维护
+`ci_scripts/ci-env.conf.example`，本机覆盖配置位于被忽略的
+`ci_scripts/ci-env.conf`；同步脚本不会替换这些项目配置。
+上游 CI 文件集合发生变化后重新运行同步脚本即可。
+
+Bash 环境使用 `bash ./ci_scripts/sync_ci.sh`。
 
 在较新的 OTP 版本上，Dialyzer 可能报告与编译和 Common Test 结果无关的旧式
 opaque/generated-code 警告。

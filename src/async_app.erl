@@ -34,12 +34,7 @@
 %% @end
 %%--------------------------------------------------------------------
 start(_StartType, _StartArgs) ->
-    case async_sup:start_link() of
-        {ok, Pid} ->
-            {ok, Pid};
-        Error ->
-            Error
-    end.
+    async_sup:start_link().
 
 %%--------------------------------------------------------------------
 %% @private

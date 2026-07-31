@@ -1,9 +1,9 @@
 {application, async, [
     {description, "Async Monad"},
-    {vsn, "0.5.2"},
+    {vsn, "0.5.3"},
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
-    {registered, []},
+    {registered, [async_sup, async_worker_sup, async_channel_sup]},
     {applications, [kernel, stdlib, erlando]},
     {env, []}
 ]}.

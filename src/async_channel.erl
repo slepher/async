@@ -34,7 +34,7 @@ process_name(Channel) ->
     list_to_atom(lists:flatten(["async_channel_", atom_to_list(Channel)])).
 
 start(Channel, PoolSize) ->
-    supervisor:start_child(async_channel_sup, [Channel, PoolSize]).
+    async_channel_sup:start_child(Channel, PoolSize).
 %%--------------------------------------------------------------------
 %% @doc
 %% Starts the server

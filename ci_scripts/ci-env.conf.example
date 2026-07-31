@@ -1,0 +1,20 @@
+# Erlang/OTP versions tested by the shared local CI scripts.
+ERLANG_VSNS=21,23,28,29
+
+# Optional Common Test selection. Names do not include the .erl suffix.
+# TEST_SUITE=async_sup_SUITE
+# TEST_CASE=permanent_channel
+
+# Additional checks.
+RUN_XREF=true
+# Dialyzer is opt-in because the project currently has historical warnings.
+RUN_DIALYZER=false
+
+# auto detects a non-empty host _checkouts directory. true/false force a mode.
+USE_CHECKOUTS=auto
+
+# Output language: auto, en, or cn.
+OUTPUT_LANG=auto
+
+# Port used by the Nginx log viewer.
+LOG_PORT=8081
