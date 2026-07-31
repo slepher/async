@@ -106,7 +106,11 @@ all() ->
      test_async_monad_error, test_async_then,
      test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,test_async_t_with_message_function,
-     test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap, test_async_t_pmap_with_acc, 
+     test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap_empty,
+     test_async_t_pmap_custom_cc, test_async_t_pmap_async_cc,
+     test_async_t_pmap_multiple_messages, test_async_t_pmap_limit,
+     test_async_t_pmap_invalid_limit,
+     test_async_t_pmap, test_async_t_pmap_with_acc,
      test_async_t_pmap_with_timeout, test_async_t_lift_final,
      test_local_acc_ref, test_async_t_local_acc_ref].
 
@@ -395,6 +399,150 @@ test_async_t_pmap_0(_Config) ->
                     end
                }),
     ?assertEqual(lists:duplicate(8, ok_1), Reply).
+
+test_async_t_pmap_empty(_Config) ->
+    AT = async_t:new(identity),
+    MR = async_r_t:new(identity),
+    CC = fun(A) -> async_r_t:return(A, MR) end,
+    EmptyMap = async_t:map_promises(#{}, AT),
+    MapResult = identity:run(
+                  async_t:run_with_cc(EmptyMap, CC, 2, {state, #{}}, AT)),
+    ?assertEqual({#{}, {state, #{}}}, MapResult),
+    EmptyList = async_t:map_promises([], AT),
+    ListResult = identity:run(
+                   async_t:run_with_cc(EmptyList, CC, 2, {state, #{}}, AT)),
+    ?assertEqual({[], {state, #{}}}, ListResult).
+
+test_async_t_pmap_custom_cc(_Config) ->
+    AT = async_t:new(identity),
+    Promises = #{a => async_t:pure_return(one, AT),
+                 b => async_t:pure_return(two, AT)},
+    CC =
+        fun(Key, Value) ->
+                do([AT ||
+                       Acc <- async_t:get_local(AT),
+                       async_t:put_local(
+                         maps:put(Key, {custom, Value}, Acc), AT),
+                       async_t:pure_return(Value, AT)
+                   ])
+        end,
+    Result = identity:run(
+               async_t:wait(
+                 async_t:map_promises(Promises, #{cc => CC}, AT), AT)),
+    ?assertEqual(#{a => {custom, one}, b => {custom, two}}, Result).
+
+test_async_t_pmap_async_cc(_Config) ->
+    AT = async_t:new(identity),
+    ActiveKey = make_ref(),
+    MaxActiveKey = make_ref(),
+    put(ActiveKey, 0),
+    put(MaxActiveKey, 0),
+    Promises = #{a => async_t:pure_return(one, AT),
+                 b => async_t:pure_return(two, AT)},
+    CC =
+        fun(Key, Value) ->
+                Active = get(ActiveKey) + 1,
+                put(ActiveKey, Active),
+                put(MaxActiveKey, erlang:max(Active, get(MaxActiveKey))),
+                do([AT ||
+                       async_t:promise_sleep(20, AT),
+                       Acc <-
+                           begin
+                               put(ActiveKey, get(ActiveKey) - 1),
+                               async_t:get_local(AT)
+                           end,
+                       async_t:put_local(
+                         maps:put(Key, {async, Value}, Acc), AT),
+                       async_t:pure_return(Value, AT)
+                   ])
+        end,
+    Result = identity:run(
+               async_t:wait(
+                 async_t:map_promises(
+                   Promises, #{cc => CC, limit => 2}, AT), AT)),
+    ?assertEqual(#{a => {async, one}, b => {async, two}}, Result),
+    ?assertEqual(2, get(MaxActiveKey)),
+    ?assertEqual(0, get(ActiveKey)),
+    erase(ActiveKey),
+    erase(MaxActiveKey).
+
+test_async_t_pmap_multiple_messages(Config) ->
+    EchoServer = proplists:get_value(echo_server, Config),
+    Promise =
+        async_m:promise(
+          fun() ->
+                  echo_server:echo_with_messages(
+                    EchoServer, [one, two, three], done)
+          end),
+    Mapped =
+        do([async_m ||
+               async_m:put_local([]),
+               async_m:map_promises(#{item => Promise})
+           ]),
+    MR = async_r_t:new(identity),
+    Reply =
+        async_m:wait_t(
+          Mapped,
+          #{callback =>
+                fun({message, Message}) ->
+                        do([MR ||
+                               Messages <- async_r_t:get_local(MR),
+                               async_r_t:put_local([Message|Messages], MR)
+                           ]);
+                   (Result) ->
+                        do([MR ||
+                               Messages <- async_r_t:get_local(MR),
+                               return({Result, lists:reverse(Messages)})
+                           ])
+                end}),
+    ?assertEqual(
+       {#{item => done}, [{item, one}, {item, two}, {item, three}]},
+       Reply).
+
+test_async_t_pmap_limit(_Config) ->
+    ActiveKey = make_ref(),
+    MaxActiveKey = make_ref(),
+    put(ActiveKey, 0),
+    put(MaxActiveKey, 0),
+    MakePromise =
+        fun(N) ->
+                Promise =
+                    async_m:promise(
+                      fun() ->
+                              Active = get(ActiveKey) + 1,
+                              put(ActiveKey, Active),
+                              put(
+                                MaxActiveKey,
+                                erlang:max(Active, get(MaxActiveKey))),
+                              Ref = make_ref(),
+                              erlang:send_after(20, self(), {Ref, N}),
+                              Ref
+                      end),
+                async_m:'>>='(
+                  Promise,
+                  fun(_Value) ->
+                          put(ActiveKey, get(ActiveKey) - 1),
+                          async_m:pure_return(N)
+                  end)
+        end,
+    Promises =
+        maps:from_list(
+          [{N, MakePromise(N)} || N <- lists:seq(1, 5)]),
+    Result = async_m:wait(
+               async_m:map_promises(Promises, #{limit => 2})),
+    ?assertEqual(
+       maps:from_list([{N, N} || N <- lists:seq(1, 5)]),
+       Result),
+    ?assertEqual(2, get(MaxActiveKey)),
+    ?assertEqual(0, get(ActiveKey)),
+    erase(ActiveKey),
+    erase(MaxActiveKey).
+
+test_async_t_pmap_invalid_limit(_Config) ->
+    AT = async_t:new(identity),
+    ?assertExit(
+       {invalid_limit, -1},
+       async_t:map_promises(#{}, #{limit => -1}, AT)).
 
 test_async_t_lift_final(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),

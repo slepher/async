@@ -328,8 +328,8 @@ map_promises(Promises, {?MODULE, _M} = Monad) ->
     map_promises(Promises, #{}, Monad).
 
 -spec map_promises(#{Key => async_t(S, R, M, A)}, 
-          #{cc => fun((Key, A) -> async_r_t:async_r_t(S, M, _IM)),
-            acc0 => Acc, limit => integer()}, M) -> 
+          #{cc => fun((Key, A) -> async_t(S, R, M, _IM)),
+            acc0 => Acc, limit => non_neg_integer()}, M) ->
                  async_t(S, R, M, Acc).
 map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
     WRef = make_ref(),
@@ -337,7 +337,7 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
     CRef = make_ref(),
     CC = maps:get(cc, Options, default_map_cc(AT)),
     Acc0 = maps:get(acc0, Options, maps:new()),
-    Threads = maps:get(limit, Options, 0),
+    Threads = validate_limit(maps:get(limit, Options, 0)),
     NPromises = 
         maps:map(
           fun(Key, Promise) ->
@@ -378,13 +378,18 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
                          end
                      ])
           end, Promises),
-    {WPromiseKeys, PPromiseKeys} = split(Threads, maps:keys(NPromises)),
-    do([{?MODULE, IM} ||
-           put_ref(CRef, Acc0, AT),
-           put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
-           put_ref(WRef, WPromiseKeys, AT),
-           par_acc(CRef, maps:with(WPromiseKeys, NPromises), AT)
-       ]);
+    case maps:size(NPromises) of
+        0 ->
+            pure_return(Acc0, AT);
+        _ ->
+            {WPromiseKeys, PPromiseKeys} = split(Threads, maps:keys(NPromises)),
+            do([{?MODULE, IM} ||
+                   put_ref(CRef, Acc0, AT),
+                   put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
+                   put_ref(WRef, WPromiseKeys, AT),
+                   par_acc(CRef, maps:with(WPromiseKeys, NPromises), AT)
+               ])
+    end;
 map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
     Promises1 = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
     do([{?MODULE, IM} || 
@@ -460,20 +465,13 @@ sequence_run_cc([Promise|T], CC, AsyncRT, AT) ->
 provide_message(Promise, Then, {?MODULE, _IM} = AT) ->
     do([AT ||
            Val <- lift_reply(Promise, AT),
-           progn_par(
-             [% this will only return messages and ignore all normal reply returned in then
-              do([AT || 
-                     lift_final_reply(Then(Val), AT),
-                     pass(AT)
-                 ]),
-              % this will only return normal reply and ignore messages in promise
-              case Val of
-                  {message, _Message} ->
-                      pass(AT);
-                  _ ->
-                      pure_return(Val, AT)
-              end
-             ], AT)
+           lift_final_reply(Then(Val), AT),
+           case Val of
+               {message, _Message} ->
+                   pass(AT);
+               _ ->
+                   pure_return(Val, AT)
+           end
       ]).
 
 with_message(Promise, Then, {?MODULE, _IM} = AT) ->
@@ -738,6 +736,11 @@ split(Threads, Keys) when length(Keys) >= Threads ->
     lists:split(Threads, Keys);
 split(_Threads, Keys) ->
     {Keys, []}.
+
+validate_limit(Limit) when is_integer(Limit), Limit >= 0 ->
+    Limit;
+validate_limit(Limit) ->
+    exit({invalid_limit, Limit}).
 
 real_new(M) ->
     reply_t:new(cont_t:new(async_r_t:new(M))).
