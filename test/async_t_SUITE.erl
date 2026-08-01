@@ -103,7 +103,8 @@ end_per_testcase(_TestCase, _Config) ->
 %%--------------------------------------------------------------------
 all() ->
     [test_async_t, test_chain_async, test_chain_async_fail, 
-     test_async_monad_error, test_async_then,
+     test_async_monad_error, test_async_monad_error_handler_function_clause,
+     test_async_then,
      test_async_t_with_timeout, test_async_t_with_self_message,
      test_async_t_with_message, test_async_t_with_message_handler,test_async_t_with_message_function,
      test_async_t_progn_par, test_async_t_pmap_0, test_async_t_pmap_empty,
@@ -171,7 +172,7 @@ test_async_monad_error(Config) when is_list(Config) ->
                   R2 <-
                       monad_error:catch_error(
                         async_m:promise(echo_server:echo(EchoServer, {error, world1})),
-                        fun(world) ->
+                        fun(world1) ->
                                 async_m:promise(echo_server:echo(EchoServer, hello2))
                         end),
                   async_m:modify_local(
@@ -181,17 +182,30 @@ test_async_monad_error(Config) when is_list(Config) ->
                   R3 <- async_m:promise(echo_server:echo(EchoServer, hello)),
                   return({R1, R2, R3})
               ]),
-           fun(world1) ->
+           fun(OtherReason) ->
                    do([async_m ||
                           async_m:modify_local(
                             fun(Local) ->
-                                    [c|Local]
+                                    [{unexpected, OtherReason}|Local]
                             end),
                           async_m:get_local()
                       ])
            end),
     Reply = async_m:wait(M0),
-    ?assertEqual({ok, [c, a]}, Reply).
+    ?assertEqual({ok, {hello, hello2, hello}}, Reply).
+
+test_async_monad_error_handler_function_clause() ->
+    [{doc, "A handler pattern mismatch must not be treated as an unhandled monadic error"}].
+
+test_async_monad_error_handler_function_clause(_Config) ->
+    M = monad_error:catch_error(
+          async_m:fail(world1),
+          fun(world) -> async_m:return(recovered) end),
+    try async_m:wait(M) of
+        Reply -> ct:fail({expected_function_clause, Reply})
+    catch
+        error:function_clause -> ok
+    end.
 
 test_async_then() ->
     [{doc, "test async then"}].
