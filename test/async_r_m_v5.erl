@@ -12,6 +12,8 @@
 
 -include_lib("erlando/include/gen_fun.hrl").
 
+-behaviour(functor).
+-behaviour(applicative).
 -behaviour(monad).
 -behaviour(monad_state).
 -behaviour(monad_reader).

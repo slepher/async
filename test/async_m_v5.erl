@@ -13,7 +13,10 @@
 
 -define(INNER, {cont_t, {state_t, {reader_t, identity}}}).
 
+-behaviour(functor).
+-behaviour(applicative).
 -behaviour(monad).
+-behaviour(monad_fail).
 -include_lib("erlando/include/do.hrl").
 -include_lib("erlando/include/gen_fun.hrl").
 

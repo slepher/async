@@ -25,7 +25,7 @@ the generic `async_t` monad transformer.
 
 ## Status and compatibility
 
-The application version in this repository is `0.5.3`.
+The application version in this repository is `0.6.0`.
 
 The project does not currently declare a minimum Erlang/OTP version. Its
 supervision tree uses map child specifications and ordinary `one_for_one`
@@ -38,7 +38,7 @@ Add the Git repository to `rebar.config`:
 
 ```erlang
 {deps, [
-    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.3"}}}
+    {async, {git, "https://github.com/slepher/async.git", {tag, "0.6.0"}}}
 ]}.
 ```
 

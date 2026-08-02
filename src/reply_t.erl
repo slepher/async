@@ -8,8 +8,6 @@
 %%%-------------------------------------------------------------------
 -module(reply_t).
 
--erlando_type(?MODULE).
-
 -export_type([reply_t/2, reply/1, final_reply/1, ok_reply/1, message_reply/0]).
 
 -opaque reply_t(M, A) :: {reply_t, inner_reply_t(M, A)}.
@@ -23,13 +21,18 @@
 
 -include_lib("erlando/include/do.hrl").
 -include_lib("erlando/include/gen_fun.hrl").
+-include_lib("erlando/include/erlando_instance.hrl").
 
--behaviour(functor).
--behaviour(monad).
--behaviour(monad_trans).
--behaviour(monad_fail).
--behaviour(monad_error).
--behaviour(monad_runner).
+-erlando_instance(
+   #{type => {?MODULE, [reply_t/2]},
+     adapters =>
+         [#{mode => source,
+            requires => functor,
+            capabilities => [functor]},
+          #{mode => source,
+            requires => monad,
+            capabilities => [monad, monad_trans, monad_fail, monad_error]}],
+     manual => [monad_runner]}).
 
 -include_lib("erlando/include/erlando.hrl").
 
@@ -47,9 +50,6 @@
 -export([run/1, map/2, with/3]).
 
 -gen_fun(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
--gen_fun(#{inner_type => functor, behaviours => [functor]}).
--gen_fun(#{inner_type => monad, behaviours => [monad, monad_trans, monad_fail, monad_error]}).
-
 new(M) ->
     {?MODULE, M}.
 

@@ -24,7 +24,7 @@ Monad 值：一个 promise 可以依次产生零条或多条进度消息，最�
 
 ## 状态与兼容性
 
-当前仓库中的应用版本是 `0.5.3`。
+当前仓库中的应用版本是 `0.6.0`。
 
 项目目前没有声明最低 Erlang/OTP 版本。监督树使用 map child spec，并以普通
 `one_for_one` supervisor 管理静态和动态子进程。使用方应在自己的目标 OTP
@@ -36,7 +36,7 @@ Monad 值：一个 promise 可以依次产生零条或多条进度消息，最�
 
 ```erlang
 {deps, [
-    {async, {git, "https://github.com/slepher/async.git", {tag, "0.5.3"}}}
+    {async, {git, "https://github.com/slepher/async.git", {tag, "0.6.0"}}}
 ]}.
 ```
 

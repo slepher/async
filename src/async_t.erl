@@ -8,8 +8,6 @@
 %%%-------------------------------------------------------------------
 -module(async_t).
 
--erlando_type(?MODULE).
-
 -export_type([async_t/4]).
 
 -opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
@@ -25,14 +23,19 @@
 
 -include_lib("erlando/include/do.hrl").
 -include_lib("erlando/include/gen_fun.hrl").
+-include_lib("erlando/include/erlando_instance.hrl").
 
--behaviour(functor).
--behaviour(applicative).
--behaviour(monad).
--behaviour(monad_trans).
--behaviour(monad_fail).
--behaviour(monad_error).
--behaviour(monad_cont).
+-erlando_instance(
+   #{type => {?MODULE, [async_t/4]},
+     adapters =>
+         [#{mode => source,
+            requires => functor,
+            capabilities => [functor]},
+          #{mode => source,
+            requires => monad,
+            capabilities =>
+                [applicative, monad, monad_trans,
+                 monad_fail, monad_error, monad_cont]}]}).
 
 -include_lib("erlando/include/erlando.hrl").
 -record(callback, {cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:class(), A)),
@@ -77,9 +80,6 @@
 -gen_fun(#{args => monad, 
            sfunctions => [wait/2, wait_t/3, exec_cc/5, run_cc/3, run_with_cc/5, 
                           handle_info/4, run_info/4, wait_receive/4, map_async/3, map_cont/3, callback_to_cc/2]}).
-
--gen_fun(#{inner_type => functor, behaviours => [functor]}).
--gen_fun(#{inner_type => monad, behaviours => [applicative, monad, monad_trans, monad_fail, monad_error, monad_cont]}).
 
 %%%===================================================================
 %%% API
