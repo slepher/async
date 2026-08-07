@@ -1,6 +1,6 @@
 {application, async, [
     {description, "Async Monad"},
-    {vsn, "0.6.3"},
+    {vsn, "0.6.4"},
     {modules, []}, 
     {mod, {async_app, ["%MAKETIME%"]}},
     {registered, [async_sup, async_worker_sup, async_channel_sup]},
