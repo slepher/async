@@ -44,14 +44,15 @@ jobs:
         with:
           ref: ${{ inputs.ref || github.ref }}
 
-      - name: Cold dependency resolution
+      - name: Verify cold checkout (no cache or tracked lock)
         run: |
           set -eu
+          # actions/checkout gives each job a fresh workspace; this workflow
+          # has no cache and rebar.lock is not tracked, so resolution is cold.
           if [ -e _checkouts ]; then
             echo '_checkouts must not exist in a cold CI workspace' >&2
             exit 1
           fi
-          rebar3 unlock -a
 
       - name: Dependency tree
         run: rebar3 tree -v
@@ -125,14 +126,15 @@ jobs:
             halt().
           '
 
-      - name: Cold dependency resolution
+      - name: Verify cold checkout (no cache or tracked lock)
         run: |
           set -eu
+          # actions/checkout gives each job a fresh workspace; this workflow
+          # has no cache and rebar.lock is not tracked, so resolution is cold.
           if [ -e _checkouts ]; then
             echo '_checkouts must not exist in a cold CI workspace' >&2
             exit 1
           fi
-          rebar3 unlock -a
 
       - name: Dependency tree
         run: |
