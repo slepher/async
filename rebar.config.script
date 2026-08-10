@@ -1,0 +1,24 @@
+%% -*- erlang -*-
+%% Keep rebar.config as the release source of truth.  Integration CI can
+%% explicitly opt into the moving master branches without changing plugins.
+case os:getenv("ASYNC_DEPENDENCY_MODE") of
+    false ->
+        CONFIG;
+    "" ->
+        CONFIG;
+    "master" ->
+        lists:keyreplace(
+          deps,
+          1,
+          CONFIG,
+          {deps, [
+              {'astranaut', {git, "https://github.com/slepher/astranaut.git",
+                             {branch, "master"}}},
+              {'erlando',   {git, "https://github.com/slepher/erlando.git",
+                             {branch, "master"}}},
+              {'lenses',    {git, "https://github.com/slepher/lenses.git",
+                             {branch, "master"}}}
+          ]});
+    Mode ->
+        erlang:error({invalid_async_dependency_mode, Mode})
+end.
