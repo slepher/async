@@ -14,8 +14,14 @@
 -export([start/0, start_link/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -72,11 +78,12 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call(request1, From, State) ->
-    Callback = 
-        fun({ok, Reply}, #state{status = Status} = S) ->
+    Callback =
+        fun
+            ({ok, Reply}, #state{status = Status} = S) ->
                 gen_server:reply(From, {ok, {Status, Reply}}),
                 S;
-           ({error, Reason}, S) ->
+            ({error, Reason}, S) ->
                 gen_server:reply(From, {error, Reason}),
                 S
         end,
@@ -85,25 +92,31 @@ handle_call(request1, From, State) ->
     {noreply, NState}.
 
 many_promise_calls() ->
-  then(then(
-       promise1(),
-       fun(Reply1) -> 
-           chain(promise_with_state(
-                   fun(S) -> S#state{status = request2} end), promise2(Reply1))
-       end),
-       fun(Reply2) ->
-             promise3(Reply2)
-       end).
+    then(
+        then(
+            promise1(),
+            fun(Reply1) ->
+                chain(
+                    promise_with_state(
+                        fun(S) -> S#state{status = request2} end
+                    ),
+                    promise2(Reply1)
+                )
+            end
+        ),
+        fun(Reply2) ->
+            promise3(Reply2)
+        end
+    ).
 
 promise1() ->
-  promise_call(echo_server, {echo, {ok, request1}}).
+    promise_call(echo_server, {echo, {ok, request1}}).
 
 promise2(Value1) ->
-  promise_call(echo_server, {echo, {ok, {Value1, then, request2}}}).
+    promise_call(echo_server, {echo, {ok, {Value1, then, request2}}}).
 
 promise3(Value2) ->
-  promise_call(echo_server, {echo, {ok, {Value2, then, request3}}}).
-
+    promise_call(echo_server, {echo, {ok, {Value2, then, request3}}}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -184,18 +197,19 @@ wait_reply(Callback, Other, _Timeout, Offset, State) ->
 
 wait_reply_without_state(Callback, Mref, Timeout) ->
     fun(Offset, State) ->
-            wait_reply(Callback, Mref, Timeout, Offset, State)
+        wait_reply(Callback, Mref, Timeout, Offset, State)
     end.
 
 callback_with_timeout(Callback, _Mref, infinity, _Offset) ->
     Callback;
-callback_with_timeout(Callback, Mref, Timeout, Offset) 
-  when is_integer(Timeout), (Timeout > 0) ->
+callback_with_timeout(Callback, Mref, Timeout, Offset) when
+    is_integer(Timeout), (Timeout > 0)
+->
     Timer = erlang:send_after(Timeout, self(), {Mref, {error, timeout}}),
     fun(R, S) ->
-          erlang:cancel_timer(Timer),
-          execute_callback(Callback, R, Offset, S)
-  end.
+        erlang:cancel_timer(Timer),
+        execute_callback(Callback, R, Offset, S)
+    end.
 
 do_handle_info({Mref, Reply}, Offset, State) when is_reference(Mref) ->
     erlang:demonitor(Mref, [flush]),
@@ -230,8 +244,8 @@ execute_callback(Callback, Reply, Offset, State) ->
 
 promise(Action, Timeout) ->
     fun(Callback) ->
-            Mref = Action(),
-            wait_reply_without_state(Callback, Mref, Timeout)
+        Mref = Action(),
+        wait_reply_without_state(Callback, Mref, Timeout)
     end.
 
 promise_call(Process, Request) ->
@@ -242,34 +256,36 @@ promise_call(Process, Request, Timeout) ->
 
 then(Promise, Then) ->
     fun(Callback) ->
-            Promise(
-              fun({error, Reason}) ->
-                      Callback({error, Reason});
-                 ({ok, Reply}) ->
-                      NPromise = Then(Reply),
-                      NPromise(fun(NReply) -> Callback(NReply) end);
-                 (Reply) ->
-                      NPromise = Then(Reply),
-                      NPromise(fun(NReply) -> Callback(NReply) end)
-              end)
+        Promise(
+            fun
+                ({error, Reason}) ->
+                    Callback({error, Reason});
+                ({ok, Reply}) ->
+                    NPromise = Then(Reply),
+                    NPromise(fun(NReply) -> Callback(NReply) end);
+                (Reply) ->
+                    NPromise = Then(Reply),
+                    NPromise(fun(NReply) -> Callback(NReply) end)
+            end
+        )
     end.
 
 chain(Promise1, Promise2) ->
-  then(Promise1, fun(_) -> Promise2 end).
+    then(Promise1, fun(_) -> Promise2 end).
 
 promise_with_state(Fun) ->
-  fun(Callback) ->
+    fun(Callback) ->
         fun(Offset, State) ->
-           NState = Fun(State),
-           execute_callback(Callback, {ok, ok}, Offset, NState)
+            NState = Fun(State),
+            execute_callback(Callback, {ok, ok}, Offset, NState)
         end
-  end.
+    end.
 
 run(Promise, Callback, Offset, State) ->
-    NCallback = 
+    NCallback =
         fun(A) ->
-                fun(O, S) ->
-                        execute_callback(Callback, A, O, S)
-                end
+            fun(O, S) ->
+                execute_callback(Callback, A, O, S)
+            end
         end,
     (Promise(NCallback))(Offset, State).

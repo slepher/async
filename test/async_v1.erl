@@ -14,8 +14,14 @@
 -export([start/0, start_link/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -72,23 +78,24 @@ init([]) ->
 %%--------------------------------------------------------------------
 handle_call(request0, From, State) ->
     Mref = async_gen_server_call(echo_server, {echo, {ok, request1}}),
-    Callback = 
-        fun({ok, Reply}, S) ->
+    Callback =
+        fun
+            ({ok, Reply}, S) ->
                 gen_server:reply(From, {ok, Reply}),
                 S;
-           ({error, Reason}, S) ->
+            ({error, Reason}, S) ->
                 gen_server:reply(From, {error, Reason}),
                 S
         end,
     NState = wait_reply(Callback, Mref, infinity, #state.callbacks, State),
     {noreply, NState};
-
 handle_call(request1, From, State) ->
-    Callback = 
-        fun({ok, Reply}, S) ->
+    Callback =
+        fun
+            ({ok, Reply}, S) ->
                 gen_server:reply(From, {ok, Reply}),
                 S;
-           ({error, Reason}, S) ->
+            ({error, Reason}, S) ->
                 gen_server:reply(From, {error, Reason}),
                 S
         end,
@@ -98,22 +105,36 @@ handle_call(request1, From, State) ->
 many_async_calls(Callback, State) ->
     Mref1 = async_gen_server_call(echo_server, {echo, {ok, request1}}),
     wait_reply(
-      fun({ok, Reply1}, S) ->
-              Mref2 = async_gen_server_call(
-                        echo_server, {echo, {ok, {Reply1, then, request2}}}),
-              wait_reply(
-                fun({ok, Reply2}, S2) ->
-                        Mref3 = async_gen_server_call(
-                                  echo_server, {echo, {ok, {Reply2, then, request3}}}),
-                        wait_reply(Callback, Mref3, infinity, #state.callbacks, S2);
-                   ({error, Reason2}, S2) ->
-                        io:format("request2 failed ~p~n", [Reason2]),
-                        S2
-                end, Mref2, infinity, #state.callbacks, S#state{status = request2});
-         ({error, Reason1}, S) ->
-              io:format("request1 failed ~p~n", [Reason1]),
-              S#state{status = request1_failed}
-      end, Mref1, infinity, #state.callbacks, State).
+        fun
+            ({ok, Reply1}, S) ->
+                Mref2 = async_gen_server_call(
+                    echo_server, {echo, {ok, {Reply1, then, request2}}}
+                ),
+                wait_reply(
+                    fun
+                        ({ok, Reply2}, S2) ->
+                            Mref3 = async_gen_server_call(
+                                echo_server, {echo, {ok, {Reply2, then, request3}}}
+                            ),
+                            wait_reply(Callback, Mref3, infinity, #state.callbacks, S2);
+                        ({error, Reason2}, S2) ->
+                            io:format("request2 failed ~p~n", [Reason2]),
+                            S2
+                    end,
+                    Mref2,
+                    infinity,
+                    #state.callbacks,
+                    S#state{status = request2}
+                );
+            ({error, Reason1}, S) ->
+                io:format("request1 failed ~p~n", [Reason1]),
+                S#state{status = request1_failed}
+        end,
+        Mref1,
+        infinity,
+        #state.callbacks,
+        State
+    ).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -194,12 +215,13 @@ wait_reply(Callback, Other, _Timeout, _Offset, State) ->
 
 callback_with_timeout(Callback, _Mref, infinity) ->
     Callback;
-callback_with_timeout(Callback, Mref, Timeout) 
-  when is_integer(Timeout), (Timeout > 0) ->
+callback_with_timeout(Callback, Mref, Timeout) when
+    is_integer(Timeout), (Timeout > 0)
+->
     Timer = erlang:send_after(Timeout, self(), {Mref, {error, timeout}}),
     fun(R, S) ->
-            erlang:cancel_timer(Timer),
-            execute_callback(Callback, R, S)
+        erlang:cancel_timer(Timer),
+        execute_callback(Callback, R, S)
     end.
 
 do_handle_info({Mref, Reply}, Offset, State) when is_reference(Mref) ->

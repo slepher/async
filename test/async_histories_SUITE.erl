@@ -19,7 +19,7 @@
 %% @end
 %%--------------------------------------------------------------------
 suite() ->
-    [{timetrap,{seconds,30}}].
+    [{timetrap, {seconds, 30}}].
 
 %%--------------------------------------------------------------------
 %% @spec init_per_suite(Config0) ->
@@ -109,7 +109,7 @@ groups() ->
 %% Reason = term()
 %% @end
 %%--------------------------------------------------------------------
-all() -> 
+all() ->
     [test_v1, test_v2, test_v3, test_v5].
 
 %%--------------------------------------------------------------------
@@ -117,7 +117,7 @@ all() ->
 %% Info = [tuple()]
 %% @end
 %%--------------------------------------------------------------------
-my_test_case() -> 
+my_test_case() ->
     [].
 
 %%--------------------------------------------------------------------
@@ -129,27 +129,27 @@ my_test_case() ->
 %% Comment = term()
 %% @end
 %%--------------------------------------------------------------------
-test_v1(_Config) -> 
+test_v1(_Config) ->
     {ok, _} = async_v1:start(),
     Reply = gen_server:call(async_v1, request1),
     ?assertEqual({ok, {{request1, then, request2}, then, request3}}, Reply).
 
-test_v2(_Config) -> 
+test_v2(_Config) ->
     {ok, _} = async_v2:start(),
     Reply = gen_server:call(async_v2, request1),
     ?assertEqual({ok, {{request1, then, request2}, then, request3}}, Reply).
 
-test_v3(_Config) -> 
+test_v3(_Config) ->
     {ok, _} = async_v3:start(),
     Reply = gen_server:call(async_v3, request1),
     ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply).
 
-test_v4(_Config) -> 
+test_v4(_Config) ->
     {ok, _} = async_v4:start(),
     Reply = gen_server:call(async_v4, request1),
     ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply).
 
-test_v5(_Config) -> 
+test_v5(_Config) ->
     {ok, _} = async_v5:start(),
     Reply1 = gen_server:call(async_v5, request1),
     ?assertEqual({ok, {request2, {{request1, then, request2}, then, request3}}}, Reply1),

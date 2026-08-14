@@ -125,10 +125,18 @@ end_per_testcase(_TestCase, _Config) ->
 %% @end
 %%--------------------------------------------------------------------
 
-all() -> 
-    [test_ask, test_do_get, test_do_put, test_get, test_put,
-     test_get_local_ref, test_get_local, test_get_ref, test_put_ref].
-
+all() ->
+    [
+        test_ask,
+        test_do_get,
+        test_do_put,
+        test_get,
+        test_put,
+        test_get_local_ref,
+        test_get_local,
+        test_get_ref,
+        test_put_ref
+    ].
 
 %%--------------------------------------------------------------------
 %% TEST CASES
@@ -154,12 +162,10 @@ all() ->
 %% @spec TestCase(Arg) -> Descr | Spec | ok | exit() | {skip,Reason}
 %% @end
 %%--------------------------------------------------------------------
-test_ask(doc) -> 
+test_ask(doc) ->
     ["Describe the main purpose of this test case"];
-
-test_ask(suite) -> 
+test_ask(suite) ->
     [];
-
 test_ask(Config) when is_list(Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -169,12 +175,10 @@ test_ask(Config) when is_list(Config) ->
     ?assertEqual({identity, GS}, Result),
     ok.
 
-test_do_get(doc) -> 
+test_do_get(doc) ->
     ["Describe the main purpose of this test case"];
-
-test_do_get(suite) -> 
+test_do_get(suite) ->
     [];
-
 test_do_get(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -183,12 +187,10 @@ test_do_get(_Config) ->
     Result = async_r_t:eval(M, GS, 0, State),
     ?assertEqual({identity, State}, Result).
 
-test_do_put(doc) -> 
+test_do_put(doc) ->
     ["Describe the main purpose of this test case"];
-
-test_do_put(suite) -> 
+test_do_put(suite) ->
     [];
-
 test_do_put(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -196,14 +198,11 @@ test_do_put(_Config) ->
     M = async_r_t:do_put_state(10, MR),
     Result = async_r_t:exec(M, GS, 0, State),
     ?assertEqual({identity, 10}, Result).
-    
-    
-test_get(doc) -> 
+
+test_get(doc) ->
     ["Describe the main purpose of this test case"];
-
-test_get(suite) -> 
+test_get(suite) ->
     [];
-
 test_get(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -213,12 +212,10 @@ test_get(_Config) ->
     Result = identity:run(async_r_t:eval(M, GS, 0, NState)),
     ?assertEqual(NState, Result).
 
-test_put(doc) -> 
+test_put(doc) ->
     ["Describe the main purpose of this test case"];
-
-test_put(suite) -> 
+test_put(suite) ->
     [];
-
 test_put(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -230,10 +227,8 @@ test_put(_Config) ->
 
 test_get_local_ref(doc) ->
     [];
-
 test_get_local_ref(suite) ->
     [];
-
 test_get_local_ref(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     State = #state{},
@@ -243,7 +238,7 @@ test_get_local_ref(_Config) ->
     Result = identity:run(async_r_t:eval(M, GS, Ref, State)),
     ?assertEqual(Ref, Result).
 
-test_get_local(_Config) ->    
+test_get_local(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     Ref = make_ref(),
     State = #state{callbacks = #{Ref => 1}},
@@ -251,19 +246,20 @@ test_get_local(_Config) ->
     M = async_r_t:get_local(MR),
     Result = identity:run(async_r_t:eval(M, GS, Ref, State)),
     ?assertEqual(1, Result).
-    
+
 test_put_local(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     Ref = make_ref(),
     State = #state{},
     MR = async_r_t:new(identity),
-    M = do([monad ||
-               async_r_t:put_local(100, MR),
-               async_r_t:get_local(MR)
-           ]),
+    M = do([
+        monad
+     || async_r_t:put_local(100, MR),
+        async_r_t:get_local(MR)
+    ]),
     Result = identity:run(async_r_t:eval(M, GS, Ref, State)),
     ?assertEqual(100, Result).
-    
+
 test_get_ref(_Config) ->
     GS = async_t:state_callbacks_gs(2),
     Ref = make_ref(),
@@ -280,10 +276,10 @@ test_put_ref(_Config) ->
     Ref1 = make_ref(),
     State = #state{callbacks = #{Ref1 => 10, Ref => 100}},
     MR = async_r_t:new(identity),
-    M = do([monad ||
-               async_r_t:put_ref(Ref1, 20, MR),
-               async_r_t:get_ref(Ref1, 0, MR)
-           ]),
+    M = do([
+        monad
+     || async_r_t:put_ref(Ref1, 20, MR),
+        async_r_t:get_ref(Ref1, 0, MR)
+    ]),
     Result = identity:run(async_r_t:eval(M, GS, Ref, State)),
     ?assertEqual(20, Result).
-    

@@ -15,8 +15,14 @@
 -export([start/0, start_link/0, start/1, start_link/1]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -91,9 +97,11 @@ init([]) ->
 %%--------------------------------------------------------------------
 handle_call({echo_with_messages, Messages, Request}, From, State) ->
     lists:foreach(
-      fun(Message) ->
-              async:message(From, Message)
-      end, Messages),
+        fun(Message) ->
+            async:message(From, Message)
+        end,
+        Messages
+    ),
     {reply, Request, State};
 handle_call({delayed_echo, Timeout, Request}, From, State) ->
     erlang:send_after(Timeout, self(), {Request, From}),
@@ -105,7 +113,6 @@ handle_call(stop, _From, State) ->
     {stop, normal, ok, State};
 handle_call(Request, _From, State) ->
     {reply, {error, {invalid_request, Request}}, State}.
-
 
 %%--------------------------------------------------------------------
 %% @private

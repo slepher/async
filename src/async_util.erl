@@ -73,11 +73,15 @@ match_state(_State, _Type, _Len) ->
 
 callback_exists(Callbacks) ->
     (maps:size(Callbacks) =/= 0) and
-        (lists:any(fun(#callback{}) ->
-                           true;
-                      (_) ->
-                           false
-                   end, maps:values(Callbacks))).
+        (lists:any(
+            fun
+                (#callback{}) ->
+                    true;
+                (_) ->
+                    false
+            end,
+            maps:values(Callbacks)
+        )).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

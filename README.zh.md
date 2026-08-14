@@ -1,3 +1,7 @@
+[![CI](https://github.com/slepher/async/actions/workflows/ci.yml/badge.svg?branch=master&event=push)](https://github.com/slepher/async/actions/workflows/ci.yml?query=branch%3Amaster)
+
+[![CI](https://github.com/slepher/async/actions/workflows/release.yml/badge.svg?branch=0.6.8&event=push)](https://github.com/slepher/async/actions/workflows/release.yml?query=branch%3A0.6.8)
+
 # async
 
 [English](README.md) | [简体中文](README.zh.md)

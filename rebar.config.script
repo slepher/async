@@ -8,17 +8,16 @@ case os:getenv("DEPS_MODE") of
         CONFIG;
     "master" ->
         lists:keyreplace(
-          deps,
-          1,
-          CONFIG,
-          {deps, [
-              {'astranaut', {git, "https://github.com/slepher/astranaut.git",
-                             {branch, "master"}}},
-              {'erlando',   {git, "https://github.com/slepher/erlando.git",
-                             {branch, "master"}}},
-              {'lenses',    {git, "https://github.com/slepher/lenses.git",
-                             {branch, "master"}}}
-          ]});
+            deps,
+            1,
+            CONFIG,
+            {deps, [
+                {'astranaut',
+                    {git, "https://github.com/slepher/astranaut.git", {branch, "master"}}},
+                {'erlando', {git, "https://github.com/slepher/erlando.git", {branch, "master"}}},
+                {'lenses', {git, "https://github.com/slepher/lenses.git", {branch, "master"}}}
+            ]}
+        );
     Mode ->
         erlang:error({invalid_deps_mode, Mode})
 end.

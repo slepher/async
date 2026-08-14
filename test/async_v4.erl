@@ -15,8 +15,14 @@
 -export([start/0, start_link/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -73,17 +79,19 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call(request1, From, State) ->
-    Monad = do([async_m_v4 || 
-                   Reply1 <- promise1(),
-                   promise_with_state(fun(S) -> S#state{status = request2} end),
-                   Reply2 <- promise2(Reply1),
-                   promise3(Reply2)
-               ]),
-    Callback = 
-        fun({ok, Reply}, #state{status = Status} = S) ->
+    Monad = do([
+        async_m_v4
+     || Reply1 <- promise1(),
+        promise_with_state(fun(S) -> S#state{status = request2} end),
+        Reply2 <- promise2(Reply1),
+        promise3(Reply2)
+    ]),
+    Callback =
+        fun
+            ({ok, Reply}, #state{status = Status} = S) ->
                 gen_server:reply(From, {ok, {Status, Reply}}),
                 S;
-           ({error, Reason}, S) ->
+            ({error, Reason}, S) ->
                 gen_server:reply(From, {error, Reason}),
                 S
         end,
@@ -91,14 +99,13 @@ handle_call(request1, From, State) ->
     {noreply, NState}.
 
 promise1() ->
-  promise_call(echo_server, {echo, {ok, request1}}).
+    promise_call(echo_server, {echo, {ok, request1}}).
 
 promise2(Value1) ->
-  promise_call(echo_server, {echo, {ok, {Value1, then, request2}}}).
+    promise_call(echo_server, {echo, {ok, {Value1, then, request2}}}).
 
 promise3(Value2) ->
-  promise_call(echo_server, {echo, {ok, {Value2, then, request3}}}).
-
+    promise_call(echo_server, {echo, {ok, {Value2, then, request3}}}).
 
 %%--------------------------------------------------------------------
 %% @private
@@ -163,9 +170,9 @@ code_change(_OldVsn, State, _Extra) ->
 
 update_callback(Callback) ->
     fun(A) ->
-            fun(Offset, State) ->
-                    execute_callback(Callback, A, Offset, State)
-            end
+        fun(Offset, State) ->
+            execute_callback(Callback, A, Offset, State)
+        end
     end.
 
 async_gen_server_call(Process, Request) ->
@@ -186,7 +193,7 @@ wait_reply(Callback, Other, _Timeout, Offset, State) ->
 
 wait_reply_without_state(Callback, Mref, Timeout) ->
     fun(Offset, State) ->
-            wait_reply(Callback, Mref, Timeout, Offset, State)
+        wait_reply(Callback, Mref, Timeout, Offset, State)
     end.
 
 callback_with_timeout(Callback, _Mref, infinity, _Offset) ->
@@ -194,8 +201,8 @@ callback_with_timeout(Callback, _Mref, infinity, _Offset) ->
 callback_with_timeout(Callback, Mref, Timeout, Offset) when is_integer(Timeout), (Timeout > 0) ->
     Timer = erlang:send_after(Timeout, self(), {Mref, {error, timeout}}),
     fun(R, S) ->
-            erlang:cancel_timer(Timer),
-            execute_callback(Callback, R, Offset, S)
+        erlang:cancel_timer(Timer),
+        execute_callback(Callback, R, Offset, S)
     end.
 
 do_handle_info({Mref, Reply}, Offset, State) when is_reference(Mref) ->
@@ -231,8 +238,8 @@ execute_callback(Callback, Reply, Offset, State) ->
 
 promise(Action, Timeout) ->
     fun(Callback) ->
-            Mref = Action(),
-            wait_reply_without_state(Callback, Mref, Timeout)
+        Mref = Action(),
+        wait_reply_without_state(Callback, Mref, Timeout)
     end.
 
 promise_call(Process, Request) ->
@@ -243,17 +250,17 @@ promise_call(Process, Request, Timeout) ->
 
 promise_with_state(Fun) ->
     fun(Callback) ->
-            fun(Offset, State) ->
-                    NState = Fun(State),
-                    execute_callback(Callback, {ok, ok}, Offset, NState)
-            end
+        fun(Offset, State) ->
+            NState = Fun(State),
+            execute_callback(Callback, {ok, ok}, Offset, NState)
+        end
     end.
 
 run(Promise, Callback, Offset, State) ->
-    NCallback = 
+    NCallback =
         fun(A) ->
-                fun(O, S) ->
-                        execute_callback(Callback, A, O, S)
-                end
+            fun(O, S) ->
+                execute_callback(Callback, A, O, S)
+            end
         end,
     (Promise(NCallback))(Offset, State).
