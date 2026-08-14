@@ -18,6 +18,8 @@ jobs:
     name: Release / OTP ${{ matrix.otp }}
     runs-on: ubuntu-latest
     container: erlang:${{ matrix.otp }}
+    env:
+      DEBUG: 1
     strategy:
       fail-fast: false
       matrix:
@@ -96,7 +98,7 @@ jobs:
           ! grep -E '(^|[[:space:]])(astranaut|erlando|lenses)[^[:cntrl:]]*master' /tmp/async-release-tree.txt
 
       - name: Compile
-        run: rebar3 compile
+        run: rebar3 compile -v
 
       - name: Common Test
         run: rebar3 as test clean -a && rebar3 ct
