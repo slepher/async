@@ -1,4 +1,4 @@
-name: release-0.6.8
+name: 0.6.9
 
 on:
   push:
