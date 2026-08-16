@@ -10,9 +10,6 @@ on:
         description: Ref to run the integration job against
         required: true
         type: string
-  schedule:
-    - cron: '*/30 * * * *'
-
 permissions:
   contents: read
 
