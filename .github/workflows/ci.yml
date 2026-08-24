@@ -1,25 +1,57 @@
-name: CI
+name: master
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [ master ]
   pull_request:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Ref to run the integration job against
+        required: true
+        type: string
+permissions:
+  contents: read
 
 jobs:
-  test:
-    name: OTP ${{ matrix.otp }}
+  integration:
+    name: Integration / OTP ${{ matrix.otp }}
     runs-on: ubuntu-latest
     container: erlang:${{ matrix.otp }}
+    env:
+      DEPS_MODE: master
+      DEBUG: 1
+      ASTRANAUT_TRACE: 1
     strategy:
       fail-fast: false
       matrix:
         otp: ['29', '28', '27', '26', '25', '24', '23', '22', '21']
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - name: Checkout (act local copy)
+        if: env.ACT == 'true'
+        uses: actions/checkout@v7
+
+      - name: Checkout (remote ref)
+        if: env.ACT != 'true'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - name: Verify cold checkout (no cache or tracked lock)
+        run: |
+          set -eu
+          # actions/checkout gives each job a fresh workspace; this workflow
+          # has no cache and rebar.lock is not tracked, so resolution is cold.
+          if [ -e _checkouts ]; then
+            echo '_checkouts must not exist in a cold CI workspace' >&2
+            exit 1
+          fi
+
+      - name: Dependency tree
+        run: rebar3 tree -v
 
       - name: Compile
-        run: rebar3 compile
+        run: rebar3 compile -v
 
       - name: Common Test
         run: rebar3 as test clean -a && rebar3 ct
