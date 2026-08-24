@@ -1,0 +1,578 @@
+# sf-do Design
+
+## Context
+
+普通 `do` 的 bind continuation 是 anonymous fun。它适合进程内短期执行，但不适合作为
+hot-code change 期间的持久 continuation。`sf_do` 使用 external MFA + Env 表示同一
+continuation，同时保持原 Monad 类型和普通 bind 组合律。
+
+本设计刻意不引入 `{sf_program, Frame}`、`{await, ...}`、`{done, ...}` 或独立 frame VM。
+hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why sf-do Exists](rationale.md)。
+
+## Goals
+
+- `sf_do` expression 的类型与其 Monad action 类型相同。
+- `bind_frame`/`then_frame` 是 continuation 仅允许 frame 的 sequencing primitives，不是 program
+  interpreter。
+- transform 不为用户 block remainder 生成 bind continuation anonymous fun；它生成 external
+  frame MFA + Env，并通过 `bind_frame`/`then_frame` 交给 Monad。
+- callback 的 continuation slots 使用 generated/downstream frame 或 terminal `sf_cc` descriptor，
+  而不是 transform 生成的 remainder closure。
+- nested `sf_do` 使用普通 Monad composition。
+- identity 描述正在等待的 async action，不描述其后的完整 continuation。
+- Env 是当前 continuation 的最小 lexical environment，不预测未来版本。
+
+## Non-Goals
+
+- 不从 legacy fun 反向提取 frame。
+- 不保存或解释整个 block 的 instruction list。
+- 不自动重放 pending boundary 之前的 action 来重建缺失变量。
+- 不让 ordinary `do`、ordinary bind 或 legacy callback 自动获得 migration 保证。
+- 不在 `sf_do` 中猜测 future Env schema；变量改名或同名变量含义变化由 `sf-migrate` Env migrator
+  在恢复前显式转换 Env。
+- 不递归检查或拒绝 Action、Env、capture value、frame context 或 `sf_cc` context 中的任意 runtime
+  term；这些值是否包含 fun 不属于 `sf_do` source transform 的权限边界。
+
+## Source Syntax
+
+公开语法：
+
+```erlang
+sf_do([Monad || Qualifiers])
+sf_do(BlockName, [Monad || Qualifiers])
+sf_do(BlockName, StepNames, [Monad || Qualifiers])
+```
+
+最后一个 argument 是 single-head list comprehension。以下不是公开语法：
+
+```erlang
+sf_do([BlockName, Monad || Qualifiers]).
+sf_do([BlockName, StepNames, Monad || Qualifiers]).
+```
+
+匿名 block 沿用 Erlang fun 风格，在 enclosing source function 内按 occurrence 编号：
+
+```text
+'-Function/Arity-fun-N-'
+```
+
+`N` 是该 source function 内 anonymous `sf_do` 按 lexical pre-order 的零基序号；named block
+不消耗该序号。BlockName 必须是 atom literal。named BlockPath 在 module 内必须唯一；相同 local
+block name 只有位于不同 parent BlockPath 时才允许复用。
+
+显式 StepNames 可以是同 module 已声明 record 的 name 或完整 atom literal list；record 取 field
+declaration order，忽略 default/type。名称按 async-only
+顺序分配给所有非最终 continuation boundaries；pure let 和 final action 不消耗名称。named
+mode 必须完整覆盖，不允许部分命名，且同一 block 内 StepName 不得重复。
+
+## 与 classic_do 的核心对照
+
+`sf_do` 以 ErLando `do` 的核心 source semantics 为 baseline。没有在下表列为差异的 qualifier、
+pattern、local-call 或 final-expression 行为，均不得由 `sf_do` 另行定义。
+
+| 方面 | `classic_do` | `sf_do` |
+| --- | --- | --- |
+| public source | `do([Monad || Qualifiers])` | `sf_do/1,2,3`；二、三参数形式增加 BlockName/StepNames |
+| result | final expression 的原 Monad | 相同；不引入 `sf_program` |
+| `Pattern <- Action` | `>>=(Action, FunContinuation)` | `monad_frame:bind_frame(Action, FrameMFA, Context, Monad)` |
+| 无绑定 `Action` | `>>=(Action, fun(_) -> Remainder end)` | `monad_frame:then_frame(Action, IgnoreInputMFA, Context, Monad)` |
+| discard sequencing/default | `classic_do` 直接使用 `>>=` + `_` continuation；Monad `>>` default 也委托 `>>=` | transform 调用 `then_frame`；其 default 委托 `bind_frame` + ignore-input frame |
+| `Pattern = Expression` | 普通 Erlang match | 相同；只改变它位于 call site 或 generated frame body 的位置 |
+| final qualifier | 必须是普通 expression，并直接返回 | 相同；不生成 frame、AsyncId、StepName 或 manifest entry |
+| generator mismatch | variable pattern 单 clause；non-variable fallback 到 `fail(monad_badmatch)` | 相同；frame 恢复 Env 后执行同一 pattern/fallback |
+| local `return/1`、`fail/1` | lexical Monad stack；nested block 使用 inner Monad | 相同；分别统一生成 `monad:return/2`、`monad_fail:fail/2`，remote call 不 rewrite |
+| lexical scope/evaluation | zero-argument fun 隔离 block bindings；qualifiers 按 source order、一次求值 | 保持相同可观察语义；call-site lets/generated frames 不得泄漏 binding 或重复求值 |
+| continuation representation | anonymous fun 和隐式 closure captures | transform 生成 external MFA + 显式 Env frame，不生成 remainder closure |
+| suspension persistence | `classic_do` 本身不提供跨版本保证 | stable runner 持久化 frame/downstream data |
+| identity/naming | 无 stable boundary identity 或 manifest | 非最终 continuation boundary 可使用 derived/named identity 和 manifest |
+| compiler pipeline | 单次 Astranaut traversal，post-order lowering | 两遍 Astranaut traversal，先冻结 source facts，再按 plan rewrite |
+| completion interface | 不定义 async stable completion | stable path 使用独立 external MFA/context `sf_cc` |
+
+不同 Monad 的 nested lexical block 与同一 Monad 的 direct composition 是两个问题：和
+`classic_do` 一样，进入 nested block 时 local `return/1`、`fail/1` 使用 inner Monad；只有 inner
+Monad value 被直接交给 outer sequencing primitive 时，才由该 primitive 的普通 Monad 类型约束决定
+能否组合。`sf_do` 不额外定义跨 Monad lift。
+
+`classic_do` 中依据 tuple AST 直接选择 leading module 的额外分支属于历史实现细节，不进入本表，
+也不是 `sf_do` 合同。`sf_do` 对 atom、variable 和二元 transformer descriptor `{T, Inner}` 均统一
+调用 `monad_frame` dispatcher；dispatcher 再按运行时 Monad value 解析 instance。transform 不做
+instance export/typeclass metadata 检查，缺少 capability 使用 dispatcher 的标准失败行为。
+
+## Core Semantic Contract
+
+普通 bind：
+
+```text
+bind(Action, FunContinuation) -> Monad
+```
+
+stable bind：
+
+```text
+monad_frame:bind_frame(Action, NextMFA, FrameContext, Monad) -> SameMonad
+monad_frame:then_frame(Action, IgnoreInputMFA, FrameContext, Monad) -> SameMonad
+monad_frame:default_then_frame(Action, IgnoreInputMFA, FrameContext, Monad)
+    = monad_frame:bind_frame(Action, IgnoreInputMFA, FrameContext, Monad)
+```
+
+这与 `classic_do` 的两个 lowering 对应：`Pattern <- Action` 使用 bind continuation；无绑定
+`Action` 使用丢弃 Reply 的 continuation。`then_frame` 的 default 不改变 suspend/runtime 协议，
+只把已声明为 ignore-input 的 frame 交给 `bind_frame`。Monad instance MAY override
+`then_frame`，但结果类型和 sequencing 语义必须与该 default 相同。
+
+`NextMFA` 固定为 `{Module, Function, 2}`。`FrameContext` 固定为 map：
+
+```erlang
+#{
+    protocol := 1,
+    block_path := [atom()],
+    async_id := binary(),
+    env := #{atom() => term()}
+}
+```
+
+两者合成可持久化 frame；generated function 的逻辑调用协议：
+
+```text
+invoke(Frame, Input) -> Monad
+```
+
+因此：
+
+```erlang
+sf_do(flow, [
+    async_m
+ || Reply1 <- request1(),
+    Reply2 <- request2(Reply1),
+    async_m:pure_return({Reply1, Reply2})
+]).
+```
+
+等价于：
+
+```erlang
+monad_frame:bind_frame(request1(), Frame1MFA, Context1, async_m).
+
+frame1(Reply1, Env1) ->
+    monad_frame:bind_frame(request2(Reply1), Frame2MFA, Context2, async_m).
+
+frame2(Reply2, Env2) ->
+    Reply1 = maps:get('Reply1', Env2),
+    async_m:pure_return({Reply1, Reply2}).
+```
+
+generated frame function 直接返回 Monad。`bind_frame` 对应的 function 消费 Input pattern；
+`then_frame` 对应的 function 接收但忽略 Input。runtime 不读取 step instruction tag。
+
+## Dedicated Stable Completion Interface
+
+一个 Monad value 只有在 runner 提供最终 continuation 后才执行。stable path MUST 使用专有
+`sf_cc` data interface，不能复用 legacy `CC` fun、`callback_to_cc` 或原 `run_cc` contract：
+
+```text
+run_sf_frame(MonadAction, SfCc, Offset, State)
+```
+
+`sf_cc` 是 external MFA + stable context，逻辑调用协议是：
+
+```text
+invoke_sf_cc(SfCc, Outcome) -> completion effect/result
+```
+
+generated frame 与 terminal `sf_cc` 是不同接口：前者 `(Input, Env) -> Monad`，后者消费最终
+Outcome，不返回 do-block remainder Monad。stable callback 不得把 `sf_cc` 伪装成 legacy CC。
+
+持久化数据默认固定为 tagged map，不保留 tuple/map 双格式：
+
+```erlang
+SfFrame = #{
+    kind := sf_frame,
+    protocol := 1,
+    block_path := BlockPath,
+    async_id := AsyncId,
+    mfa := {Module, Function, 2},
+    env := Env
+}.
+
+SfCc = #{
+    kind := sf_cc,
+    protocol := 1,
+    mfa := {Module, Function, 2},
+    context := Context
+}.
+
+SfContinuation =
+    #{kind := sf_next, frame := SfFrame, downstream := SfContinuation}
+    | SfCc.
+```
+
+callback 使用一个 `SfContinuation` 字段。`sf_next` 只是数据化 continuation composition：收到
+Input 后 invoke `frame`，再用 `downstream` 运行返回的 Monad；它不是 action instruction 或 frame VM。
+
+`bind_frame` 必须保留 downstream stable continuation：
+
+```text
+run bind_frame(Action, NextFrame) with Downstream
+  -> run Action with data continuation {NextFrame, Downstream}
+
+reply
+  -> invoke NextFrame(reply) to obtain NextMonad
+  -> run NextMonad with Downstream
+```
+
+Downstream 可以是 outer generated/composite continuation，最外层终止于 `sf_cc`。callback 必须
+保存上述 `sf_next` chain，不得仅保存 NextFrame 后丢失外层 continuation，也不得退回 fun CC。
+
+用户 `sf_cc` 不属于 do block transform：
+
+- 不进入 AsyncId；
+- 不进入 block manifest；
+- 不进入任何 external migration descriptor；
+- 用户要迁移 completion 逻辑时，应把逻辑放进 `sf_do`，最后接通用 external `sf_cc` MFA。
+
+## Nested sf_do
+
+由于 `sf_do` 返回原 Monad，nested block 只是外层 Action：
+
+```erlang
+sf_do(outer, [
+    async_m
+ || InnerResult <- sf_do(inner, [async_m || ...]),
+    continue_outer(InnerResult)
+]).
+```
+
+outer `bind_frame` 运行 inner Monad 时，把 outer generated frame 作为 inner 的 downstream
+stable continuation。
+inner action 挂起时 callback 保存 inner next frame和 outer downstream frame；inner 完成后结果
+进入 outer frame。无需 `{sf_subprogram, ...}`、入口 frame 或专用 frame stack VM。
+
+nested identity 使用 lexical path，例如：
+
+```text
+[outer, inner]
+```
+
+匿名 nested component 使用原始源码 owner/occurrence，不能使用 generated `$sf_.../2`
+function 作为 owner，否则 parent identity 变化会级联污染 child identity。
+
+## Pattern Semantics
+
+`classic_do` 对非变量 generator pattern 生成成功/fail 两个 anonymous continuation clauses。
+`sf_do` 不生成该 continuation fun，而是在 external frame function 内用 `case Input of` 表达相同的
+成功/fail 分支：
+
+```erlang
+frame(Input, _Env) ->
+    case Input of
+        {Expected, Value} ->
+            next_monad(Value);
+        _ ->
+            monad_fail:fail(monad_badmatch, Monad)
+    end.
+```
+
+和 `classic_do` 的 anonymous fun clause 一样，generator pattern 中的 variables 是该 pattern
+的新 bindings；即使 enclosing scope 已有同名 variable，也不构成 pinned equality constraint。
+使用 `case` 是为了在单一 external frame function body 内表达 pattern success/fail，而不是改变
+pattern binding semantics。
+
+规则：
+
+- variable `<-` pattern 总是绑定 Input；
+- non-variable `<-` mismatch 返回 `monad_fail:fail(monad_badmatch, Monad)`；
+- unbound action 使用 `then_frame` 和忽略 Input 的 frame；
+- `Pattern = Expression` pure let 保持 Erlang `badmatch` 语义；
+- 最后一个 qualifier 必须是 Monad action，例如 `return(A)` 或其他 do Action；它直接成为
+  remainder，不额外包装 terminal frame；
+- 最后一个 qualifier 不能是 `<-` generator 或 pure match。
+
+### Scoped return/fail
+
+`sf_do` 必须保留 `classic_do` 的 block-scoped local-call 语义：
+
+```text
+return(Value) -> monad:return(Value, CurrentMonad)
+fail(Reason)  -> monad_fail:fail(Reason, CurrentMonad)
+```
+
+这里统一进入 typeclass dispatcher，不能把 `return/1` 固定解释为某个 async-specific constructor，
+也不按 Monad AST shape 直调 module。rewrite 只作用于 `sf_do` lexical subtree
+内的 local `return/1` 和 `fail/1`：remote call 以及 block 外的同名调用保持原样。
+只有 block 使用 local `fail/1` 或 non-variable generator pattern 时才需要 `monad_fail` capability；
+transform 不预检 capability，缺少时由运行时 dispatcher 按标准方式失败。
+
+nested `sf_do` 进入时压入 inner Monad、离开时弹出，因此 inner block 中的 local call 使用 inner
+Monad，outer remainder 恢复使用 outer Monad。第二遍遍历必须在生成 frame body 前完成这项 scoped
+rewrite，使 suspended continuation 中不存在待解释的 do-local `return/1`/`fail/1`。
+
+## Timeout, DOWN and Ordinary Failure
+
+timeout、DOWN 和普通 reply 都由 existing router 产生 action outcome，然后传给当前 generated
+frame：
+
+```text
+timeout/DOWN/reply -> invoke NextFrame(Outcome)
+```
+
+它们不直接触发 stable terminal abort。后续行为由 source pattern 和 Monad 决定：
+
+```erlang
+Reply <- Action
+```
+
+会把 `{error, timeout}` 等普通值绑定到 Reply；
+
+```erlang
+{ok, Reply} <- Action
+```
+
+收到 error outcome 时 pattern mismatch 并调用 Monad fail。message outcome 不消费 final
+continuation，也不推进 frame。
+
+protocol/manifest/MFA 损坏等结构错误仍属于 runtime failure，不与普通 action failure 混淆。
+`sf_do` transform 不对 Action、Env 或 context 的任意 runtime term 做 stable-term validation。
+
+## Lexical Capture Analysis
+
+transform 不捕获 enclosing function 的所有 bindings。每个 boundary 的 Env 是目标
+continuation 的 closure environment：
+
+```text
+Capture(Frame_i) =
+    FreeVariables(Continuation_i)
+    ∩ LexicallyBoundVariablesBeforeBoundary_i
+```
+
+分析必须覆盖：
+
+- suffix actions、let expressions、guards；
+- nested fun/case/try/comprehension 的 lexical scopes；
+- Monad dispatch 所需的 lexical value；
+- generator pattern 新 bindings 与 Input 的排除。
+
+例：
+
+```erlang
+Expected = ok,
+Unused = value,
+{Expected, Reply} <- request(),
+finish({Expected, Reply}).
+```
+
+等待 request 的 frame 不捕获 enclosing `Expected` 或 `Unused`；pattern 中的 `Expected` 和 `Reply`
+都来自 Input。若 suffix 通过另一个未被 generator pattern shadow 的名字引用 enclosing value，
+该 binding 才按普通 free-variable analysis 进入 Env。
+
+Env 直接使用 source variable atom 到 runtime value 的 map：
+
+```erlang
+#{'UserId' => UserId, 'Token' => Token}
+```
+
+scope-aware analysis 仍必须按 Erlang lexical semantics 判断哪个 binding 是 continuation 的 free
+variable，并排除 generator pattern 新建的 bindings；这决定“捕获什么”。一旦捕获集合确定，变量
+atom 就足以作为 key。在同一个 frame 的可见 lexical environment 中，一个变量名至多指向一个
+binding；不同 frame 各自拥有 Env，不需要把 binder origin 编入 key。transform 自己使用的 Input、
+Env 和临时变量必须 hygienic，不能占用 source variable key。
+
+CaptureLayout 按 variable atom 排序，用于确定性诊断和 required-capture schema；它本身就是
+`sf-migrate` 使用的 CaptureAbi，不再另做 capture hash。CaptureLayout、runtime values 均不参与
+AsyncId。变量改名会表现为旧 key 缺失；跨版本把同名变量改成不同语义默认仍会复用旧值。这两类
+source compatibility 由显式 `sf-migrate` Env migrator 处理，不由 `sf_do` 推断。
+
+### Anonymous/local fun capture guidance
+
+Env 原则上不应保存 anonymous/local fun。hot-code upgrade 不会遍历 State/Env 并清除或重写 fun；
+它仍是原 term，并引用创建它的 module code version。即使对应 fun body 的源码文本未变化，也不能
+据此认为该 term 已指向新版本；可靠边界是旧 code 是否仍被 VM 保留。旧 code purge 后，调用该
+local fun 可能失败。external fun/MFA 或纯数据 descriptor 不具有同一 local-code capture 问题。
+
+`sf_do` 只保证 transform 自己生成的 bind/then continuation 是 external frame，不保证任意 capture
+value 不含 fun，也不递归检查或拒绝 Env。若应用有意捕获 local fun，应在每次可能 purge defining
+code 的 upgrade/downgrade 中，通过 `sf-migrate` Env-only migrator 用 target code 重新生成它，或
+迁移为 external MFA/data descriptor。该检测、声明强制和自动诊断是可选后续能力，不属于当前
+`sf_do` 必须实现的合同。
+
+transform 只能保存当前 continuation 所需变量，不能预测 future continuation。目标版本新增
+前置 binding 依赖时：
+
+```text
+TargetRequiredCaptures ⊄ StoredEnv
+```
+
+若 `sf-migrate` Env migrator 未在恢复前生成 TargetEnv，则 upgrade/downgrade 确定性失败。
+
+## Identity
+
+每个具有 block-local remainder 的非最终 monadic qualifier 获得零基 AsyncIndex；pure let 和
+final action 不占 index。final action 仍可按 Monad 自身语义 immediate completion 或 suspend，
+但它没有 `sf_do` block-local continuation，因此不生成 frame identity；运行时直接保留既有
+downstream（outer frame 或顶层 `sf_cc`）。若 final action 挂起，保存的仍是该既有 downstream；
+`sf_do` 不为它人工制造 boundary、identity 或 wrapper continuation。
+
+derived identity：
+
+```erlang
+sha256(canonical({
+    sf_async,
+    Protocol,
+    BlockPath,
+    AsyncIndex,
+    AsyncForm
+})).
+```
+
+AsyncForm 只描述正在等待的 Action，不包含 bind pattern、suffix continuation、CaptureLayout 或
+runtime Env。canonicalization 必须 scope-aware，使 binder rename 保持 identity，但参数来源和
+顺序变化仍可区分。`canonical/1` 删除 source position/annotation，把 lexical binder/reference
+alpha-normalize 为结构 slot，并把 map 转为按 canonical key 排序的 pair list；digest 固定为
+`crypto:hash(sha256, term_to_binary(CanonicalTerm))`。没有独立 compile-options 字段；影响语义的
+全局变更通过 bump `Protocol` 表达，默认 protocol 为 `1`。
+
+named identity：
+
+```erlang
+sha256(canonical({sf_named_async, Protocol, BlockPath, StepName})).
+```
+
+derived/named 使用不同 namespace；切换 mode 需要外部显式迁移。两种 mode 的 generated function
+atom 均固定为 `'$sf_' ++ lowercase_hex(AsyncId)`，使用完整 32-byte digest，不截断，并做
+module-local collision check。这样 MFA 只取决于 AsyncId，不再引入另一套 name escaping 规则。
+
+## High-Level Implementation Design
+
+### Two AST-aware passes
+
+transform 使用两遍 Astranaut traversal。两遍都是线性遍历，总成本仍为 `O(N)`；它们不是重复做
+同一种递归，而是把“读取稳定 source facts”和“产生 executable AST”分开。
+
+```text
+Pass 1 — collect original AST, never rewrite
+  -> source function owner and lexical sf_do stack
+  -> occurrence id, block path, Monad and original qualifiers
+  -> bindings, source metadata and async-only indexes
+
+Global analysis — no traversal mutation
+  -> captures, identities, generated names and frame plans
+  -> nested/name/function conflicts
+
+Pass 2 — rewrite by frozen plan
+  -> scoped local return/fail rewrite
+  -> inner sf_do first, then outer qualifier lowering
+  -> direct bind_frame/then_frame expressions and generated external functions
+
+Finish — outside the traversal
+  -> append generated functions, exports and current manifest
+```
+
+Pass 1 保留完整 original AST，因而 global analysis 可以一次性看到所有 block，并在任何 replacement
+改变 tree shape 之前完成 identity、capture 和 collision 校验。Pass 2 不重新发现 boundary、不重新计算
+identity，也不对已经生成的 function 做第三次 source analysis；它只消费冻结的 frame plan。
+
+### Stable occurrence matching
+
+Erlang AST term 没有 object identity，source annotation 也未必唯一。因此两遍不能靠“相等 AST”或
+line number 猜测同一个 `sf_do`，而应按相同的 lexical pre-order 规则分配 occurrence id：
+
+```text
+OccurrenceId = {SourceFunction, LexicalBlockPath, OccurrenceIndex}
+```
+
+Pass 1 保存 occurrence 对应的 original-node digest 和 plan；Pass 2 重新遇到 occurrence 时按 id
+取 plan，并校验 digest。数量、顺序或 digest 不一致是 transform ordering/source occurrence
+mismatch，必须报错，不能 silent fallback。未包含 `sf_do` 的 function 可以在 Pass 2 跳过，作为
+不改变语义的优化。
+
+### Nested rewrite order
+
+Pass 2 在进入 `sf_do` 时按 occurrence id 取得 plan，并把当前 Monad/plan 压入 lexical stack；
+child traversal 完成 local `return/1`、`fail/1` rewrite，并在 nested `sf_do` 的 post callback 中
+先生成 inner expression。随后 outer `sf_do` 的 post callback 使用：
+
+- Pass 1 冻结的 original qualifiers 做 identity、capture 和 source metadata lookup；
+- Pass 2 已转换的 child expressions 生成实际 remainder/frame body。
+
+这样执行 AST 是由内到外生成的，但所有语义事实已经在第一遍从稳定的 original AST 收集完成。
+nested block 不会被当作 generated function 的新 source occurrence，也不会在第二遍重复分析。
+
+### Qualifier lowering boundary
+
+对一个 block，从 final Monad action 向前构造 frame sequencing chain：
+
+```text
+final Monad action             -> action itself
+Pattern <- Action, Remainder   -> monad_frame:bind_frame(Action, PatternFrameMFA, Context, Monad)
+Action, Remainder              -> monad_frame:then_frame(Action, IgnoreInputFrameMFA, Context, Monad)
+Pattern = Expr, Remainder      -> match followed by Remainder inside the frame body
+```
+
+最后一个 qualifier 若为 local `return(A)`，先按当前 Monad rewrite，再作为 final action 返回；若为
+其他 Monad action，同样直接返回。和 `classic_do` 一样，final action 不经过 `bind_frame` 或
+`then_frame`，也不生成 AsyncId、StepName、frame function 或 manifest entry。terminal generator
+或 pure match 没有 remainder，必须在 transform 阶段拒绝。
+
+不能用 generic tuple/list recursion 代替 AST traversal。identity analysis 必须基于 original source
+AST，不能把已经生成的 frame AST 当作用户 Action canonical form。把 original/lowered AST 同时携带
+在单遍 state 中理论上可行，但会把 global validation、nested scheduling 和 code generation 耦合在
+同一 callback 中，不作为首选实现。
+
+## Manifest
+
+transform 固定生成并 export `'$async_sf_manifest'/0`。current manifest 描述当前可恢复 boundary：
+
+```erlang
+#{
+    format => 1,
+    protocol => 1,
+    module => Module,
+    blocks => #{
+        BlockPath => #{
+            asyncs => #{
+                AsyncId => #{
+                    identity => derived | {named, StepName},
+                    async_index => AsyncIndex,
+                    async_form_digest => AsyncFormDigest,
+                    mfa => {Module, Function, 2},
+                    required_captures => RequiredCaptureLayout
+                }
+            }
+        }
+    }
+}.
+```
+
+manifest 不保存 full source AST、runtime Env、user `sf_cc`、migration selector 或 historical mapping。
+
+## Callback and Runtime Ownership
+
+stable callback 与 legacy callback 共用 callbacks map。stable entry 保存：
+
+- 一个以 `sf_cc` 结尾的 `SfContinuation` data chain；
+- accumulator reference；
+- timer reference；
+- protocol/code-change metadata。
+
+request correlation key 和 monitor 仍由 existing request/reference router 拥有。frame 更新或
+migration 不得重发 request、重建 monitor 或重新开始 timeout。final reply/timeout/DOWN 的
+existing cleanup path 负责 remove、cancel timer 和适用的 demonitor。
+
+## Upgrade Compatibility Boundary
+
+自动恢复分两层：
+
+```text
+identity compatible:
+    target manifest contains same AsyncId/MFA
+
+environment compatible:
+    TargetRequiredCaptures ⊆ StoredEnv keys
+```
+
+identity compatible 但 Env 缺失仍不能执行。runtime 不猜测或重放前置逻辑；若 `sf-migrate`
+没有在恢复前完成 Env migration，则 upgrade 返回 `{error, {appup, incompatible_frame}}`，
+downgrade 返回 `{error, {appdown, incompatible_frame}}`。StoredEnv 多余字段不构成不兼容。
+
+同 module 其他 block、pending action 后面的代码和 capture runtime values 不改变 AsyncId。
+改变 derived BlockPath/AsyncIndex/AsyncForm，改变 named BlockPath/StepName，或切换 identity mode，
+都需要显式 frame mapping，否则按 code-change direction 失败。
