@@ -9,7 +9,10 @@ deps
 .rebar3
 _build
 _checkouts
+.worktrees
 rebar.lock
+erl_crash.dump
+rebar3.crashdump
 /ci_scripts/*
 !/ci_scripts/ci-env.conf.example
 !/ci_scripts/sync_ci.ps1
