@@ -30,18 +30,21 @@ promise_call(Name, Request) ->
 
 promise_call(Name, Request, Timeout) ->
     async:promise_action(
-      fun() ->
-              call(Name, Request)
-      end, Timeout).
+        fun() ->
+            call(Name, Request)
+        end,
+        Timeout
+    ).
 
 promise_channel_call(Channel, Name, Request, Timeout) ->
     async_channel:call(Channel, Name, '$gen_call', Request, Timeout).
 
 default_callback(From) ->
-    fun({message, Message}) ->
+    fun
+        ({message, Message}) ->
             async:message(From, Message),
             ok;
-       (Reply) ->
+        (Reply) ->
             gen_server:reply(From, Reply),
             ok
     end.

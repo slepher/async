@@ -32,18 +32,22 @@ promise_sync_send_event(Process, Request) ->
 
 promise_sync_send_event(Process, Request, Timeout) ->
     async:promise_action(
-      fun() ->
-              sync_send_event(Process, Request)
-      end, Timeout).
+        fun() ->
+            sync_send_event(Process, Request)
+        end,
+        Timeout
+    ).
 
 promise_sync_send_all_state_event(Process, Request) ->
     promise_sync_send_all_state_event(Process, Request, infinity).
 
 promise_sync_send_all_state_event(Process, Request, Timeout) ->
     async:promise_action(
-      fun() ->
-              sync_send_all_state_event(Process, Request)
-      end, Timeout).
+        fun() ->
+            sync_send_all_state_event(Process, Request)
+        end,
+        Timeout
+    ).
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================

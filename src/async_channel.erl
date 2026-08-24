@@ -16,12 +16,20 @@
 -export([start/2, start_link/2]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
--record(state, {callbacks = maps:new(), pendings = [], working_pids = [], parent_pids = [], pool_size}).
+-record(state, {
+    callbacks = maps:new(), pendings = [], working_pids = [], parent_pids = [], pool_size
+}).
 
 %%%===================================================================
 %%% API
@@ -144,11 +152,15 @@ code_change(_OldVsn, State, _Extra) ->
 %%%===================================================================
 %%% Internal functions
 %%%===================================================================
-process_next_request(#state{pendings = [{Pid, Label, Request, {ParentPid, _Tag} = From}|T],
-                            working_pids = WorkingPids, parent_pids = ParentPids,
-                            pool_size = PoolSize} = State) ->
-    
-    NParentPids = 
+process_next_request(
+    #state{
+        pendings = [{Pid, Label, Request, {ParentPid, _Tag} = From} | T],
+        working_pids = WorkingPids,
+        parent_pids = ParentPids,
+        pool_size = PoolSize
+    } = State
+) ->
+    NParentPids =
         case ordsets:is_element(ParentPid, WorkingPids) of
             true ->
                 ordsets:add_element(ParentPid, ParentPids);
@@ -156,12 +168,14 @@ process_next_request(#state{pendings = [{Pid, Label, Request, {ParentPid, _Tag} 
                 ParentPids
         end,
     NWorkingPids = ordsets:add_element(Pid, WorkingPids),
-    WorkingLen = length(ordsets:subtract(NWorkingPids, NParentPids)),  
+    WorkingLen = length(ordsets:subtract(NWorkingPids, NParentPids)),
     case WorkingLen > PoolSize of
         true ->
             State;
         false ->
-            NState = State#state{pendings = T, working_pids = NWorkingPids, parent_pids = NParentPids},
+            NState = State#state{
+                pendings = T, working_pids = NWorkingPids, parent_pids = NParentPids
+            },
             process_request(Pid, Label, Request, From, NState)
     end;
 process_next_request(State) ->
@@ -171,12 +185,15 @@ process_request(Pid, Label, Request, From, State) ->
     MRef = async:call(Pid, Label, Request),
     Monad = async_m:promise(MRef),
     async_m:exec(
-      Monad,
-      fun({message, M}, S) ->
-              async:message(From, M),
-              S;
-         (Reply, S) ->
-              gen:reply(From, Reply),
-              process_next_request(S)
-      end, #state.callbacks, State).
-    
+        Monad,
+        fun
+            ({message, M}, S) ->
+                async:message(From, M),
+                S;
+            (Reply, S) ->
+                gen:reply(From, Reply),
+                process_next_request(S)
+        end,
+        #state.callbacks,
+        State
+    ).

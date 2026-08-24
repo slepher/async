@@ -25,7 +25,7 @@ start() ->
 start_and_action(StartFun, ActionFun, Args) ->
     case StartFun() of
         {ok, Server} ->
-            apply(ActionFun, [Server|Args]);
+            apply(ActionFun, [Server | Args]);
         {error, Reason} ->
             {error, Reason}
     end.
@@ -34,7 +34,7 @@ start_and_action(StartFun, ActionFun, Args) ->
 call(Pid, Label, Request) when is_pid(Pid) ->
     do_call(Pid, Label, Request);
 %% Local by name
-call(Name, Label, Request) when is_atom(Name) -> 
+call(Name, Label, Request) when is_atom(Name) ->
     case whereis(Name) of
         Pid when is_pid(Pid) ->
             do_call(Pid, Label, Request);
@@ -42,10 +42,10 @@ call(Name, Label, Request) when is_atom(Name) ->
             {error, {noproc, Name}}
     end;
 %% Global by name
-call({global, _Name}=Process, Label, Request) ->
+call({global, _Name} = Process, Label, Request) ->
     case where(Process) of
         Pid when is_pid(Pid) ->
-           do_call(Pid, Label, Request);
+            do_call(Pid, Label, Request);
         undefined ->
             {error, noproc}
     end;
@@ -53,7 +53,7 @@ call({global, _Name}=Process, Label, Request) ->
 call({Name, Node}, Label, Request) when Node =:= node() ->
     call(Name, Label, Request);
 %% Remote by name
-call({Name, Node}=Process, Label, Request) when is_atom(Name), is_atom(Node) ->
+call({Name, Node} = Process, Label, Request) when is_atom(Name), is_atom(Node) ->
     do_call(Process, Label, Request);
 call(Name, _Label, _Request) ->
     {error, {invalid_process_name, Name}}.
@@ -77,13 +77,11 @@ promise_mref(MRef, Timeout) ->
 
 then(MRef, Callback) when is_reference(MRef) ->
     async_m:then(promise_mref(MRef), Callback);
-
 then({async_t, _} = Monad, Callback) ->
     async_m:then(Monad, Callback).
 
 exec(MRef, Callback, Offset, State) when is_reference(MRef) ->
     async_m:exec(promise_mref(MRef), Callback, Offset, State);
-
 exec({async_t, _} = Monad, Callback, Offset, State) ->
     async_m:exec(Monad, Callback, Offset, State).
 %%--------------------------------------------------------------------

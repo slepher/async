@@ -30,20 +30,22 @@ promise_wait(Node, Promise) ->
 
 remote_promise_wait(Promise, Ref, Self) ->
     spawn(
-      fun() ->
-              Callback = 
-                  fun({message, Message}) ->
-                          Self ! {message, Ref, Message};
-                     (Reply) ->
-                          Self ! {Ref, Reply}
-                  end,
-              try 
-                  async_m:wait_t(Promise, #{callback => Callback})
-              catch
-                  Class:Exception:StackTrace ->
-                      Self ! {Ref, {error, {Class, Exception, StackTrace}}}
-              end
-      end).
+        fun() ->
+            Callback =
+                fun
+                    ({message, Message}) ->
+                        Self ! {message, Ref, Message};
+                    (Reply) ->
+                        Self ! {Ref, Reply}
+                end,
+            try
+                async_m:wait_t(Promise, #{callback => Callback})
+            catch
+                Class:Exception:StackTrace ->
+                    Self ! {Ref, {error, {Class, Exception, StackTrace}}}
+            end
+        end
+    ).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

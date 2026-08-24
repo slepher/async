@@ -24,15 +24,24 @@
 -include_lib("erlando/include/erlando_instance.hrl").
 
 -erlando_instance(
-   #{type => {?MODULE, [reply_t/2]},
-     adapters =>
-         [#{mode => source,
-            requires => functor,
-            capabilities => [functor]},
-          #{mode => source,
-            requires => monad,
-            capabilities => [monad, monad_trans, monad_fail, monad_error]}],
-     manual => [monad_runner]}).
+    #{
+        type => {?MODULE, [reply_t/2]},
+        adapters =>
+            [
+                #{
+                    mode => source,
+                    requires => functor,
+                    capabilities => [functor]
+                },
+                #{
+                    mode => source,
+                    requires => monad,
+                    capabilities => [monad, monad_trans, monad_fail, monad_error]
+                }
+            ],
+        manual => [monad_runner]
+    }
+).
 
 -include_lib("erlando/include/erlando.hrl").
 
@@ -46,10 +55,12 @@
 -export([fail/2]).
 -export([throw_error/2, catch_error/3]).
 -export([run_nargs/0, run_m/2]).
--export([pure_return/2, wrapped_return/2,  lift_wrapped/2, lift_final/2]).
+-export([pure_return/2, wrapped_return/2, lift_wrapped/2, lift_final/2]).
 -export([run/1, map/2, with/3]).
 
--gen_fun(#{inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]}).
+-gen_fun(#{
+    inner_type => monad, tfunctions => [pure_return/2, wrapped_return/2, lift_final/2, with/3]
+}).
 new(M) ->
     {?MODULE, M}.
 
@@ -68,54 +79,66 @@ run_reply_t(Other) ->
 -spec fmap(fun((A) -> B), reply_t(M, A)) -> reply_t(M, B).
 fmap(F, RTA, {?MODULE, IM}) ->
     map(
-      fun(MA) ->
-              functor:fmap(
-                fun({ok, A}) -> {ok, F(A)};
-                   ({error, Reason}) -> {error, Reason};
-                   ({message, M}) -> {message, M};
-                   (Other) -> F(Other)
-                end, MA, IM)
-      end, RTA).
+        fun(MA) ->
+            functor:fmap(
+                fun
+                    ({ok, A}) -> {ok, F(A)};
+                    ({error, Reason}) -> {error, Reason};
+                    ({message, M}) -> {message, M};
+                    (Other) -> F(Other)
+                end,
+                MA,
+                IM
+            )
+        end,
+        RTA
+    ).
 
 '<$'(RTB, RTA, {?MODULE, _IM} = RT) ->
     functor:'default_<$'(RTB, RTA, RT).
 
--spec '>>='(reply_t(M, A), fun( (A) -> reply_t(M, B) )) -> reply_t(M, B).
+-spec '>>='(reply_t(M, A), fun((A) -> reply_t(M, B))) -> reply_t(M, B).
 '>>='(RTA, KRTB, {?MODULE, IM}) ->
     reply_t(
-      do([IM ||
-             RA <- run_reply_t(RTA),
-             case RA of
-                 {error, _Err}    -> return(RA);
-                 {message, _Msg}  -> return(RA);
-                 ignore           -> return(ignore);
-                 {ok,  A}         -> run_reply_t(KRTB(A));
-                 A                -> run_reply_t(KRTB(A))
-             end
-         ])).
+        do([
+            IM
+         || RA <- run_reply_t(RTA),
+            case RA of
+                {error, _Err} -> return(RA);
+                {message, _Msg} -> return(RA);
+                ignore -> return(ignore);
+                {ok, A} -> run_reply_t(KRTB(A));
+                A -> run_reply_t(KRTB(A))
+            end
+        ])
+    ).
 
 '>>'(RTA, RTB, {?MODULE, _IM} = RT) ->
     monad:'default_>>'(RTA, RTB, RT).
 
 -spec return(A, t(M)) -> reply_t(M, A).
 return(ok, {?MODULE, IM}) -> reply_t(monad:return(ok, IM));
-return(A , {?MODULE, IM}) -> reply_t(monad:return({ok, A}, IM)).
+return(A, {?MODULE, IM}) -> reply_t(monad:return({ok, A}, IM)).
 
 -spec lift(monad:m(M, A)) -> reply_t(M, A).
 lift(MA, {?MODULE, IM}) ->
     reply_t(
-      do([IM || 
-             A <- MA,
-             return({ok, A})
-         ])).
+        do([
+            IM
+         || A <- MA,
+            return({ok, A})
+        ])
+    ).
 
 -spec lift_wrapped(monad:m(M, A), t(M)) -> reply_t(M, A).
 lift_wrapped(MA, {?MODULE, IM}) ->
     reply_t(
-      do([IM || 
-             A <- MA,
-             monad:return(wrap_value(A), IM)
-         ])).
+        do([
+            IM
+         || A <- MA,
+            monad:return(wrap_value(A), IM)
+        ])
+    ).
 
 -spec fail(any(), t(M)) -> reply_t(M, _A).
 fail(E, {?MODULE, IM}) ->
@@ -126,15 +149,17 @@ throw_error(E, {?MODULE, IM}) ->
 
 catch_error(RTA, ERTB, {?MODULE, IM} = ReplyT) ->
     reply_t(
-      do([IM || 
-             RA <- run_reply_t(RTA),
-             case RA of
-                 {error, Reason} ->
-                     run_reply_t(undetermined:run(ERTB(Reason), ReplyT));
-                 _      -> return(RA)
-             end
-       ])).
-
+        do([
+            IM
+         || RA <- run_reply_t(RTA),
+            case RA of
+                {error, Reason} ->
+                    run_reply_t(undetermined:run(ERTB(Reason), ReplyT));
+                _ ->
+                    return(RA)
+            end
+        ])
+    ).
 
 run_nargs() ->
     0.
@@ -153,31 +178,37 @@ wrapped_return(A, {?MODULE, IM}) ->
 -spec lift_final(reply_t(M, A), t(M)) -> reply_t(M, final_reply(A)).
 lift_final(RTA, {?MODULE, IM}) ->
     with(
-      fun(A) ->
-              case A of
-                  {message, _} = Message ->
-                      Message;
-                  A ->
-                      {ok, A}
-              end  
-      end, RTA, {?MODULE, IM}).
+        fun(A) ->
+            case A of
+                {message, _} = Message ->
+                    Message;
+                A ->
+                    {ok, A}
+            end
+        end,
+        RTA,
+        {?MODULE, IM}
+    ).
 
 -spec run(reply_t(M, A)) -> inner_reply_t(M, A).
 run(EM) -> run_reply_t(EM).
 
--spec map(fun((monad:m(M, reply(A))) -> monad:m(N, reply(B))), reply_t(M, A)) -> reply_t(N, B). 
+-spec map(fun((monad:m(M, reply(A))) -> monad:m(N, reply(B))), reply_t(M, A)) -> reply_t(N, B).
 map(F, RTA) ->
     reply_t(F(run_reply_t(RTA))).
 
--spec with(fun((reply(A)) -> reply(B)), reply_t(M, A), t(M)) -> reply_t(M, B). 
+-spec with(fun((reply(A)) -> reply(B)), reply_t(M, A), t(M)) -> reply_t(M, B).
 with(F, RTA, {?MODULE, IM}) ->
     map(
-      fun(MA) ->
-              do([IM || 
-                     RA <- MA,
-                     return(F(RA))
-                 ])
-      end, RTA).
+        fun(MA) ->
+            do([
+                IM
+             || RA <- MA,
+                return(F(RA))
+            ])
+        end,
+        RTA
+    ).
 
 wrap_value(Value) ->
     case Value of
