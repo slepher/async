@@ -9,6 +9,7 @@ deps
 .rebar3
 _build
 _checkouts
+/.workflow/
 .worktrees
 rebar.lock
 erl_crash.dump
