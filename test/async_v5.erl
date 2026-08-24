@@ -15,8 +15,14 @@
 -export([start/0, start_link/0]).
 
 %% gen_server callbacks
--export([init/1, handle_call/3, handle_cast/2, handle_info/2,
-         terminate/2, code_change/3]).
+-export([
+    init/1,
+    handle_call/3,
+    handle_cast/2,
+    handle_info/2,
+    terminate/2,
+    code_change/3
+]).
 
 -define(SERVER, ?MODULE).
 
@@ -74,43 +80,47 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 handle_call(request1, From, State) ->
-    Monad = do([async_m_v5 || 
-                   Reply1 <- promise1(),
-                   async_m_v5:modify(fun(S) -> S#state{status = request2} end),
-                   Reply2 <- promise2(Reply1),
-                   promise3(Reply2)
-               ]),
-    Callback = 
-        fun({right, Reply}, #state{status = Status} = S) ->
+    Monad = do([
+        async_m_v5
+     || Reply1 <- promise1(),
+        async_m_v5:modify(fun(S) -> S#state{status = request2} end),
+        Reply2 <- promise2(Reply1),
+        promise3(Reply2)
+    ]),
+    Callback =
+        fun
+            ({right, Reply}, #state{status = Status} = S) ->
                 gen_server:reply(From, {ok, {Status, Reply}}),
                 S;
-           ({error, Reason}, S) ->
+            ({error, Reason}, S) ->
                 gen_server:reply(From, {error, Reason}),
                 S
         end,
     CC = async_m_v5:callback_to_cc(Callback),
     NState = async_m_v5:run(Monad, CC, #state.callbacks, State),
     {noreply, NState};
-
 handle_call(request2, From, State) ->
-    Monad = do([async_m_v5 || 
-                   Reply1 <- promise1(),
-                   async_m_v5:modify(fun(S) -> S#state{status = request2} end),
-                   Reply2 <- promise2(Reply1),
-                   promise3(Reply2)
-               ]),
-    CC = fun({right, Reply}) ->
-                 do([async_r_m_v5 ||
-                        #state{status = Status} <- async_r_m_v5:get(),
-                        begin
-                            gen_server:reply(From, {ok, {Status, Reply}}),
-                            async_r_m_v5:return(ok)
-                        end
-                    ]);
-            ({error, Reason}) ->
-                 gen_server:reply(From, {error, Reason}),
-                 async_r_m_v5:return(ok)
-         end,
+    Monad = do([
+        async_m_v5
+     || Reply1 <- promise1(),
+        async_m_v5:modify(fun(S) -> S#state{status = request2} end),
+        Reply2 <- promise2(Reply1),
+        promise3(Reply2)
+    ]),
+    CC = fun
+        ({right, Reply}) ->
+            do([
+                async_r_m_v5
+             || #state{status = Status} <- async_r_m_v5:get(),
+                begin
+                    gen_server:reply(From, {ok, {Status, Reply}}),
+                    async_r_m_v5:return(ok)
+                end
+            ]);
+        ({error, Reason}) ->
+            gen_server:reply(From, {error, Reason}),
+            async_r_m_v5:return(ok)
+    end,
     NState = async_m_v5:run(Monad, CC, #state.callbacks, State),
     {noreply, NState}.
 
@@ -122,7 +132,6 @@ promise2(Value1) ->
 
 promise3(Value2) ->
     async_m_v5:promise_call(echo_server, {echo, {right, {Value2, then, request3}}}).
-
 
 %%--------------------------------------------------------------------
 %% @private

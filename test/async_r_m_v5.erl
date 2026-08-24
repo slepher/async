@@ -24,35 +24,47 @@
 -export([run/3]).
 
 %% API
--gen_fun(#{remote => functor,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           behaviours => [functor]}).
+-gen_fun(#{
+    remote => functor,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    behaviours => [functor]
+}).
 
--gen_fun(#{remote => applicative,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           behaviours => [applicative]}).
+-gen_fun(#{
+    remote => applicative,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    behaviours => [applicative]
+}).
 
--gen_fun(#{remote => monad,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           behaviours => [monad]}).
+-gen_fun(#{
+    remote => monad,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    behaviours => [monad]
+}).
 
--gen_fun(#{remote => monad_state,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           behaviours => [monad_state]}).
+-gen_fun(#{
+    remote => monad_state,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    behaviours => [monad_state]
+}).
 
--gen_fun(#{remote => monad_state,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           sfunctions => [modify/2]}).
+-gen_fun(#{
+    remote => monad_state,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    sfunctions => [modify/2]
+}).
 
--gen_fun(#{remote => monad_reader,
-           patterns_group => ?PG,
-           args => [?ASYNC_R_M_5],
-           behaviours => [monad_reader]}).
+-gen_fun(#{
+    remote => monad_reader,
+    patterns_group => ?PG,
+    args => [?ASYNC_R_M_5],
+    behaviours => [monad_reader]
+}).
 
 %%%===================================================================
 %%% API

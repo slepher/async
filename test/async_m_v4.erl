@@ -35,14 +35,16 @@ fail(R, ?MODULE) ->
 
 then(Promise, Then) ->
     fun(Callback) ->
-            Promise(
-              fun({error, Reason}) ->
-                      Callback({error, Reason});
-                 ({ok, Reply}) ->
-                      NPromise = Then(Reply),
-                      NPromise(fun(NReply) -> Callback(NReply) end);
-                 (Reply) ->
-                      NPromise = Then(Reply),
-                      NPromise(fun(NReply) -> Callback(NReply) end)
-              end)
+        Promise(
+            fun
+                ({error, Reason}) ->
+                    Callback({error, Reason});
+                ({ok, Reply}) ->
+                    NPromise = Then(Reply),
+                    NPromise(fun(NReply) -> Callback(NReply) end);
+                (Reply) ->
+                    NPromise = Then(Reply),
+                    NPromise(fun(NReply) -> Callback(NReply) end)
+            end
+        )
     end.

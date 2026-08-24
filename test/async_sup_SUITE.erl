@@ -25,13 +25,13 @@ end_per_suite(_Config) ->
 supervision_tree(_Config) ->
     Children = supervisor:which_children(async_sup),
     ?assertMatch(
-        {async_worker_sup, WorkerSup, supervisor, [async_worker_sup]}
-            when is_pid(WorkerSup),
+        {async_worker_sup, WorkerSup, supervisor, [async_worker_sup]} when
+            is_pid(WorkerSup),
         lists:keyfind(async_worker_sup, 1, Children)
     ),
     ?assertMatch(
-        {async_channel_sup, ChannelSup, supervisor, [async_channel_sup]}
-            when is_pid(ChannelSup),
+        {async_channel_sup, ChannelSup, supervisor, [async_channel_sup]} when
+            is_pid(ChannelSup),
         lists:keyfind(async_channel_sup, 1, Children)
     ),
     {ok, {SupFlags, _ChildSpecs}} = async_sup:init([]),
@@ -43,9 +43,13 @@ supervision_tree(_Config) ->
 temporary_worker(_Config) ->
     Before = supervisor:count_children(async_worker_sup),
     {ok, Worker} = async_worker:start(),
-    ?assertEqual(proplists:get_value(active, Before) + 1,
-                 proplists:get_value(active,
-                                     supervisor:count_children(async_worker_sup))),
+    ?assertEqual(
+        proplists:get_value(active, Before) + 1,
+        proplists:get_value(
+            active,
+            supervisor:count_children(async_worker_sup)
+        )
+    ),
     Monitor = erlang:monitor(process, Worker),
     exit(Worker, shutdown),
     receive
