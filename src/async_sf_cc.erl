@@ -73,7 +73,7 @@ complete(CcRef, Outcome, {async_r_t, _} = MR) ->
                 {error, Reason} ->
                     erlang:error({invalid_sf_cc, Reason});
                 {ok, SfCc, CleanState} ->
-                    invoke_prepared(SfCc, Outcome, ActiveAccRef, CleanState, MR)
+                    invoke_prepared(SfCc, Outcome, CleanState, MR)
             end
         end, MR)
       end, MR)
@@ -203,16 +203,7 @@ invoke(#{mode := direct_state, callback := Callback, context := Context}, Outcom
         end
     end, MR).
 
-invoke_prepared(#{mode := direct_state} = SfCc, Outcome, ActiveAccRef,
-        CleanState, MR) ->
-    bind(async_r_t:ask(MR), fun({CallbacksG, CallbacksS}) ->
-        Callbacks = remove_orphan_accumulators([ActiveAccRef], CallbacksG(CleanState)),
-        StateForCallback = CallbacksS(Callbacks, CleanState),
-        bind(async_r_t:do_put_state(StateForCallback, MR), fun(_) ->
-            invoke(SfCc, Outcome, MR)
-        end, MR)
-    end, MR);
-invoke_prepared(SfCc, Outcome, _ActiveAccRef, CleanState, MR) ->
+invoke_prepared(SfCc, Outcome, CleanState, MR) ->
     bind(async_r_t:do_put_state(CleanState, MR), fun(_) ->
         invoke(SfCc, Outcome, MR)
     end, MR).
@@ -298,7 +289,7 @@ complete_state_result(CcRef, Outcome, Offset, State) ->
             {ok, SfCc, CleanState} ->
                 MR = async_r_t:new(identity),
                 AccRef = make_ref(),
-                Action = invoke_prepared(SfCc, Outcome, AccRef, CleanState, MR),
+                Action = invoke_prepared(SfCc, Outcome, CleanState, MR),
                 try identity:run(async_r_t:run_scope(Action, {Get, Set}, AccRef,
                         undefined, CleanState, MR)) of
                     Pair -> {ok, Pair}
