@@ -128,7 +128,7 @@ prepare(CcRef, ActiveAccRef, State, CallbacksG, CallbacksS) ->
                     {CleanCallbacks, RemovedAccRefs} = remove_owned(CcRef, ResourcesClean),
                     FinalCallbacks = remove_orphan_accumulators(
                         [ActiveAccRef | RemovedAccRefs],
-                        CleanCallbacks, descriptor_acc_refs(SfCc, ActiveAccRef)),
+                        CleanCallbacks),
                     {ok, SfCc, CallbacksS(FinalCallbacks, State)};
                 Error -> Error
             end;
@@ -156,10 +156,7 @@ remove_owned_resources(CcRef, Callbacks) ->
     end, Callbacks, async_util:to_list(Callbacks)).
 
 remove_orphan_accumulators(AccRefs, Callbacks) ->
-    remove_orphan_accumulators(AccRefs, Callbacks, []).
-
-remove_orphan_accumulators(AccRefs, Callbacks, DescriptorRefs) ->
-    Surviving = DescriptorRefs ++ [AccRef || {_MRef, Value} <- async_util:to_list(Callbacks),
+    Surviving = [AccRef || {_MRef, Value} <- async_util:to_list(Callbacks),
         {ok, #{acc_ref := AccRef}} <- [async_util:decode_callback(Value)]],
     lists:foldl(fun(AccRef, Acc) ->
         case lists:member(AccRef, Surviving) of
@@ -167,9 +164,6 @@ remove_orphan_accumulators(AccRefs, Callbacks, DescriptorRefs) ->
             false -> async_util:remove(AccRef, Acc)
         end
     end, Callbacks, lists:usort(AccRefs)).
-
-descriptor_acc_refs(#{mode := legacy}, ActiveAccRef) -> [ActiveAccRef];
-descriptor_acc_refs(_SfCc, _ActiveAccRef) -> [].
 
 cleanup_request(MRef, Callback) ->
     cleanup_timer(Callback),
