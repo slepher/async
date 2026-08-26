@@ -3,7 +3,10 @@
 ## 1. Compatibility Baseline
 
 - ordinary `do` 继续由 ErLando transform 处理；
-- legacy `#callback{}` tuple layout、callbacks field 和 router 行为不变；
+- ordinary callback semantics、callbacks field 和 router behavior 保持兼容；`sf-cc` MAY 在 private
+  `#callback{}` 尾部追加 `sf_cc_mref`，新 reader MUST 接受旧三元和新四元 callback tuple；
+- protection 以 callback 创建时间区分：升级后 wait/ordinary/sf-cc runners 新建的 action callback
+  MUST 填充 CcRef；只有升级前已经 pending 的旧三元 tuple decode 为 `sf_cc_mref = undefined`；
 - `async_r_t:get_state/put_state` 继续隐藏 callbacks store；
 - stable path additive，不把 legacy closure 转成 frame。
 
@@ -73,7 +76,7 @@ default_then_frame(Action, IgnoreInputMFA, Context, MonadFrame) ->
 - MUST 在 action 执行时若 immediate completion 则立即 invoke frame，并在同一 downstream 下运行其返回 Monad；
 - MUST 在 action suspension 时把 frame 与 downstream stable continuation 持久化。
 
-## 4. Frame and Dedicated sf_cc Data
+## 4. Frame Data and sf_cc_ref Terminal
 
 持久化 encoding 固定为 tagged map；不接受前一版 prototype tuple 或无 tag map：
 
@@ -81,18 +84,13 @@ default_then_frame(Action, IgnoreInputMFA, Context, MonadFrame) ->
 -type sf_frame() :: #{
     kind := sf_frame,
     protocol := 1,
+    module := module(),
+    vsn := term() | undefined,
     block_path := [atom()],
     step_name := atom() | undefined,
     async_id := binary(),
     mfa := {module(), atom(), 2},
     env := #{atom() => term()}
-}.
-
--type sf_cc() :: #{
-    kind := sf_cc,
-    protocol := 1,
-    mfa := {module(), atom(), 2},
-    context := term()
 }.
 
 -type sf_continuation() ::
@@ -101,7 +99,7 @@ default_then_frame(Action, IgnoreInputMFA, Context, MonadFrame) ->
         frame := sf_frame(),
         downstream := sf_continuation()
     }
-    | sf_cc().
+    | #{kind := sf_cc_ref, protocol := 1, mref := reference()}.
 ```
 
 generated frame invocation：
@@ -110,19 +108,15 @@ generated frame invocation：
 Module:Function(Input, Env) -> monad:m(M, A).
 ```
 
-terminal `sf_cc` invocation：
+`module` MUST 与 `mfa` owner module 相等。`vsn` MUST 是 producer 取得的 explicit module `-vsn`
+literal term；没有可用显式值时为 `undefined`，不得假定 atom/string/semver，也不得保存 OTP attribute
+container 的外层 list。Vsn 不进入 AsyncId。
 
-```erlang
-Module:Function(Outcome, Context) -> term().
-```
-
-`sf_cc` MUST 由用户显式提供 external MFA/context，并由专有 `invoke_sf_cc` interface 调用。
-stable path MUST NOT 把它传给 legacy `callback_to_cc`、`run_cc` 或 fun CC API。`sf_cc` 不属于
-block manifest 或 migration。
-
-`frame_context()` MUST 恰好提供 `protocol`、`block_path`、`step_name`、`async_id` 和 `env`；runtime 将它与
-`frame_mfa()` 合成 `sf_frame()`。callback MUST 用一个 `sf_continuation()` 字段保存 next frame 和
-downstream，chain 必须以 `sf_cc()` 终止。
+`frame_context()` MUST 提供 `protocol`、`module`、`vsn`、`block_path`、`step_name`、`async_id` 和
+`env`；runtime 将它与 `frame_mfa()` 合成 `sf_frame()`。callback 的 `cc` MUST 保存 next frame 与
+downstream chain，并以 `sf_cc_ref` 终止。完整 sf_cc descriptor、external callback 和 Context MUST
+只由 sf-cc 的 CcRef entry 保存，不得嵌入 chain。保存该 chain 的 callback.sf_cc_mref MUST 与
+terminal mref 相等。
 
 ## 5. Compiler Pipeline
 
@@ -243,32 +237,39 @@ child identity。
 
 ## 9. Runtime Execution
 
-stable runner：
-
-```erlang
--spec run_sf_frame(MonadAction, SfCc, Offset, State) -> State.
-```
+所有升级后 public runners MUST 委托同一个 CcRef execution core。`sf-cc` 定义
+`run_sf_cc/3`、`run_with_sf_cc/5` 和 `exec_sf_cc/5` 的 explicit external-fun contract；现有
+`wait/1`、`wait_t/2`、`run_cc/2`、`run_with_cc/4`、`exec_cc/4` 和 `run/4` 保持 public contract，
+但作为 compatibility facades 创建 CcRef 并使用 library wait completion或 legacy final adapter。
+`sf-do` MUST NOT 另行冻结接受完整 SfCc descriptor 的 public runner；现有 `run_sf_frame/4` 若在过渡
+实现中保留，只能是待移除/适配的 internal compatibility path。
 
 语义：
 
 ```text
-run MonadAction with dedicated SfCc
+run MonadAction under sf-cc scope carrying CcRef
 
 bind_frame(Action, NextFrame) under Downstream:
   immediate -> invoke NextFrame(Input), run returned Monad under Downstream
-  suspend   -> store NextFrame + Downstream
+  suspend   -> store NextFrame + Downstream in callback.cc
+               and CcRef in callback.sf_cc_mref
 
 then_frame(Action, IgnoreInputFrame) under Downstream:
   -> default delegates to bind_frame with the same frame/downstream path
   -> IgnoreInputFrame discards Input before running its remainder
 
-final reply -> invoke_sf_cc(SfCc, Outcome)
+terminal sf_cc_ref -> complete_sf_cc(CcRef, Outcome)
 ```
 
 callback entry MUST 保存一个 `sf_continuation()` chain；每个 `sf_next` 保存 generated frame 和
-downstream，chain 以 `sf_cc` 终止。不得保存第二种等价 tuple encoding，也不得由 transform 生成
-local bind continuation fun。该约束不授权 `sf_do` 检查 Env/context 中任意 runtime value。
-runner/invoker MUST 是 stable path 专有 API，不得调用 legacy CC runner。
+downstream，chain 以 `sf_cc_ref` 终止。不得保存完整 sf_cc 的第二 owner，也不得由 transform 生成
+local bind continuation fun。该约束不授权 `sf_do` 检查 Env/Action 中任意 runtime value。
+
+reply executor MUST 从 decoded callback 的 `acc_ref` 和 `sf_cc_mref` 重建独立 scopes。resumed frame
+产生新的 action callback 时 MUST 继承同一 CcRef，即使 parallel/local accumulator 改变了 AccRef。
+一个 Promise 的 nested/parallel implementation 可以物化多个携带同一 CcRef 的内部 action callbacks，
+但它们仍有独立 RequestMRef/lifecycle；共享 CcRef 只表达单个最终 Outcome 地址，不建立多 Promise
+operation group，也不产生 per-entry final callback。
 
 ## 10. Router Outcomes
 
@@ -278,13 +279,41 @@ runner/invoker MUST 是 stable path 专有 API，不得调用 legacy CC runner�
 - runtime structure corruption、missing manifest/MFA 属于 runtime failure，不伪装成 action
   timeout/down；`sf_do` 不定义对 Env/context 任意 term 的 stable-term validation。
 
-runtime structure corruption、unsupported protocol 或 manifest/MFA validation failure MUST 清理
-callback，并恰好一次调用 terminal `sf_cc`，Outcome 为 `{error, {sf_runtime, Reason}}`；不得 invoke
-generated frame 或进入 ordinary Monad retry。code-change identity/capture incompatibility 使用第 12 节
-的 directional outcome，不包装为 `sf_runtime`。
+runtime structure corruption、unsupported protocol 或 manifest/MFA validation failure MUST NOT invoke
+generated frame。executor MUST 直接从 decoded `callback.sf_cc_mref` 调用 sf-cc unified completion，
+Outcome 为 `{error, {sf_runtime, Reason}}`；不得通过递归解析损坏 chain 寻找 final callback，也不得进入
+ordinary Monad retry。migration mapping/Env/Input failure 的 Outcome 由 sf-migrate 定义，但 MUST 使用
+同一个 CcRef completion primitive。
 
-entry cleanup MUST 复用 existing request lifecycle，保持 correlation key、monitor、timer、request
-和 accumulator ownership。
+cleanup ordering、CcRef take、关联 action callbacks/timer/monitor/accumulator 清理、exactly-once 和
+CleanState callback invocation 完全由 sf-cc contract 定义。sf-do 不得在调用 completion 前自行调用
+用户 final callback，也不得在 completion failure 后恢复 CcRef。
+
+### Pre-upgrade unprotected callback
+
+shared callback decoder MUST 把 `{callback, Cc, AccRef}` 读为 `sf_cc_mref = undefined`。router MUST
+尝试保持旧 continuation behavior；但当 invocation classifier 能确认 anonymous fun 因所属旧代码已
+purge 而不可调用时，MUST：
+
+1. 删除该 RequestMRef callback；
+2. 清理仍可定位且确认归属该 request 的 monitor/timer/accumulator lifecycle；
+3. 不构造 CcRef、不调用 final CC、不 retry；
+4. 返回 `{legacy_outcome, Outcome, CleanState}`，其中 Outcome 是原本将传给旧 continuation 的
+   reply/timeout/DOWN/message action Outcome。
+
+`async_m:handle_info/3` return contract 因此是：
+
+```erlang
+unhandled
+| State
+| {legacy_outcome, Outcome, CleanState}.
+```
+
+该 tagged return 不是 Promise final completion，只把无法继续解释的原 action Outcome 交给当前 receive-loop
+caller。classifier MUST NOT 把已经成功进入 legacy callback 后抛出的普通 user exception、business
+failure 或任意 nested `undef` 一律吞掉；unavailable-code detection MUST 结合 fun identity/stack target，
+并在 supported OTP versions 上验证。message path 一旦确认 continuation unavailable，也 MUST 删除它，
+防止后续 message/reply 重复触发。
 
 ## 11. Identity and Manifest
 
@@ -303,17 +332,19 @@ bump Protocol 表达。generated function atom MUST 是完整 AsyncId 的 lowerc
 
 未被 name marker 修饰的 boundary MUST 生成 `unnamed_sf_action` warning，并获得仅用于普通执行/
 same-version resume 的 module-local frame locator 与 external MFA。其 manifest entry MUST 使用
-`step_name => undefined`。appup/appdown migration MUST 在调用该 MFA 前返回对应方向的
-`incompatible_frame`；local locator、source index 和 Action AST MUST NOT 用于寻找 migration target。
+`step_name => undefined`。migration resolver MUST 在调用该 MFA 前拒绝把 unnamed locator 当作可迁移
+identity；local locator、source index 和 Action AST MUST NOT 用于寻找 migration target。最终 migration
+failure/abort Outcome 属于 sf-migrate，并通过 sf-cc CcRef completion 提交。
 
 transform MUST export `'$async_sf_manifest'/0`。manifest MUST 按 BlockPath/AsyncId 提供
-`StepName | undefined`、MFA
-和 required capture schema。AsyncForm digest、full source AST、runtime Env、`sf_cc`、migration
+owner Module、module Vsn literal term或 `undefined`、`StepName | undefined`、MFA
+和 required capture schema。AsyncForm digest、full source AST、runtime Env、sf-cc descriptor、migration
 selector 和 historical data MUST NOT 写入 current manifest。
 
-## 12. Environment Compatibility
+## 12. Frame Resolution and Environment Compatibility
 
-automatic resume requires：
+在调用每个 stored generated MFA 前，runtime MUST 按该 frame 的 owner Module/Vsn 进入 resolution
+boundary。same-version direct resume 至少 requires：
 
 ```text
 StepName is present
@@ -322,12 +353,20 @@ and TargetRequiredCaptures subset of StoredEnv
 ```
 
 extra source Env keys MUST be allowed。缺少 target capture 时 MUST NOT 重放前置 action 或猜测值；
-若 `sf-migrate` Env migrator 未在恢复前生成 TargetEnv，upgrade MUST 返回
-`{error, {appup, incompatible_frame}}`，downgrade MUST 返回
-`{error, {appdown, incompatible_frame}}`。
+resolver MAY 使用 sf-migrate 提供的 optional Env converter 生成 TargetEnv，并 MAY 在 reply 到达后使用
+optional Input converter 生成 TargetInput。没有 converter 时分别复用 StoredEnv 和原 Input，再按 target
+manifest 验证。sf-do MUST NOT 定义 converter return shape、version-chain composition 或 downgrade policy。
 
 unnamed frame 在普通执行和 same-version resume 中 MAY 使用其 local locator；进入 appup/appdown
-migration 时 MUST 在 target lookup 前返回 directional `incompatible_frame`。
+migration 时 MUST 在 target invocation 前 fail closed。
+
+historical old block/manifest MUST NOT 是 upgrade runtime 的必要输入。actual stored frame 提供 source
+endpoint；current owner manifest 提供 target endpoint和 required captures。historical metadata MAY 由
+sf-migrate 用于 compiler diagnostics 或 strict downgrade，但不改变 sf-do frame generation contract。
+
+owner module 独立升级不会触发 holder process 的 `code_change/3`。因此 eager migration MAY 提前处理
+callbacks，但 correctness MUST 由 reply-time lazy resolution 保证。nested chain 每个 frame 按自己的
+owner module 独立 resolve，尚未执行的其他-module nodes MUST bit-for-bit 保留。
 
 ## 13. Required Diagnostics
 
@@ -356,9 +395,11 @@ Pass 1 MUST 累积可独立报告的 source errors/warnings；存在任一 error
 - final `return(A)` 和 arbitrary Monad action 直接返回，final generator/match 被拒绝；
 - nested explicit/anonymous-path `sf_do` suspends and resumes through outer continuation；
 - immediate/reply/message/timeout/DOWN preserve ordinary async semantics；
-- transform-generated continuation slots contain next/composite frame or dedicated `sf_cc` descriptor，
-  not a transform-generated anonymous bind closure；
-- stable completion path does not call `callback_to_cc`/legacy `run_cc`；
+- transform-generated continuation slots contain next/composite frame or `sf_cc_ref` terminal，not a
+  transform-generated anonymous bind closure or full sf_cc descriptor；
+- suspended stable callback keeps continuation in `cc` and the same terminal CcRef in `sf_cc_mref`；
+- structural failure reaches sf-cc completion through the callback field even when the frame chain is corrupt；
+- stable completion path uses sf-cc runners/primitive and does not call `callback_to_cc`/legacy `run_cc`；
 - current-liveness capture excludes unused bindings and generator pattern variables，and includes the
   lexical Monad value needed for generated dispatch；
 - pending Action、continuation、source index 或 binder rename changes preserve named AsyncId/MFA；
@@ -367,5 +408,14 @@ Pass 1 MUST 累积可独立报告的 source errors/warnings；存在任一 error
 - `case`/`receive`/`try` outer-variable equality patterns capture the outer binding，while
   `fun`/named-fun parameters remain fresh shadowing bindings；
 - multiple invalid `sf_do` occurrences are accumulated in Pass 1，and Pass 2 is not entered；
-- missing future capture requires exact directional failure；
+- missing future capture prevents target invocation and terminal-completes through CcRef；
+- frame and manifest expose owner Module and literal module Vsn/`undefined` without adding Vsn to AsyncId；
+- a frame owned by an independently upgraded module is lazy-resolved before MFA invocation；
+- nested multi-module frames resolve one node at a time and preserve other owners' nodes；
+- upgrade resolution can use the actual stored frame without historical source block metadata；
+- optional Env/Input conversion and downgrade policy are integration-tested with sf-migrate rather than
+  redefined by sf-do；
+- wait/ordinary/sf-cc runners created after upgrade all allocate CcRef without changing ordinary normal results；
+- old three-tuple callback remains readable as unprotected；unavailable old fun returns tagged legacy outcome
+  plus CleanState without crashing, retrying or fabricating final completion；
 - ordinary do and legacy callback suites remain unchanged。

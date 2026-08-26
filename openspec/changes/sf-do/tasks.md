@@ -51,7 +51,9 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
   正确选择 capture set，并保证 generated internal variables hygienic；CaptureAbi 直接使用该 atom
   list，不做 capture SHA/digest。
 
-## 4. Dedicated sf_cc and callback execution
+## 4. Implemented legacy sf_cc baseline (superseded)
+
+本节记录 2026-08-26 前已经实现的 full-descriptor terminal，保留为迁移证据；它不是新的目标合同。
 
 - [x] 定义 stable path 专有 `sf_cc` descriptor/invoker；不得复用 legacy CC fun、
   `callback_to_cc` 或 `run_cc` interface。
@@ -84,7 +86,7 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
   删除 identity mode、AsyncIndex 和 AsyncForm digest。
 - [x] automatic resume 使用 identity check + required-capture subset check，允许 extra Env keys。
 
-## 7. Upgrade failure boundary
+## 7. Implemented legacy upgrade failure boundary (superseded)
 
 - [x] 缺少 target required capture 时不重放 prefix action、不猜测值。
 - [x] `sf-migrate` Env migrator 必须在 resume 前生成 TargetEnv；`sf_do` 不定义 migration DSL、
@@ -121,3 +123,41 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
   变成当前 `sf_do` 的递归 value validation 或发布 gate。
 - [ ] 可选：与 `sf-migrate` 联合验证 target-version fun regeneration；未启用该能力时，文档只要求
   应用避免 fun-valued capture 或改存 external MFA/data descriptor。
+
+## 10. sf-cc integration and self-describing resolution (not implemented)
+
+- [ ] 删除 sf-do 对完整 sf_cc descriptor、`invoke_sf_cc/2` 和 public `run_sf_frame/4` final API 的
+  ownership；所有 public runners 委托统一 CcRef core，显式 stable execution 衔接
+  `run_sf_cc/3`、`run_with_sf_cc/5`、`exec_sf_cc/5`。
+- [ ] 将 `wait/1`、`wait_t/2` 通过 library-owned external completion 无感迁移到 CcRef；保持阻塞、
+  timeout 和正常 Outcome contract。
+- [ ] 将旧 `run_cc`/`run_with_cc`/`exec_cc`/`run` 和 anonymous Callback forms 作为 compatibility
+  facades 接入 CcRef；保持原 argument/callback/return normalization，但不宣称 anonymous final fun
+  具有 explicit external callback guarantee。
+- [ ] 把 continuation terminal 改为
+  `#{kind => sf_cc_ref, protocol => 1, mref => CcRef}`，不得保留 full-descriptor 双 owner。
+- [ ] stable suspension 在 `#callback.cc` 保持 frame chain，并在 `#callback.sf_cc_mref` 保存相同 CcRef；
+  resume 后产生的 action callback 必须继承 CcRef，AccRef 重绑定不得覆盖它；共享 CcRef 不得实现为
+  多 Promise operation group 或 per-entry final completion。
+- [ ] 所有 callback readers 显式接受旧 `{callback, Cc, AccRef}` 和新四元 tuple；旧 tuple 解码为
+  unprotected，不从 Cc/frame 推断 CcRef。
+- [ ] 对已 pending old tuple 增加 unavailable-code classifier；确认旧 anonymous continuation 因 purge
+  不可调用时清理该 request，禁止 crash/retry/final CC，并让 `async_m:handle_info/3` 返回
+  `{legacy_outcome, OriginalActionOutcome, CleanState}`。不得吞掉已经进入 callback 后的普通异常。
+- [ ] frame structural failure 直接使用 decoded callback.sf_cc_mref 调用 sf-cc completion；不得递归
+  遍历损坏 chain，也不得自行定义 cleanup、retry 或 callback return semantics。
+- [ ] 为 `sf_frame` 与 `'$async_sf_manifest'/0` 增加 owner Module 和 explicit module Vsn literal term/
+  `undefined`；验证 frame Module 与 MFA owner 一致，且 Vsn 不进入 AsyncId。
+- [ ] 在每次 generated MFA invocation 前增加 owner Module/Vsn resolution hook；same-version fast path
+  仍验证 identity、MFA 和 required capture subset。
+- [ ] 支持 holder process 未执行 `code_change/3` 时的 reply-time lazy resolution；nested multi-module
+  chain 逐节点 resolve，非当前 owner nodes 保持不变。
+- [ ] upgrade resolution 接受 actual stored frame 作为 source endpoint，不要求 historical source block；
+  historical metadata 只作为 sf-migrate diagnostics/downgrade input。
+- [ ] 允许 resolver 使用 sf-migrate 产生的 TargetEnv/TargetInput，但不得在 sf-do 中冻结 converter
+  syntax、return shape、version-chain composition 或 strict downgrade policy。
+- [ ] resolution/migration failure 不执行 target MFA，并通过 CcRef terminal-complete；migration Outcome
+  由 sf-migrate 定义，structural Outcome 保持 `{error, {sf_runtime, Reason}}`。
+- [ ] 增加 sf_cc_ref encoding、CcRef consistency、old tuple、literal Vsn、external owner upgrade、
+  universal wait/ordinary runner protection、purged old fun legacy outcome、multi-module nesting、
+  no-historical-block upgrade 和 completion handoff integration tests。

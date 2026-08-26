@@ -60,3 +60,35 @@ purge 后失效。
 legacy fun callback 自动转换成 stable frame。它建立的边界仅是：由 transform 生成且可能跨
 suspension 保存的 continuation 使用 external data frame；业务主动保存的 local fun 由应用和显式
 migration 负责。
+
+## 最终完成不属于 frame 本身
+
+frame 只描述“收到 Input 后从哪个稳定边界继续执行”，不应同时拥有 promise 的最终 callback。
+完整 final callback 若嵌在 continuation chain 尾部，一旦 legacy continuation 或 frame shape 已损坏，
+runtime 仍要解析恰好已经失效的数据才能找到 fallback；这与 fallback 存在的目的冲突。
+
+因此受 `sf-cc` 保护的 action callback 分别保存两条正交关系：`cc` 保存 ordinary fun 或 stable frame
+continuation，`sf_cc_mref` 保存 promise 的一次性最终完成地址。sf-do chain 只保存指向同一 CcRef 的
+`sf_cc_ref` terminal；完整 callback/Context 由 sf-cc 的 CcRef entry 独占。这样 frame 正常完成、
+frame validation failure、migration failure 和人工终止可以收敛到同一个 cleanup-before-invoke
+completion primitive，而不要求 sf-do 理解 callback `/2`、`/3` 或 State return contract。
+
+CcRef adoption 以 callback 创建时间为边界，而不是以 API 名称为边界。升级后 `wait`、ordinary
+anonymous callback runner 和 explicit sf-cc runner 都可以无感使用统一 CcRef lifecycle；它们的区别
+只在 final callback 的稳定性证明：只有显式 external fun 获得 compile-time source guarantee。
+
+升级前已经 pending 的旧三元 tuple 无法补造 CcRef。若其 anonymous continuation 已随旧代码 purge
+而不可调用，runtime 不能恢复业务调用栈，也不能伪造 final caller；但仍可清理该 request，并把原本
+要交给 continuation 的 action Outcome 连同 CleanState 作为 tagged `legacy_outcome` 返回给当前
+`async_m:handle_info` caller。这样 holder receive loop 不会因 async 升级而崩溃，处置策略仍由应用决定。
+
+## 外部 owner module 的升级
+
+持有 callbacks State 的进程与定义 generated frame 的 module 可以不同。owner module 独立升级不会
+自动触发 holder process 的 `code_change/3`，所以 eager migration 只能是优化，不能是 correctness
+前提。每个 persisted frame 必须自带 owner Module、source Vsn、identity 和 Env，并在实际调用 generated
+MFA 前逐节点 resolve。nested chain 中来自其他 modules 的 frame 保持原样，直到轮到该节点执行。
+
+sf-do 负责产生这类 self-describing frame 和 current target manifest；是否映射 endpoint、转换 Env/Input、
+使用 optional historical metadata 或在 downgrade 时 fail closed，属于 sf-migrate。无法 resolve 时不猜测
+旧调用栈或重放前置 action，而是通过 `sf_cc_mref` 终止整个 promise。

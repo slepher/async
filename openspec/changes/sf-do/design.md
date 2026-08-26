@@ -16,7 +16,7 @@ hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why
   interpreter。
 - transform 不为用户 block remainder 生成 bind continuation anonymous fun；它生成 external
   frame MFA + Env，并通过 `bind_frame`/`then_frame` 交给 Monad。
-- callback 的 continuation slots 使用 generated/downstream frame 或 terminal `sf_cc` descriptor，
+- callback 的 continuation slots 使用 generated/downstream frame 或 terminal `sf_cc_ref`，
   而不是 transform 生成的 remainder closure。
 - nested `sf_do` 使用普通 Monad composition。
 - identity 描述 source 显式命名的恢复步骤，不描述 Action AST 或其后的完整 continuation。
@@ -30,7 +30,7 @@ hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why
 - 不让 ordinary `do`、ordinary bind 或 legacy callback 自动获得 migration 保证。
 - 不在 `sf_do` 中猜测 future Env schema；变量改名或同名变量含义变化由 `sf-migrate` Env migrator
   在恢复前显式转换 Env。
-- 不递归检查或拒绝 Action、Env、capture value、frame context 或 `sf_cc` context 中的任意 runtime
+- 不递归检查或拒绝 Action、Env、capture value、frame context 或用户 final Context 中的任意 runtime
   term；这些值是否包含 fun 不属于 `sf_do` source transform 的权限边界。
 
 ## Source Syntax
@@ -99,7 +99,7 @@ pattern、local-call 或 final-expression 行为，均不得由 `sf_do` 另行�
 | suspension persistence | `classic_do` 本身不提供跨版本保证 | stable runner 持久化 frame/downstream data |
 | identity/naming | 无 stable boundary identity 或 manifest | named boundary 使用 BlockPath/StepName；unnamed boundary warning 且不可迁移 |
 | compiler pipeline | 单次 Astranaut traversal，post-order lowering | 两遍 Astranaut traversal，先冻结 source facts，再按 plan rewrite |
-| completion interface | 不定义 async stable completion | stable path 使用独立 external MFA/context `sf_cc` |
+| completion interface | 不定义 async stable completion | 依赖 sf-cc；frame chain 只持有 CcRef terminal |
 
 不同 Monad 的 nested lexical block 与同一 Monad 的 direct composition 是两个问题：和
 `classic_do` 一样，进入 nested block 时 local `return/1`、`fail/1` 使用 inner Monad；只有 inner
@@ -180,23 +180,15 @@ frame2(Reply2, Env2) ->
 generated frame function 直接返回 Monad。`bind_frame` 对应的 function 消费 Input pattern；
 `then_frame` 对应的 function 接收但忽略 Input。runtime 不读取 step instruction tag。
 
-## Dedicated Stable Completion Interface
+## sf-cc Dependency and Completion Reference
 
-一个 Monad value 只有在 runner 提供最终 continuation 后才执行。stable path MUST 使用专有
-`sf_cc` data interface，不能复用 legacy `CC` fun、`callback_to_cc` 或原 `run_cc` contract：
+一个 Monad value 只有在 runner 提供最终 continuation 后才执行，但 public runner、external callback
+source check、Context、callback arity/return contract、CcRef store 和 completion transaction 全部由独立
+`sf-cc` capability 定义。sf-do 不拥有 `run_sf_frame/4` 形式的 public final API，也不组装或调用完整
+sf_cc descriptor。
 
-```text
-run_sf_frame(MonadAction, SfCc, Offset, State)
-```
-
-`sf_cc` 是 external MFA + stable context，逻辑调用协议是：
-
-```text
-invoke_sf_cc(SfCc, Outcome) -> completion effect/result
-```
-
-generated frame 与 terminal `sf_cc` 是不同接口：前者 `(Input, Env) -> Monad`，后者消费最终
-Outcome，不返回 do-block remainder Monad。stable callback 不得把 `sf_cc` 伪装成 legacy CC。
+generated frame 与 final completion 是不同接口：前者 `(Input, Env) -> Monad`，后者由 sf-cc 消费最终
+Outcome。两者只通过 CcRef 建立联系。
 
 持久化数据默认固定为 tagged map，不保留 tuple/map 双格式：
 
@@ -204,6 +196,8 @@ Outcome，不返回 do-block remainder Monad。stable callback 不得把 `sf_cc`
 SfFrame = #{
     kind := sf_frame,
     protocol := 1,
+    module := Module,
+    vsn := Vsn | undefined,
     block_path := BlockPath,
     step_name := StepName | undefined,
     async_id := AsyncId,
@@ -211,20 +205,17 @@ SfFrame = #{
     env := Env
 }.
 
-SfCc = #{
-    kind := sf_cc,
-    protocol := 1,
-    mfa := {Module, Function, 2},
-    context := Context
-}.
-
 SfContinuation =
     #{kind := sf_next, frame := SfFrame, downstream := SfContinuation}
-    | SfCc.
+    | #{kind := sf_cc_ref, protocol := 1, mref := CcRef}.
 ```
 
 callback 使用一个 `SfContinuation` 字段。`sf_next` 只是数据化 continuation composition：收到
 Input 后 invoke `frame`，再用 `downstream` 运行返回的 Monad；它不是 action instruction 或 frame VM。
+保存该 continuation 的 action callback 还在独立尾字段 `sf_cc_mref` 保存相同 CcRef。
+
+`module` 必须与 frame MFA owner 一致。`vsn` 是 producer 捕获的 module `-vsn` literal term；没有可用
+显式 Vsn 时为 `undefined`。它不得被强制转换成 atom/string/semver，也不进入 AsyncId。
 
 `bind_frame` 必须保留 downstream stable continuation：
 
@@ -237,15 +228,48 @@ reply
   -> run NextMonad with Downstream
 ```
 
-Downstream 可以是 outer generated/composite continuation，最外层终止于 `sf_cc`。callback 必须
+Downstream 可以是 outer generated/composite continuation，最外层终止于 `sf_cc_ref`。callback 必须
 保存上述 `sf_next` chain，不得仅保存 NextFrame 后丢失外层 continuation，也不得退回 fun CC。
 
-用户 `sf_cc` 不属于 do block transform：
+用户 final callback 不属于 do block transform：
 
 - 不进入 AsyncId；
 - 不进入 block manifest；
 - 不进入任何 external migration descriptor；
-- 用户要迁移 completion 逻辑时，应把逻辑放进 `sf_do`，最后接通用 external `sf_cc` MFA。
+- Context 不由 lexical Env 推导或迁移；
+- 完整 callback descriptor 只存在于 sf-cc CcRef entry；
+- 用户要迁移 completion 逻辑时，应把逻辑放进 `sf_do`，最后接 sf-cc external callback。
+
+### Universal post-upgrade CcRef adoption
+
+CcRef 是升级后 runner engine 的统一 lifecycle primitive，不是只有显式 sf-cc API 才创建的 opt-in。
+创建时间决定 protection：
+
+```text
+post-upgrade wait/ordinary/sf-cc runner invocation -> creates CcRef
+pre-upgrade already-pending three-tuple callback  -> sf_cc_mref = undefined
+```
+
+`wait/1` 和 `wait_t/2` MUST 保持 public API、阻塞行为和正常 Outcome，由库内固定 exported external
+completion 把 Outcome 返回既有 wait driver。旧 `run_cc`/`run_with_cc`/`exec_cc`/`run` 和 ordinary
+anonymous Callback forms MUST 保持 source、argument 和 return normalization，通过 legacy final descriptor
+接入同一 CcRef take/cleanup infrastructure。legacy final fun 自身若已失效，不获得 external-fun 的强
+upgrade guarantee；需要该保证的用户仍使用显式 sf-cc runner。
+
+升级前已挂起的旧三元 tuple 既没有 CcRef，也没有可重建的 final caller。reader 只把它 decode 为
+`sf_cc_mref = undefined`。当旧 anonymous continuation 仍可调用时继续旧路径；若 runtime 能确认它因
+旧代码 purge 而不可调用，则清理可定位的 request lifecycle，不构造 CcRef、不调用 final CC、不 retry，
+并让 `async_m:handle_info` 返回：
+
+```erlang
+{legacy_outcome, Outcome, CleanState}.
+```
+
+Outcome 是原本要交给旧 continuation 的 reply/timeout/DOWN/message action Outcome，不是新构造的
+Promise final error。调用方拥有该 Outcome policy；它可以继续 loop、停止进程、记录或转换。
+CleanState 必须包含 callback
+删除结果，否则调用方继续使用旧 State 会反复触发同一失效 continuation。普通业务 exception 不得被
+错误归类成 unavailable-code legacy outcome。
 
 ## Nested sf_do
 
@@ -349,7 +373,8 @@ Reply <- Action
 continuation，也不推进 frame。
 
 protocol/manifest/MFA 损坏等结构错误仍属于 runtime failure，不与普通 action failure 混淆。
-`sf_do` transform 不对 Action、Env 或 context 的任意 runtime term 做 stable-term validation。
+executor 必须通过 callback.sf_cc_mref 进入统一 sf-cc completion，而不是解析损坏 continuation。
+`sf_do` transform 不对 Action、Env 或用户 final Context 的任意 runtime term 做 stable-term validation。
 
 ## Lexical Capture Analysis
 
@@ -424,7 +449,8 @@ transform 只能保存当前 continuation 所需变量，不能预测 future con
 TargetRequiredCaptures ⊄ StoredEnv
 ```
 
-若 `sf-migrate` Env migrator 未在恢复前生成 TargetEnv，则 upgrade/downgrade 确定性失败。
+若 `sf-migrate` Env migrator 未在恢复前生成 TargetEnv，则不得执行 target frame，并通过当前 CcRef
+terminal-complete；具体 migration Outcome 不由 sf-do 定义。
 
 ## Identity
 
@@ -434,7 +460,7 @@ unnamed frame。pure let 和 final action 不消费 StepName。实现 MAY 保留
 诊断或 unnamed local-frame metadata，但它不得参与 migration identity 或 target 推断。final action
 仍可按 Monad 自身语义 immediate completion 或 suspend，
 但它没有 `sf_do` block-local continuation，因此不生成 frame identity；运行时直接保留既有
-downstream（outer frame 或顶层 `sf_cc`）。若 final action 挂起，保存的仍是该既有 downstream；
+downstream（outer frame 或顶层 `sf_cc_ref`）。若 final action 挂起，保存的仍是该既有 downstream；
 `sf_do` 不为它人工制造 boundary、identity 或 wrapper continuation。
 
 named migration identity：
@@ -452,8 +478,9 @@ module-local collision check。影响整体编码语义的变更通过 bump Prot
 
 unnamed frame 没有 migration identity。实现仍须为它生成 module-local external MFA 和 runtime frame
 locator，以支持普通执行和同版本 resume；current manifest entry 必须明确记录
-`step_name => undefined`。appup/appdown migration 遇到该 entry 时必须返回 directional
-`incompatible_frame`，不得按 locator、source index、Action AST 或邻近 named step 推断 target。
+`step_name => undefined`。migration resolver 遇到该 entry 时必须在 target invocation 前 fail closed，
+不得按 locator、source index、Action AST 或邻近 named step 推断 target；具体 terminal Outcome 由
+sf-migrate 提供并通过 sf-cc completion 提交。
 
 ## High-Level Implementation Design
 
@@ -555,6 +582,7 @@ transform 固定生成并 export `'$async_sf_manifest'/0`。current manifest 描
     format => 1,
     protocol => 1,
     module => Module,
+    vsn => Vsn | undefined,
     blocks => #{
         BlockPath => #{
             asyncs => #{
@@ -569,24 +597,37 @@ transform 固定生成并 export `'$async_sf_manifest'/0`。current manifest 描
 }.
 ```
 
-manifest 不保存 full source AST、runtime Env、user `sf_cc`、migration selector 或 historical mapping。
+manifest 的 `vsn` 沿用 explicit module `-vsn` literal term；无可用显式值时为 `undefined`。
+manifest 不保存 full source AST、runtime Env、user sf-cc descriptor、migration selector 或 historical mapping。
 
 ## Callback and Runtime Ownership
 
-stable callback 与 legacy callback 共用 callbacks map。stable entry 保存：
+所有升级后新建的 protected action callback 与升级前 legacy callback 共用 callbacks map。protected
+entry 保存：
 
-- 一个以 `sf_cc` 结尾的 `SfContinuation` data chain；
+- `cc` 中一个以 `sf_cc_ref` 结尾的 `SfContinuation` data chain；
+- 独立 `sf_cc_mref` 中与 terminal 相同的 CcRef；
 - accumulator reference；
 - timer reference；
 - protocol/code-change metadata。
 
 request correlation key 和 monitor 仍由 existing request/reference router 拥有。frame 更新或
 migration 不得重发 request、重建 monitor 或重新开始 timeout。final reply/timeout/DOWN 的
-existing cleanup path 负责 remove、cancel timer 和适用的 demonitor。
+existing routing path 负责决定 action lifecycle；final CcRef 的 take、关联 callbacks/timer/monitor/
+accumulator 清理和用户 callback invocation 由 sf-cc 完成。
+
+旧三元 tuple 没有 final CcRef。其 continuation unavailable cleanup 只能清理 runtime 仍能定位且确认归属
+该 request 的资源，并通过 tagged `legacy_outcome` 把 Outcome 与 CleanState 交还 `handle_info` caller；
+它不是 Promise completion，也不得进入 sf-cc exactly-once callback invocation。
+
+一个 Promise 的 nested/parallel implementation 可以物化多个携带同一 CcRef 的 internal callbacks；
+每个 entry 仍由自己的 RequestMRef 路由。共享 CcRef 只表示它们最终收敛到该 Promise 的一个 Outcome，
+不是多个业务 Promises 的 operation group，也不授权按 entry 多次调用 final callback。
 
 ## Upgrade Compatibility Boundary
 
-自动恢复分两层：
+每个 frame invocation 前都必须按其 owner Module/Vsn 进入 resolution boundary。无需转换的直接恢复
+仍至少检查两层：
 
 ```text
 identity compatible:
@@ -597,11 +638,20 @@ environment compatible:
     TargetRequiredCaptures ⊆ StoredEnv keys
 ```
 
-identity compatible 但 Env 缺失仍不能执行。runtime 不猜测或重放前置逻辑；若 `sf-migrate`
-没有在恢复前完成 Env migration，则 upgrade 返回 `{error, {appup, incompatible_frame}}`，
-downgrade 返回 `{error, {appdown, incompatible_frame}}`。StoredEnv 多余字段不构成不兼容。
+identity compatible 但 Env 缺失仍不能执行。runtime 不猜测或重放前置逻辑；resolver 可以使用
+sf-migrate 的 optional Env converter，并在 Input 到达后使用 optional Input converter。没有 converter
+时分别复用 StoredEnv 和原 Input。StoredEnv 多余字段不构成不兼容。
 
 同 module 其他 block、pending Action AST、pending action 后面的代码和 capture runtime values 不改变
-AsyncId。改变 BlockPath 或 StepName 需要显式 frame mapping，否则按 code-change direction 失败；
+AsyncId。改变 BlockPath 或 StepName 需要显式 frame mapping，否则 resolution 失败；
 没有 StepName 的 historical/current frame 在 migration 中默认不兼容，runtime 不按 local locator、
 index 或 AST 猜测 target。
+
+upgrade resolver 可以只使用 actual stored source frame 与 current target manifest；historical old block
+metadata 不是运行必要条件，只能提供更早 diagnostics。strict downgrade 是否要求 historical artifact、
+Env/Input converter protocol、version-chain composition 和 failure Outcome shape 均由 sf-migrate 定义。
+
+owner module 独立升级不会自动触发 holder process 的 `code_change/3`，因此 correctness 不能依赖 eager
+migration。reply-time 必须在调用每个 frame MFA 前 lazy resolve；nested chain 中不同 owner modules 的
+节点分别 resolve，尚未执行的 nodes bit-for-bit 保留。resolution 无法继续时通过当前 callback 的
+`sf_cc_mref` terminal-complete，不从 chain 递归寻找 final CC。
