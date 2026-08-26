@@ -35,6 +35,7 @@
 -export([run_sf_frame/4]).
 -export([run_sf_cc/3, run_with_sf_cc/5, exec_sf_cc/5]).
 -export([inspect_sf_callbacks/3, fail_sf_callbacks/4]).
+-export([handle_info/3]).
 -export([promise/2]).
 -export([callback_to_cc/1]).
 -export([map_promises/2]).
@@ -109,7 +110,7 @@
     remote => async_t,
     args => identity,
     extra_call => {identity, run},
-    functions => [handle_info/3, run_info/3, handle_reply/4, run_reply/4, wait_receive/3]
+    functions => [run_info/3, handle_reply/4, run_reply/4, wait_receive/3]
 }).
 
 %%%===================================================================
@@ -215,6 +216,12 @@ run_with_sf_cc(Async, Callback, Context, Offset, State) ->
 exec_sf_cc(Async, Callback, Context, Offset, State) ->
     identity:run(async_t:exec_sf_cc(
         Async, Callback, Context, Offset, State, async_t:new(identity))).
+
+handle_info(Info, Offset, State) ->
+    case run_info(Info, Offset, State) of
+        {{legacy_outcome, _Outcome, _CleanState} = Tagged, _State} -> Tagged;
+        {_Outcome, NewState} -> NewState
+    end.
 
 inspect_sf_callbacks(MatchFun, Offset, State) ->
     async_sf_cc:inspect(MatchFun, Offset, State).
