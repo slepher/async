@@ -13,6 +13,8 @@
     block_path := [atom()],
     step_name := atom() | undefined,
     async_id := binary(),
+    module := module(),
+    vsn := term(),
     env := #{atom() => term()}
 }.
 

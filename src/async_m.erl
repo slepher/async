@@ -33,6 +33,8 @@
 -export([then/2, then/4]).
 -export([update/2, exec/4, run/4]).
 -export([run_sf_frame/4]).
+-export([run_sf_cc/3, run_with_sf_cc/5, exec_sf_cc/5]).
+-export([inspect_sf_callbacks/3, fail_sf_callbacks/4]).
 -export([promise/2]).
 -export([callback_to_cc/1]).
 -export([map_promises/2]).
@@ -195,8 +197,30 @@ run(Async, Callback, Offset, State) ->
     CC = callback_to_cc(Callback),
     run_with_cc(Async, CC, Offset, State).
 
-run_sf_frame(Async, SfCc, Offset, State) ->
-    async_sf_runtime:run_sf_frame(Async, SfCc, Offset, State).
+run_sf_frame(Async,
+        #{kind := sf_cc, protocol := 1, mfa := {Module, Function, 2},
+            context := Context}, Offset, State)
+        when is_atom(Module), is_atom(Function) ->
+    run_with_sf_cc(Async, fun Module:Function/2, Context, Offset, State);
+run_sf_frame(_Async, SfCc, _Offset, _State) ->
+    erlang:error({invalid_sf_cc, SfCc}).
+
+run_sf_cc(Async, Callback, Context) ->
+    async_t:run_sf_cc(Async, Callback, Context, async_t:new(identity)).
+
+run_with_sf_cc(Async, Callback, Context, Offset, State) ->
+    identity:run(async_t:run_with_sf_cc(
+        Async, Callback, Context, Offset, State, async_t:new(identity))).
+
+exec_sf_cc(Async, Callback, Context, Offset, State) ->
+    identity:run(async_t:exec_sf_cc(
+        Async, Callback, Context, Offset, State, async_t:new(identity))).
+
+inspect_sf_callbacks(MatchFun, Offset, State) ->
+    async_sf_cc:inspect(MatchFun, Offset, State).
+
+fail_sf_callbacks(MatchFun, Reason, Offset, State) ->
+    async_sf_cc:fail(MatchFun, Reason, Offset, State).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
