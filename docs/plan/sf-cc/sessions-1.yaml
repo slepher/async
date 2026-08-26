@@ -1,0 +1,18 @@
+plan: 1
+sessions:
+  - session_id: 01a03d18-1e4f-77f2-a9cf-5b0701216f64
+    role: dispatcher
+    model: gpt-5.6-luna
+    reasoning_effort: high
+  - session_id: 01a03d29-484e-7d30-8cfd-344ec91f1054
+    role: dispatcher
+    model: gpt-5.6-luna
+    reasoning_effort: high
+  - session_id: 01a03d30-1fc8-72c1-b951-31e01b05be20
+    role: sup_coding_worker
+    model: gpt-5.6-sol
+    reasoning_effort: medium
+  - session_id: 01a03d8d-2358-7921-b51e-7d66aa664abc
+    role: reviewer
+    model: gpt-5.6-sol
+    reasoning_effort: high
