@@ -12,8 +12,10 @@
 
 parse_transform(Forms, _Options) ->
     Module = astranaut_lib:analyze_forms_module(Forms),
+    Vsn = module_vsn(Forms),
     Collect0 = #{
         module => Module,
+        vsn => Vsn,
         functions => source_functions(Forms),
         owner => undefined,
         block_stack => [],
@@ -80,7 +82,8 @@ finish_rewrite(RewrittenForms, Rewrite, Collect) ->
         ok ->
             Generated = lists:reverse(maps:get(generated, Rewrite)),
             Manifest = manifest(
-                maps:get(module, Collect), maps:values(maps:get(plans, Collect))
+                maps:get(module, Collect), maps:get(vsn, Collect),
+                maps:values(maps:get(plans, Collect))
             ),
             ManifestForms = manifest_forms(Manifest),
             GeneratedExport = {attribute, 0, export, [
@@ -387,7 +390,8 @@ analyze_call(Node, Info, {_Owner, Path, _Occurrence} = Id, State) ->
      || QualifierPlan <- pair_step_markers(Qualifiers),
         validate_unique_step_names(QualifierPlan),
         Boundaries0 = analyze_boundaries(QualifierPlan, Monad, BoundBefore),
-        Boundaries = assign_identities(Boundaries0, Id, maps:get(module, State)),
+        Boundaries = assign_identities(Boundaries0, Id, maps:get(module, State),
+            maps:get(vsn, State)),
         return(#{
             path => Path,
             boundaries => Boundaries,
@@ -652,13 +656,14 @@ monad_captures(Monad, Bound) ->
         ordsets:intersection(async_sf_lexical:free_expression(Monad, Bound), Bound)
     ).
 
-assign_identities(Boundaries, Id, Module) ->
-    [assign_identity(Boundary, Id, Module) || Boundary <- Boundaries].
+assign_identities(Boundaries, Id, Module, Vsn) ->
+    [assign_identity(Boundary, Id, Module, Vsn) || Boundary <- Boundaries].
 
 assign_identity(
     #{step_name := undefined} = Boundary,
     {Owner, Path, Occurrence},
-    Module
+    Module,
+    Vsn
 ) ->
     AsyncId = hash({
         sf_unnamed_local,
@@ -670,17 +675,20 @@ assign_identity(
         maps:get(boundary_ordinal, Boundary)
     }),
     Function = list_to_atom("$sf_local_" ++ binary_to_list(hex(AsyncId))),
-    complete_boundary(Boundary, AsyncId, Function, Module, Path);
-assign_identity(#{step_name := StepName} = Boundary, {_Owner, Path, _Occurrence}, Module) ->
+    complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path);
+assign_identity(#{step_name := StepName} = Boundary, {_Owner, Path, _Occurrence}, Module,
+        Vsn) ->
     AsyncId = hash({sf_named_async, ?PROTOCOL, Path, StepName}),
     Function = list_to_atom("$sf_" ++ binary_to_list(hex(AsyncId))),
-    complete_boundary(Boundary, AsyncId, Function, Module, Path).
+    complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path).
 
-complete_boundary(Boundary, AsyncId, Function, Module, Path) ->
+complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path) ->
     Boundary#{
         async_id => AsyncId,
         function => Function,
         mfa => {Module, Function, 2},
+        module => Module,
+        vsn => Vsn,
         path => Path
     }.
 
@@ -933,10 +941,12 @@ context_ast(Boundary, Pos) ->
         {map_field_assoc, Pos, {atom, Pos, block_path}, abstract(maps:get(path, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, step_name}, abstract(maps:get(step_name, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, async_id}, abstract(maps:get(async_id, Boundary))},
+        {map_field_assoc, Pos, {atom, Pos, module}, abstract(maps:get(module, Boundary))},
+        {map_field_assoc, Pos, {atom, Pos, vsn}, abstract(maps:get(vsn, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, env}, {map, Pos, EnvFields}}
     ]}.
 
-manifest(Module, Plans) ->
+manifest(Module, Vsn, Plans) ->
     Blocks = lists:foldl(
         fun(Plan, Blocks0) ->
             Path = maps:get(path, Plan),
@@ -953,7 +963,14 @@ manifest(Module, Plans) ->
         #{},
         Plans
     ),
-    #{format => 1, protocol => ?PROTOCOL, module => Module, blocks => Blocks}.
+    #{format => 1, protocol => ?PROTOCOL, module => Module, vsn => Vsn,
+        blocks => Blocks}.
+
+module_vsn(Forms) ->
+    case [Vsn || {attribute, _Pos, vsn, Vsn} <- Forms] of
+        [] -> undefined;
+        [Vsn | _] -> Vsn
+    end.
 
 manifest_forms(Manifest) ->
     Pos = 0,

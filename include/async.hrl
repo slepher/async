@@ -1,4 +1,8 @@
 -include_lib("astranaut/include/macro.hrl").
+-import_macro(async_sf_cc_macro).
+-use_macro({async_sf_cc_macro, run_sf_cc/3, [{alias, run_sf_cc}]}).
+-use_macro({async_sf_cc_macro, run_with_sf_cc/5, [{alias, run_with_sf_cc}]}).
+-use_macro({async_sf_cc_macro, exec_sf_cc/5, [{alias, exec_sf_cc}]}).
 -ifndef(ASYNC_DO).
 -define(ASYNC_DO, true).
 -use_macro({async_ext, async_do/1, [{alias, async_do}, formatter]}).

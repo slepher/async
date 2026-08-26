@@ -12,8 +12,9 @@
 -export([store/3, find/2, get/3, remove/2]).
 -export([clear/1, merge/2]).
 -export([same_type_state/2, match_state/3, callback_exists/1]).
+-export([decode_callback/1, callback_value_kind/1, to_list/1]).
 
--record(callback, {cc, acc_ref}).
+-include("async_internal.hrl").
 
 %%%===================================================================
 %%% API
@@ -72,16 +73,34 @@ match_state(_State, _Type, _Len) ->
     false.
 
 callback_exists(Callbacks) ->
-    (maps:size(Callbacks) =/= 0) and
-        (lists:any(
-            fun
-                (#callback{}) ->
-                    true;
-                (_) ->
-                    false
-            end,
-            maps:values(Callbacks)
-        )).
+    lists:any(
+        fun({_Key, Value}) -> callback_value_kind(Value) =:= action_callback end,
+        to_list(Callbacks)
+    ).
+
+decode_callback({callback, Cc, AccRef}) ->
+    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => undefined}};
+decode_callback(#callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = CcRef}) ->
+    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => CcRef}};
+decode_callback(_) ->
+    error.
+
+callback_value_kind(Value) ->
+    case decode_callback(Value) of
+        {ok, _} -> action_callback;
+        error ->
+            case Value of
+                #{kind := sf_cc_ref, protocol := 1, cc := _} -> sf_cc_ref;
+                _ -> other
+            end
+    end.
+
+to_list(Dict) when is_map(Dict) ->
+    maps:to_list(Dict);
+to_list(Dict) when is_list(Dict) ->
+    Dict;
+to_list(Dict) ->
+    dict:to_list(Dict).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec
