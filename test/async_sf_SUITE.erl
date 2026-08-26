@@ -156,8 +156,8 @@ frame_completion(_Config) ->
                               lists:prefix("$sf_", atom_to_list(Function));
                          (_) -> false
                       end, Tagged)),
-    ?assert(lists:any(fun(#{kind := sf_cc, protocol := 1,
-                             mfa := {sf_do_fixture, complete, 2}}) -> true;
+    ?assert(lists:any(fun(#{kind := sf_cc_ref, protocol := 1,
+                             mref := CcRef}) when is_reference(CcRef) -> true;
                          (_) -> false
                       end, Tagged)),
     ?assertEqual(false, contains_any_tag(State, [sf_program, await, done])),
@@ -173,16 +173,16 @@ frame_completion(_Config) ->
     #{frame := UnnamedFrame} = UnnamedContinuation,
     ?assertEqual(undefined, maps:get(step_name, UnnamedFrame)),
     ?assertMatch({{ok, {unnamed, reply}}, _},
-        run_continuation(UnnamedContinuation, reply, resume)),
+        run_continuation(UnnamedContinuation, reply, resume, UnnamedState)),
     assert_completion(unnamed_runtime, {ok, {unnamed, reply}}),
     SentinelFrame = UnnamedFrame#{mfa => {sf_do_fixture, migration_sentinel, 2}},
     SentinelContinuation = UnnamedContinuation#{frame => SentinelFrame},
     ?assertMatch({{error, {appup, incompatible_frame}}, _},
-        run_continuation(SentinelContinuation, reply, appup)),
+        run_continuation(SentinelContinuation, reply, appup, UnnamedState)),
     assert_completion(unnamed_runtime, {error, {appup, incompatible_frame}}),
     assert_sentinel_not_invoked(),
     ?assertMatch({{error, {appdown, incompatible_frame}}, _},
-        run_continuation(SentinelContinuation, reply, appdown)),
+        run_continuation(SentinelContinuation, reply, appdown, UnnamedState)),
     assert_completion(unnamed_runtime, {error, {appdown, incompatible_frame}}),
     assert_sentinel_not_invoked().
 
@@ -216,7 +216,7 @@ nested_composition(_Config) ->
     Ref = make_ref(),
     {ok, State} = start_suspended(sf_do_fixture:nested(Ref), nested_chain),
     [Continuation | _] = [M || M = #{kind := sf_next} <- tagged_maps(State)],
-    ?assertEqual([sf_next, sf_next, sf_cc], continuation_kinds(Continuation)),
+    ?assertEqual([sf_next, sf_next, sf_cc_ref], continuation_kinds(Continuation)),
     {{ok, {outer, {ok, {inner, reply}}}}, Done} = async_m:run_info({Ref, reply}, 2, State),
     ?assertEqual(#{}, Done#state.callbacks),
     assert_completion(nested_chain, {ok, {outer, {ok, {inner, reply}}}}),
@@ -236,16 +236,16 @@ capture_compatibility(_Config) ->
     ?assertEqual(#{'Used' => used}, maps:get(env, Frame)),
     ExtraFrame = Frame#{env => #{'Used' => used, extra => allowed}},
     Extra = Continuation#{frame => ExtraFrame},
-    ?assertMatch({{ok, _}, _}, run_continuation(Extra, reply, resume)),
+    ?assertMatch({{ok, _}, _}, run_continuation(Extra, reply, resume, State)),
     assert_completion(capture, {ok, {used, reply}}),
 
     MissingFrame = Frame#{env => #{}},
     Missing = Continuation#{frame => MissingFrame},
     ?assertMatch({{error, {appup, incompatible_frame}}, _},
-        run_continuation(Missing, reply, appup)),
+        run_continuation(Missing, reply, appup, State)),
     assert_completion(capture, {error, {appup, incompatible_frame}}),
     ?assertMatch({{error, {appdown, incompatible_frame}}, _},
-        run_continuation(Missing, reply, appdown)),
+        run_continuation(Missing, reply, appdown, State)),
     assert_completion(capture, {error, {appdown, incompatible_frame}}),
 
     assert_required_captures([case_capture], ['Expected']),
@@ -319,28 +319,29 @@ identity_manifest(_Config) ->
 
 %% Objective 9: structural failures are terminal sf_runtime outcomes.
 structural_failures(_Config) ->
-    Cc = sf_cc(structural),
+    {Cc, StructuralState} = registered_sf_cc(structural),
     BadProtocol = #{kind => sf_next, protocol => 2,
         downstream => Cc, frame => #{protocol => 2}},
     ?assertMatch({{error, {sf_runtime, {unsupported_protocol, 2}}}, _},
-        run_continuation(BadProtocol, input, resume)),
+        run_continuation(BadProtocol, input, resume, StructuralState)),
     assert_completion(structural, {error, {sf_runtime, {unsupported_protocol, 2}}}),
 
     BadShape = #{kind => sf_next, frame => broken, downstream => Cc},
     ?assertMatch({{error, {sf_runtime, {invalid_frame, broken}}}, _},
-        run_continuation(BadShape, input, resume)),
+        run_continuation(BadShape, input, resume, StructuralState)),
     assert_completion(structural, {error, {sf_runtime, {invalid_frame, broken}}}),
 
-    [Entry] = block_entries(fixture_manifest(), [suspended_flow]),
-    {Module, _Function, 2} = maps:get(mfa, Entry),
-    MissingMfa = {Module, '$sf_missing', 2},
+    MissingModule = fresh_module("sf_do_missing_owner_"),
+    MissingMfa = {MissingModule, '$sf_missing', 2},
     Frame = #{kind => sf_frame, protocol => 1, block_path => [suspended_flow],
         step_name => wait,
         async_id => entry_id(fixture_manifest(), [suspended_flow]),
-        mfa => MissingMfa, env => #{}},
+        module => MissingModule, vsn => undefined, mfa => MissingMfa, env => #{}},
     Missing = #{kind => sf_next, frame => Frame, downstream => Cc},
-    {{error, {sf_runtime, Reason}}, _} = run_continuation(Missing, input, resume),
-    ?assert(lists:member(element(1, Reason), [missing_generated_mfa, missing_manifest_or_mfa])),
+    {{error, {sf_runtime, Reason}}, _} =
+        run_continuation(Missing, input, resume, StructuralState),
+    ?assert(lists:member(element(1, Reason),
+        [missing_generated_mfa, missing_manifest_or_mfa, missing_module])),
     assert_completion(structural, {error, {sf_runtime, Reason}}),
     assert_no_completion(structural).
 
@@ -380,12 +381,29 @@ run_suspended(Action, Reply, Tag) ->
     assert_completion(Tag, Outcome),
     Outcome.
 
-%% Execute an already-materialized stable continuation without private callback records.
-run_continuation(Continuation, Input, Direction) ->
-    Action = async_sf_runtime:continue(
+%% Execute an already-materialized stable continuation with its registered final CC.
+run_continuation(Continuation, Input, Direction, State) ->
+    MR = async_r_t:new(identity),
+    Action0 = async_sf_runtime:continue(
         Continuation, Input, async_t:new(identity), Direction),
+    Action = async_r_t:local_sf_cc_ref(terminal_cc_ref(Continuation), Action0, MR),
     identity:run(async_r_t:run(Action, async_t:state_callbacks_gs(#state.callbacks),
-        make_ref(), #state{})).
+        make_ref(), State)).
+
+registered_sf_cc(Tag) ->
+    CcRef = make_ref(),
+    SfCc = async_sf_cc:new(direct_state, fun sf_do_fixture:complete/2,
+        {self(), Tag}),
+    Terminal = async_sf_cc:terminal(CcRef),
+    Entry = async_sf_cc:new_ref(CcRef, SfCc),
+    {Terminal, #state{callbacks = #{CcRef => Entry}}}.
+
+terminal_cc_ref(#{kind := sf_next, downstream := Downstream}) ->
+    terminal_cc_ref(Downstream);
+terminal_cc_ref(#{kind := sf_legacy_next, downstream := Downstream}) ->
+    terminal_cc_ref(Downstream);
+terminal_cc_ref(#{kind := sf_cc_ref, mref := CcRef}) ->
+    CcRef.
 
 assert_completion(Tag, Outcome) ->
     receive
@@ -405,7 +423,8 @@ flush_mailbox() ->
     receive _ -> flush_mailbox() after 0 -> ok end.
 
 only_callback_ref(#state{callbacks = Callbacks}) ->
-    [Ref] = maps:keys(Callbacks),
+    [Ref] = [Key || {Key, Value} <- maps:to_list(Callbacks),
+        async_util:callback_value_kind(Value) =:= action_callback],
     Ref.
 
 first_continuation(Term) ->
@@ -414,8 +433,8 @@ first_continuation(Term) ->
 
 continuation_kinds(#{kind := sf_next, downstream := Downstream}) ->
     [sf_next | continuation_kinds(Downstream)];
-continuation_kinds(#{kind := sf_cc}) ->
-    [sf_cc].
+continuation_kinds(#{kind := sf_cc_ref}) ->
+    [sf_cc_ref].
 
 tagged_maps(Term) when is_map(Term) ->
     This = case maps:is_key(kind, Term) of true -> [Term]; false -> [] end,

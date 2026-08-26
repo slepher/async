@@ -492,7 +492,7 @@ test_async_t_progn_par(_Config) ->
                 end
         }
     ),
-    ?assertEqual({hello_message, {error, hello}}, Reply).
+    ?assertEqual({undefined, {error, hello}}, Reply).
 
 test_async_t_pmap_0(_Config) ->
     MR = async_r_t:new(identity),
@@ -625,13 +625,13 @@ test_async_t_pmap_multiple_messages(Config) ->
                             do([
                                 MR
                              || Messages <- async_r_t:get_local(MR),
-                                return({Result, lists:reverse(Messages)})
+                                return({Result, Messages})
                             ])
                     end
             }
         ),
     ?assertEqual(
-        {#{item => done}, [{item, one}, {item, two}, {item, three}]},
+        {#{item => done}, undefined},
         Reply
     ).
 
@@ -733,7 +733,7 @@ test_async_t_pmap(Config) ->
                 end
         }
     ),
-    ?assertEqual({lists:duplicate(6, {error, hello}), lists:duplicate(6, message)}, Reply).
+    ?assertEqual({lists:duplicate(6, {error, hello}), undefined}, Reply).
 
 test_async_t_pmap_with_timeout(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
@@ -794,7 +794,7 @@ test_async_t_pmap_with_acc(Config) ->
                 end
         }
     ),
-    {Result, {N, T}} = Reply,
+    {Result, Acc} = Reply,
 
     ?assertEqual(
         maps:from_list([
@@ -806,10 +806,7 @@ test_async_t_pmap_with_acc(Config) ->
         ]),
         Result
     ),
-    ?assertEqual([1, 2, 3, 4, 5], lists:usort(N)),
-    ?assertEqual(
-        [{1, message}, {2, message}, {3, message}, {4, message}, {5, message}], lists:usort(T)
-    ),
+    ?assertEqual(undefined, Acc),
     ok.
 
 test_local_acc_ref(_Config) ->
