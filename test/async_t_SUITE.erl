@@ -108,6 +108,7 @@ all() ->
         test_chain_async_fail,
         test_async_monad_error,
         test_async_monad_error_handler_function_clause,
+        test_async_message_contract,
         test_async_then,
         test_async_t_with_timeout,
         test_async_t_with_self_message,
@@ -127,7 +128,8 @@ all() ->
         test_async_t_pmap_with_timeout,
         test_async_t_lift_final,
         test_local_acc_ref,
-        test_async_t_local_acc_ref
+        test_async_t_local_acc_ref,
+        test_state_callbacks_preserve_error
     ].
 
 %% Test cases starts here.
@@ -141,6 +143,21 @@ test_async_t(Config) when is_list(Config) ->
     M0 = async_m:promise(MRef),
     Reply = async_m:wait(M0),
     ?assertEqual({ok, hello}, Reply).
+
+test_state_callbacks_preserve_error(_Config) ->
+    {Get, Set} = async_t:state_callbacks_gs(#state.callbacks),
+    ?assertError(badarg, Get(not_a_tuple)),
+    ?assertError(badarg, Set(#{}, not_a_tuple)).
+
+test_async_message_contract(_Config) ->
+    Ref = make_ref(),
+    ?assertEqual(ok, async:message({self(), Ref}, delivered)),
+    receive
+        {message, Ref, delivered} -> ok
+    after 0 ->
+        ?assert(false)
+    end,
+    ?assertEqual(ok, async:message({not_a_registered_process, Ref}, ignored)).
 
 test_chain_async() ->
     [{doc, "Describe the main purpose of this test case"}].

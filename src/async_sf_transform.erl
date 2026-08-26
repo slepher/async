@@ -750,10 +750,10 @@ current_path([]) -> [];
 current_path([Path | _]) -> Path.
 
 
-lower_block(Plan, Monad, Qualifiers) ->
+lower_block(Plan, Monad, [FirstQualifier | _] = Qualifiers) ->
     Boundaries = maps:get(boundaries, Plan),
     Body = lower_sequence(0, Qualifiers, Boundaries, Monad),
-    Pos = case Qualifiers of [Q | _] -> astranaut_syntax:get_pos(Q); [] -> 0 end,
+    Pos = astranaut_syntax:get_pos(FirstQualifier),
     Expression = {'call', Pos,
         {'fun', Pos, {clauses, [{clause, Pos, [], [], Body}]}}, []},
     Functions = [generated_frame(Boundary, Qualifiers, Boundaries, Monad)
@@ -1006,8 +1006,6 @@ local_call_name(Node) ->
         _ -> undefined
     end.
 
-named_fun_variables(Name) when is_atom(Name) ->
-    [Name];
 named_fun_variables(Name) ->
     async_sf_lexical:pattern_new_bindings(
         Name, fresh, ordsets:new()

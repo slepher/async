@@ -10,9 +10,11 @@
 
 -export_type([async_t/4]).
 
--opaque async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
+-type async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
 -type inner_async_t(S, R, M, A) ::
-    fun((fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R))) -> async_r_t:async_r_t(S, M, R)).
+    fun((fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)), sf_context()) ->
+        async_r_t:async_r_t(S, M, R)).
+-type sf_context() :: undefined | #{continuation := term(), runner := fun((term()) -> term())}.
 -type callback_or_cc(S, R, M, A) ::
     async_t_cc(S, R, M, A)
     | fun(() -> any())
@@ -211,10 +213,12 @@ pure(A, {?MODULE, IM}) ->
     real_to_async_t(applicative:pure(A, RM)).
 
 '<*>'(ARTF, ARTA, {?MODULE, IM}) ->
-    STF = async_to_real_t(ARTF),
-    STA = async_to_real_t(ARTA),
     RM = real_new(IM),
-    real_to_async_t(applicative:'<*>'(STF, STA, RM)).
+    contextual_real_to_async_t(fun(SfContext) ->
+        STF = async_to_real_t(ARTF, SfContext),
+        STA = async_to_real_t(ARTA, SfContext),
+        applicative:'<*>'(STF, STA, RM)
+    end).
 
 lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
     applicative:default_lift_a2(F, ARTA, ARTB, AT).
@@ -228,19 +232,19 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
 -spec '>>='(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, B))) -> async_t(S, R, M, B).
 '>>='(ATA, KATB, {?MODULE, IM}) ->
     RM = real_new(IM),
-    KATB1 = fun(A) -> async_to_real_t(run_k(A, KATB)) end,
-    real_to_async_t(monad:'>>='(async_to_real_t(ATA), KATB1, RM)).
+    contextual_real_to_async_t(fun(SfContext) ->
+        KATB1 = fun(A) -> async_to_real_t(run_k(A, KATB), SfContext) end,
+        monad:'>>='(async_to_real_t(ATA, SfContext), KATB1, RM)
+    end).
 
 '>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
     monad:'default_>>'(ATA, ATB, AT).
 
 bind_frame(Action, FrameMFA, Context, {?MODULE, _IM} = AT) ->
     async_t(
-        fun(LegacyDownstream) ->
-            Downstream = current_sf_continuation(LegacyDownstream),
+        fun(DownstreamRunner, SfContext) ->
             Frame = async_sf_runtime:new_frame(FrameMFA, Context),
-            Continuation = async_sf_runtime:new_next(Frame, Downstream),
-            run_sf_action(Action, Continuation, AT)
+            run_frame_action(Action, Frame, DownstreamRunner, SfContext, AT)
         end
     ).
 
@@ -262,9 +266,12 @@ throw_error(E, {?MODULE, IM}) ->
 
 catch_error(ATA, EATB, {?MODULE, IM}) ->
     RM = real_new(IM),
-    real_to_async_t(
-        monad_error:catch_error(async_to_real_t(ATA), fun(E) -> async_to_real_t(EATB(E)) end, RM)
-    ).
+    contextual_real_to_async_t(fun(SfContext) ->
+        monad_error:catch_error(
+            async_to_real_t(ATA, SfContext),
+            fun(E) -> async_to_real_t(EATB(E), SfContext) end,
+            RM)
+    end).
 
 -spec lift(monad:m(M, A)) -> async_t(_S, _R, M, A).
 lift(MA, {?MODULE, IM} = AT) ->
@@ -275,7 +282,10 @@ lift(MA, {?MODULE, IM} = AT) ->
 callCC(F, {?MODULE, IM}) ->
     CT = cont_t:new(IM),
     RT = reply_t:new(CT),
-    real_to_async_t(reply_t:lift(cont_t:callCC(fun(A) -> async_to_real_t(F(A)) end, CT), RT)).
+    contextual_real_to_async_t(fun(SfContext) ->
+        reply_t:lift(cont_t:callCC(
+            fun(A) -> async_to_real_t(F(A), SfContext) end, CT), RT)
+    end).
 
 -spec lift_mr(async_r_t:async_r_t(S, M, A), M) -> async_t(S, _R, M, A).
 lift_mr(MRA, {?MODULE, IM}) ->
@@ -351,22 +361,23 @@ get_sf_cc_ref({?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:get_sf_cc_ref(MR), AT).
 
--spec find_ref(reference(), M) -> async_t(_S, _R, M, {ok, _A} | error).
+-spec find_ref(reference() | integer() | binary(), M) ->
+    async_t(_S, _R, M, {ok, _A} | error).
 find_ref(MRef, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:find_ref(MRef, MR), AT).
 
--spec get_ref(reference(), A, M) -> async_t(_S, _R, M, A).
+-spec get_ref(reference() | integer() | binary(), A, M) -> async_t(_S, _R, M, A).
 get_ref(MRef, Default, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:get_ref(MRef, Default, MR), AT).
 
--spec put_ref(reference(), _A, M) -> async_t(_S, _R, M, ok).
+-spec put_ref(reference() | integer() | binary(), _A, M) -> async_t(_S, _R, M, ok).
 put_ref(MRef, Value, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:put_ref(MRef, Value, MR), AT).
 
--spec remove_ref(reference(), M) -> async_t(_S, _R, M, ok).
+-spec remove_ref(reference() | integer() | binary(), M) -> async_t(_S, _R, M, ok).
 remove_ref(MRef, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:remove_ref(MRef, MR), AT).
@@ -419,8 +430,8 @@ promise(MRef, {?MODULE, _IM} = Monad) ->
     (any(), infinity, M) -> async_t(_S, _R, M, _A).
 promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0) ->
     MR = async_r_t:new(IM),
-    async_t(fun(K) ->
-        Continuation = stable_or_legacy_continuation(K),
+    async_t(fun(K, SfContext) ->
+        Continuation = callback_continuation(K, SfContext),
         case Action() of
             MRef when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
                 do([
@@ -573,7 +584,7 @@ par_acc(CRef, Promises, AT) ->
 par_acc_1(Promises, {?MODULE, IM} = AT) ->
     Len = maps:size(Promises),
     async_t(
-        fun(CC) ->
+        fun(CC, SfContext) ->
             case Len of
                 0 ->
                     CC(ok);
@@ -600,20 +611,20 @@ par_acc_1(Promises, {?MODULE, IM} = AT) ->
                                 end
                             ])
                     end,
-                    sequence_run_cc(maps:values(Promises), CC1, AsyncRT, AT)
+                    sequence_run_cc(maps:values(Promises), CC1, AsyncRT, SfContext, AT)
             end
         end
     ).
 
-sequence_run_cc([], CC, _AsyncRT, _AT) ->
+sequence_run_cc([], CC, _AsyncRT, _SfContext, _AT) ->
     CC(ok);
-sequence_run_cc([Promise], CC, _AsyncRT, AT) ->
-    raw_run_cc(Promise, CC, AT);
-sequence_run_cc([Promise | T], CC, AsyncRT, AT) ->
+sequence_run_cc([Promise], CC, _AsyncRT, SfContext, AT) ->
+    raw_run_cc(Promise, CC, SfContext, AT);
+sequence_run_cc([Promise | T], CC, AsyncRT, SfContext, AT) ->
     do([
         AsyncRT
-     || raw_run_cc(Promise, CC, AT),
-        sequence_run_cc(T, CC, AsyncRT, AT)
+     || raw_run_cc(Promise, CC, SfContext, AT),
+        sequence_run_cc(T, CC, AsyncRT, SfContext, AT)
     ]).
 
 %par_acc(CRef, Promises, {?MODULE, _IM} = AT) ->
@@ -676,9 +687,11 @@ with_all(Promise, Then, {?MODULE, _IM} = AT) ->
 -spec par([async_t(S, R, M, A)], t(M)) -> async_t(S, R, M, [A]).
 par(Promises, {?MODULE, _IM} = AT) ->
     async_t(
-        fun(CC) ->
+        fun(CC, SfContext) ->
             traversable:sequence(
-                lists:map(fun(Promise) -> raw_run_cc(Promise, CC, AT) end, Promises))
+                lists:map(fun(Promise) ->
+                    raw_run_cc(Promise, CC, SfContext, AT)
+                end, Promises))
         end
     ).
 
@@ -734,7 +747,7 @@ handle_all(X, Handler, {?MODULE, _IM} = AT) ->
 
 -spec hijack(async_r_t:async_r_t(S, M, R), t(M)) -> async_t(S, R, M, _A).
 hijack(MR, {?MODULE, _IM}) ->
-    async_t(fun(_K) -> MR end).
+    async_t(fun(_K, _SfContext) -> MR end).
 
 -spec map_async(fun((monad:m(M, {A, S})) -> monad:m(M, {A, S})), async_t(R, S, M, A), t(M)) ->
     async_t(R, S, M, A).
@@ -781,7 +794,7 @@ run_with_cc(X, CC, Offset, State, {?MODULE, _IM} = AT) ->
 
 -spec run_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), t(M)) -> async_r_t:async_r_t(S, M, A).
 run_cc(X, CC, {?MODULE, _IM} = AT) ->
-    run_with_descriptor(X, async_sf_cc:legacy(CC), AT).
+    run_with_descriptor(X, continuation_descriptor(CC), AT).
 
 run_sf_cc(X, Callback, Context, {?MODULE, _IM} = AT) ->
     run_with_descriptor(X, async_sf_cc:new(async_r_t, Callback, Context), AT).
@@ -802,6 +815,28 @@ run_with_descriptor(X, Descriptor, {?MODULE, IM} = AT) ->
     Action = run_sf_action(X, async_sf_cc:terminal(CcRef), AT),
     monad:'>>'(Registered, async_r_t:local_sf_cc_ref(CcRef, Action, MR), MR).
 
+continuation_descriptor(Callback) ->
+    Invoke = fun(Outcome, Next) -> Next(Outcome) end,
+    async_sf_cc:new(async_r_t, Invoke, Callback).
+
+run_frame_action(Action, Frame, Runner,
+        #{continuation := Downstream, runner := Runner}, AT) ->
+    Continuation = async_sf_runtime:new_next(Frame, Downstream),
+    run_sf_action(Action, Continuation, AT);
+run_frame_action(Action, Frame, Anonymous,
+        #{runner := _StableRunner}, {?MODULE, IM} = AT) ->
+    CcRef = make_ref(),
+    MR = async_r_t:new(IM),
+    Descriptor = continuation_descriptor(Anonymous),
+    Registered = async_r_t:put_ref(CcRef,
+        async_sf_cc:new_ref(CcRef, Descriptor), MR),
+    Continuation = async_sf_runtime:new_next(Frame, async_sf_cc:terminal(CcRef)),
+    Framed = run_sf_action(Action, Continuation, AT),
+    monad:'>>'(Registered,
+        async_r_t:local_sf_cc_ref(CcRef, Framed, MR), MR);
+run_frame_action(_Action, _Frame, _Runner, undefined, _AT) ->
+    erlang:error(sf_frame_requires_stable_runner).
+
 run_sf_action(Action, Continuation, Offset, State) ->
     AT = new(identity),
     Ref = make_ref(),
@@ -812,14 +847,9 @@ run_sf_action(Action, Continuation, {?MODULE, _IM} = AT) ->
     case async_sf_runtime:validate_continuation(Continuation) of
         ok ->
             Runner = sf_continuation_callback(Continuation, AT, resume),
-            with_sf_continuation(
-                Continuation,
-                Runner,
-                fun() ->
-                    CTA = reply_t:run(async_to_real_t(Action)),
-                    cont_t:run(CTA, Runner)
-                end
-            );
+            SfContext = #{continuation => Continuation, runner => Runner},
+            CTA = reply_t:run(async_to_real_t(Action, SfContext)),
+            cont_t:run(CTA, Runner);
         {error, Reason} ->
             erlang:error({invalid_sf_continuation, Reason})
     end.
@@ -919,7 +949,7 @@ run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
             monad:return({ok, unhandled}, IM)
     end.
 
--spec handle_reply(any(), _A, integer(), S, M) -> monad:m(M, S).
+-spec handle_reply(any(), _A, S, map(), M) -> monad:m(M, S) when S :: tuple().
 handle_reply(Ref, Reply, State, Opts, {?MODULE, IM} = AT) when is_map(Opts) ->
     functor:fmap(fun({_A, NState}) -> NState end, run_reply(Ref, Reply, State, Opts, AT), IM).
 
@@ -935,20 +965,10 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
         {ok, Callback, AccRef, CcRef, NCallbacks} ->
             NState = CallbacksS(NCallbacks, State),
             Direction = maps:get(sf_direction, Opts, resume),
-            case execute_callback_safe(Callback, ReplyType, A, {?MODULE, IM}, Direction) of
-                {ok, ARTA} ->
-                    async_r_t:run_scope(ARTA, {CallbacksG, CallbacksS}, AccRef, CcRef,
-                        NState, async_r_t:new(IM));
-                unavailable when is_reference(CcRef) ->
-                    Failure = async_sf_cc:complete(CcRef,
-                        {error, {sf_runtime, unavailable_continuation}}, async_r_t:new(IM)),
-                    async_r_t:run_scope(Failure, {CallbacksG, CallbacksS}, AccRef, CcRef,
-                        NState, async_r_t:new(IM));
-                unavailable ->
-                    CleanState = legacy_clean_state(MRef, AccRef, NState,
-                        CallbacksG, CallbacksS),
-                    monad:return({{legacy_outcome, A, CleanState}, CleanState}, IM)
-            end;
+            ARTA = execute_callback_a(Callback, ReplyType, A,
+                {?MODULE, IM}, Direction),
+            async_r_t:run_scope(ARTA, {CallbacksG, CallbacksS}, AccRef, CcRef,
+                NState, async_r_t:new(IM));
         error ->
             %% A is ok, state is unhandled
             monad:return({ok, unhandled}, IM)
@@ -984,11 +1004,19 @@ real_t(Inner) ->
 run_real_t(Monad) ->
     cont_t:run_cont_t(reply_t:run_reply_t(Monad)).
 
-async_to_real_t(Async) ->
-    real_t(run_async_t(Async)).
+async_to_real_t(Async, SfContext) ->
+    Inner = run_async_t(Async),
+    real_t(fun(K) -> Inner(K, SfContext) end).
 
 real_to_async_t(Real) ->
-    async_t(run_real_t(Real)).
+    Inner = run_real_t(Real),
+    async_t(fun(K, _SfContext) -> Inner(K) end).
+
+contextual_real_to_async_t(BuildReal) ->
+    async_t(fun(K, SfContext) ->
+        Inner = run_real_t(BuildReal(SfContext)),
+        Inner(K)
+    end).
 
 default_map_cc({?MODULE, IM} = AT) ->
     fun
@@ -1104,53 +1132,17 @@ demonitor_ref(_Ref, #{}) ->
 execute_callback_a(Callback, message, A, _AT, _Direction) when is_function(Callback, 1) ->
     Callback({message, A});
 execute_callback_a(#{kind := Kind}, message, A, {?MODULE, IM}, _Direction) when
-    Kind =:= sf_next; Kind =:= sf_legacy_next; Kind =:= sf_cc_ref
+    Kind =:= sf_next; Kind =:= sf_cc_ref
 ->
     async_r_t:return({message, A}, async_r_t:new(IM));
 execute_callback_a(Callback, reply, A, {?MODULE, _IM}, _Direction) when is_function(Callback, 1) ->
     Callback(A);
 execute_callback_a(#{kind := Kind} = Continuation, reply, A, {?MODULE, _IM} = AT, Direction) when
-    Kind =:= sf_next; Kind =:= sf_legacy_next; Kind =:= sf_cc_ref
+    Kind =:= sf_next; Kind =:= sf_cc_ref
 ->
     cancel_sf_timer(Continuation),
     Runner = sf_continuation_callback(Continuation, AT, Direction),
     Runner(A).
-
-execute_callback_safe(Callback, ReplyType, A, AT, Direction) ->
-    try {ok, execute_callback_a(Callback, ReplyType, A, AT, Direction)}
-    catch
-        error:{badfun, Callback} -> unavailable;
-        error:undef:Stack ->
-            case unavailable_fun_stack(Callback, Stack) of
-                true -> unavailable;
-                false -> erlang:raise(error, undef, Stack)
-            end
-    end.
-
-unavailable_fun_stack(Callback, [{Module, Function, Args, _} | _])
-        when is_function(Callback) ->
-    {module, Module} =:= erlang:fun_info(Callback, module) andalso
-        {name, Function} =:= erlang:fun_info(Callback, name) andalso
-        stack_arity(Args) =:= element(2, erlang:fun_info(Callback, arity));
-unavailable_fun_stack(_Callback, _Stack) -> false.
-
-stack_arity(Args) when is_list(Args) -> length(Args);
-stack_arity(Arity) when is_integer(Arity) -> Arity;
-stack_arity(_) -> undefined.
-
-legacy_clean_state(MRef, AccRef, State, CallbacksG, CallbacksS) ->
-    Callbacks0 = async_util:remove(MRef, CallbacksG(State)),
-    Referenced = lists:any(fun({_Key, Value}) ->
-        case async_util:decode_callback(Value) of
-            {ok, #{acc_ref := AccRef}} -> true;
-            _ -> false
-        end
-    end, async_util:to_list(Callbacks0)),
-    Callbacks = case Referenced of
-        true -> Callbacks0;
-        false -> async_util:remove(AccRef, Callbacks0)
-    end,
-    CallbacksS(Callbacks, State).
 
 callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(Timeout) ->
     Timer = erlang:send_after(Timeout, self(), {MRef, {error, timeout}}),
@@ -1161,7 +1153,7 @@ callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(T
                 Fun(A)
             end, Timer};
         #{kind := Kind} = Continuation when
-                Kind =:= sf_next; Kind =:= sf_legacy_next; Kind =:= sf_cc_ref ->
+                Kind =:= sf_next; Kind =:= sf_cc_ref ->
             {Continuation#{timer => Timer}, Timer}
     end;
 callback_with_timeout(Callback, _MRef, _Timeout, {?MODULE, _IM}) ->
@@ -1173,72 +1165,23 @@ remove_timer_resource(_CcRef, _MRef, Callbacks) -> Callbacks.
 
 state_callbacks_gs(Offset) ->
     {
-        fun(State) ->
-            try
-                element(Offset, State)
-            catch
-                _:Exception ->
-                    exit(Exception)
-            end
-        end,
+        fun(State) -> element(Offset, State) end,
         fun(Callbacks, State) ->
             setelement(Offset, State, Callbacks)
         end
     }.
 
-stable_or_legacy_continuation(Legacy) ->
-    Continuation = erlang:get({?MODULE, sf_continuation}),
-    Runner = erlang:get({?MODULE, sf_runner}),
-    case {Continuation, Runner, Legacy} of
-        {undefined, _, _} -> Legacy;
-        {_, Runner, Runner} -> Continuation;
-        _ -> Legacy
-    end.
+callback_continuation(K, #{continuation := Continuation, runner := K}) ->
+    Continuation;
+callback_continuation(K, _SfContext) ->
+    K.
 
-raw_run_cc(X, CC, {?MODULE, _IM}) ->
-    CTA = reply_t:run(async_to_real_t(X)),
+raw_run_cc(X, CC, SfContext, {?MODULE, _IM}) ->
+    CTA = reply_t:run(async_to_real_t(X, SfContext)),
     cont_t:run(CTA, CC).
 
-current_sf_continuation(LegacyDownstream) ->
-    Continuation = erlang:get({?MODULE, sf_continuation}),
-    Runner = erlang:get({?MODULE, sf_runner}),
-    case {Continuation, Runner} of
-        {undefined, _} -> erlang:error(sf_frame_requires_stable_runner);
-        {_, undefined} -> erlang:error(sf_frame_requires_stable_runner);
-        {_, LegacyDownstream} -> Continuation;
-        {_, _} when is_function(LegacyDownstream, 1) ->
-            preserve_ordinary_downstream(Continuation, LegacyDownstream)
-    end.
-
-preserve_ordinary_downstream(
-    #{kind := sf_next, downstream := Downstream} = Continuation, Ordinary
-) ->
-    Continuation#{downstream := preserve_ordinary_downstream(Downstream, Ordinary)};
-preserve_ordinary_downstream(#{kind := sf_legacy_next} = Continuation, _Ordinary) ->
-    Continuation;
-preserve_ordinary_downstream(#{kind := sf_cc_ref} = Terminal, Ordinary) ->
-    #{kind => sf_legacy_next, protocol => 1, callback => Ordinary,
-        downstream => Terminal}.
 sf_continuation_callback(Continuation, AT, Direction) ->
     fun(Input) -> async_sf_runtime:continue(Continuation, Input, AT, Direction) end.
-
-with_sf_continuation(Continuation, Runner, Fun) ->
-    ContinuationKey = {?MODULE, sf_continuation},
-    RunnerKey = {?MODULE, sf_runner},
-    PreviousContinuation = erlang:get(ContinuationKey),
-    PreviousRunner = erlang:get(RunnerKey),
-    erlang:put(ContinuationKey, Continuation),
-    erlang:put(RunnerKey, Runner),
-    try Fun()
-    after
-        restore_process_value(ContinuationKey, PreviousContinuation),
-        restore_process_value(RunnerKey, PreviousRunner)
-    end.
-
-restore_process_value(Key, undefined) ->
-    erlang:erase(Key);
-restore_process_value(Key, Value) ->
-    erlang:put(Key, Value).
 
 cancel_sf_timer(Continuation) ->
     case maps:find(timer, Continuation) of
@@ -1250,7 +1193,9 @@ cancel_sf_timer(Continuation) ->
     end.
 
 map_real(F, ATA) ->
-    real_to_async_t(F(async_to_real_t(ATA))).
+    contextual_real_to_async_t(fun(SfContext) ->
+        F(async_to_real_t(ATA, SfContext))
+    end).
 
 run_k(A, K) ->
     K(A).

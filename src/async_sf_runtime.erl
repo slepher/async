@@ -27,8 +27,6 @@
 -type sf_cc_ref() :: #{kind := sf_cc_ref, protocol := 1, mref := reference()}.
 -type sf_continuation() ::
     #{kind := sf_next, frame := sf_frame(), downstream := sf_continuation()}
-    | #{kind := sf_legacy_next, protocol := 1, callback := fun((term()) -> term()),
-        downstream := sf_continuation()}
     | sf_cc_ref().
 
 -spec new_frame(monad_frame:frame_mfa(), monad_frame:frame_context()) -> sf_frame().
@@ -103,13 +101,6 @@ continue_valid(Continuation, Input, {async_t, Inner} = Monad, Direction) ->
                 {error, Reason} ->
                     structural_failure(Reason, Inner)
             end;
-        #{kind := sf_legacy_next, callback := Callback} ->
-            try Callback(Input)
-            catch
-                error:{badfun, Callback} ->
-                    complete_current(
-                        {error, {sf_runtime, unavailable_continuation}}, Inner)
-            end;
         #{kind := sf_cc_ref, mref := CcRef} ->
             async_sf_cc:dispatch(CcRef, Input, async_r_t:new(Inner))
     end.
@@ -124,9 +115,6 @@ validate_continuation(
         ok -> validate_continuation(Downstream);
         Error -> Error
     end;
-validate_continuation(#{kind := sf_legacy_next, protocol := 1,
-        callback := Callback, downstream := Downstream}) when is_function(Callback, 1) ->
-    validate_continuation(Downstream);
 validate_continuation(#{protocol := Protocol}) when Protocol =/= 1 ->
     {error, {unsupported_protocol, Protocol}};
 validate_continuation(Other) ->
@@ -201,16 +189,12 @@ current_manifest(Module, {_StoredModule, _Function, 2} = MFA) ->
         {module, Module} ->
             case erlang:function_exported(Module, '$async_sf_manifest', 0) of
                 false -> {error, {missing_manifest, MFA}};
-                true -> invoke_manifest(Module, MFA)
+                true -> {ok, Module:'$async_sf_manifest'()}
             end;
-        _ ->
-            {error, {missing_manifest_or_mfa, MFA}}
-    end.
-
-invoke_manifest(Module, MFA) ->
-    try {ok, Module:'$async_sf_manifest'()}
-    catch
-        _:_ -> {error, {missing_manifest_or_mfa, MFA}}
+        {error, nofile} ->
+            {error, {missing_manifest_or_mfa, MFA}};
+        {error, Reason} ->
+            erlang:error({module_load_failed, Module, Reason})
     end.
 
 resolve_manifest_frame(
@@ -301,8 +285,6 @@ incompatible(resume) -> {error, incompatible_frame}.
 
 -spec strip_runtime_metadata(sf_continuation()) -> sf_continuation().
 strip_runtime_metadata(#{kind := sf_next} = Continuation) ->
-    maps:remove(timer, Continuation);
-strip_runtime_metadata(#{kind := sf_legacy_next} = Continuation) ->
     maps:remove(timer, Continuation);
 strip_runtime_metadata(#{kind := sf_cc_ref} = Continuation) ->
     maps:remove(timer, Continuation).

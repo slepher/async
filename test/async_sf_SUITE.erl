@@ -117,6 +117,12 @@ source_api_diagnostics(_Config) ->
 
 %% Objective 2: bind/then lowering and final-action treatment.
 same_monad_lowering(_Config) ->
+    DictionaryProbe = async_m:promise(fun() ->
+        {erlang:get({async_t, sf_continuation}),
+            erlang:get({async_t, sf_runner})}
+    end),
+    ?assertEqual({undefined, undefined},
+        run_complete(DictionaryProbe, explicit_sf_context)),
     ?assertEqual({ok, {4, 5}}, run_complete(sf_do_fixture:immediate(4), bind)),
     ?assertEqual(kept, run_complete(sf_do_fixture:then_action(kept), then)),
     ?assertEqual(final, run_complete(sf_do_fixture:final_action(final), final)),
@@ -343,7 +349,28 @@ structural_failures(_Config) ->
     ?assert(lists:member(element(1, Reason),
         [missing_generated_mfa, missing_manifest_or_mfa, missing_module])),
     assert_completion(structural, {error, {sf_runtime, Reason}}),
-    assert_no_completion(structural).
+    assert_no_completion(structural),
+
+    ManifestModule = fresh_module("sf_do_crashing_manifest_"),
+    ManifestSource = io_lib:format(
+        "-module(~p).~n-export(['$async_sf_manifest'/0]).~n"
+        "'$async_sf_manifest'() -> erlang:error(manifest_crash).~n",
+        [ManifestModule]),
+    {ok, ManifestModule, ManifestBinary, []} =
+        compile_text(ManifestModule, ManifestSource),
+    load_binary(ManifestModule, ManifestBinary),
+    try
+        {CrashCc, CrashState} = registered_sf_cc(manifest_crash),
+        CrashMfa = {ManifestModule, '$sf_missing', 2},
+        CrashFrame = Frame#{module := ManifestModule, mfa := CrashMfa},
+        Crash = #{kind => sf_next, frame => CrashFrame, downstream => CrashCc},
+        ?assertError(manifest_crash,
+            run_continuation(Crash, input, resume, CrashState)),
+        assert_no_completion(manifest_crash)
+    after
+        code:purge(ManifestModule),
+        code:delete(ManifestModule)
+    end.
 
 %% Objective 10: no-sf source remains additive; nested two-pass is stable.
 additive_two_pass(_Config) ->
@@ -399,8 +426,6 @@ registered_sf_cc(Tag) ->
     {Terminal, #state{callbacks = #{CcRef => Entry}}}.
 
 terminal_cc_ref(#{kind := sf_next, downstream := Downstream}) ->
-    terminal_cc_ref(Downstream);
-terminal_cc_ref(#{kind := sf_legacy_next, downstream := Downstream}) ->
     terminal_cc_ref(Downstream);
 terminal_cc_ref(#{kind := sf_cc_ref, mref := CcRef}) ->
     CcRef.

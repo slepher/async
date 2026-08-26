@@ -15,11 +15,12 @@ all() ->
     [runner_modes_and_context,
      pending_store_and_scopes,
      completion_cleanup_exactly_once,
+     completion_failure_state_boundaries,
      message_reply_timeout_down,
      frame_terminal_and_structural_completion,
-     old_three_tuple_resumable,
-     old_three_tuple_unavailable,
-     old_three_tuple_classifier_negatives,
+     ordinary_callback_resumable,
+     ordinary_callback_unavailable,
+     ordinary_callback_errors,
      matcher_privacy_and_atomicity,
      active_fail_dedupe].
 
@@ -120,6 +121,73 @@ completion_cleanup_exactly_once(_Config) ->
         CcRef, duplicate, #state.callbacks, CleanState),
     assert_not_received(clean_once).
 
+%% R9-R10, R18: only unavailable callback code is captured. Ordinary callback,
+%% nested undef, and returned-effect failures remain visible to the caller.
+completion_failure_state_boundaries(_Config) ->
+    {PrepareState0, _PrepareMRefs, PrepareCcRef} = matcher_state(prepare_failure),
+    PrepareCallbacks0 = PrepareState0#state.callbacks,
+    PrepareEntry0 = maps:get(PrepareCcRef, PrepareCallbacks0),
+    PrepareEntry = PrepareEntry0#{cc := invalid_descriptor},
+    PrepareState = PrepareState0#state{callbacks =
+        maps:put(PrepareCcRef, PrepareEntry, PrepareCallbacks0)},
+    {ok, [#{sf_cc_mref := PrepareCcRef, status := cc_failed}], PrepareState} =
+        async_m:fail_sf_callbacks(fun(_) -> true end, requested,
+            #state.callbacks, PrepareState),
+    assert_not_received(prepare_failure),
+
+    {InvokeState0, _InvokeMRefs, InvokeCcRef} = matcher_state(invoke_failure),
+    InvokeCallbacks0 = InvokeState0#state.callbacks,
+    #{cc := InvokeCc0} = InvokeEntry0 = maps:get(InvokeCcRef, InvokeCallbacks0),
+    InvokeEntry = InvokeEntry0#{cc := InvokeCc0#{callback :=
+        fun ?MODULE:crash_direct3/3}},
+    InvokeState = InvokeState0#state{callbacks =
+        maps:put(InvokeCcRef, InvokeEntry, InvokeCallbacks0)},
+    ?assertError(callback_crash,
+        async_m:fail_sf_callbacks(fun(_) -> true end, requested,
+            #state.callbacks, InvokeState)),
+    assert_received({invoke_failure, {error, {sf_aborted, requested}}, #{}}),
+
+    {UnavailableState0, _UnavailableMRefs, UnavailableCcRef} =
+        matcher_state(unavailable_callback),
+    UnavailableCallbacks0 = UnavailableState0#state.callbacks,
+    #{cc := UnavailableCc0} = UnavailableEntry0 =
+        maps:get(UnavailableCcRef, UnavailableCallbacks0),
+    UnavailableEntry = UnavailableEntry0#{cc := UnavailableCc0#{callback :=
+        fun async_sf_cc_missing_callback:complete/3}},
+    UnavailableState = UnavailableState0#state{callbacks =
+        maps:put(UnavailableCcRef, UnavailableEntry, UnavailableCallbacks0)},
+    {ok, [#{sf_cc_mref := UnavailableCcRef, status := cc_failed}],
+        UnavailableCleanState} = async_m:fail_sf_callbacks(fun(_) -> true end,
+            requested, #state.callbacks, UnavailableState),
+    ?assertEqual(#{}, UnavailableCleanState#state.callbacks),
+    {unhandled, UnavailableCleanState} = async_sf_cc:complete_state(
+        UnavailableCcRef, duplicate, #state.callbacks, UnavailableCleanState),
+
+    {NestedState0, _NestedMRefs, NestedCcRef} = matcher_state(nested_undef),
+    NestedCallbacks0 = NestedState0#state.callbacks,
+    #{cc := NestedCc0} = NestedEntry0 = maps:get(NestedCcRef, NestedCallbacks0),
+    NestedEntry = NestedEntry0#{cc := NestedCc0#{callback :=
+        fun ?MODULE:nested_undef_direct3/3}},
+    NestedState = NestedState0#state{callbacks =
+        maps:put(NestedCcRef, NestedEntry, NestedCallbacks0)},
+    ?assertError(undef,
+        async_m:fail_sf_callbacks(fun(_) -> true end, requested,
+            #state.callbacks, NestedState)),
+    assert_received({nested_undef, {error, {sf_aborted, requested}}, #{}}),
+
+    {EffectState0, _EffectMRefs, EffectCcRef} = matcher_state(effect_failure),
+    EffectCallbacks0 = EffectState0#state.callbacks,
+    EffectEntry0 = maps:get(EffectCcRef, EffectCallbacks0),
+    EffectCc = async_sf_cc:new(async_r_t, fun ?MODULE:crash_async_effect/2,
+        {self(), effect_failure}),
+    EffectEntry = EffectEntry0#{cc := EffectCc},
+    EffectState = EffectState0#state{callbacks =
+        maps:put(EffectCcRef, EffectEntry, EffectCallbacks0)},
+    ?assertError(callback_effect_crash,
+        async_m:fail_sf_callbacks(fun(_) -> true end, requested,
+            #state.callbacks, EffectState)),
+    assert_received({effect_failure, {error, {sf_aborted, requested}}}).
+
 %% R11: message preserves both entries; reply/timeout/DOWN complete once.
 message_reply_timeout_down(_Config) ->
     Ref = make_ref(),
@@ -163,14 +231,14 @@ frame_terminal_and_structural_completion(_Config) ->
     assert_received({frame_case,
         {error, {sf_runtime, {invalid_frame, broken}}}, #{}}).
 
-%% R14-R15: real three-tuple state, real old-code purge, and narrow negatives.
-old_three_tuple_resumable(_Config) ->
+%% Ordinary binds retain anonymous callbacks without legacy tuple decoding.
+ordinary_callback_resumable(_Config) ->
     AccRef = make_ref(),
     UsableRef = make_ref(),
     Usable = fun(Input) -> async_r_t:return({old_resumed, Input},
         async_r_t:new(identity)) end,
     UsableState = #state{callbacks = #{
-        UsableRef => {callback, Usable, AccRef}, AccRef => old_local}},
+        UsableRef => {callback, Usable, AccRef, undefined}, AccRef => old_local}},
     {{old_resumed, reply}, UsableDone} = async_m:run_info(
         {UsableRef, reply}, #state.callbacks, UsableState),
     ?assertEqual(#{AccRef => old_local}, UsableDone#state.callbacks),
@@ -179,31 +247,29 @@ old_three_tuple_resumable(_Config) ->
     ?assertEqual(false, maps:get(protected, OldSummary)),
     ?assertEqual(undefined, maps:get(sf_cc_mref, OldSummary)).
 
-old_three_tuple_unavailable(_Config) ->
+ordinary_callback_unavailable(_Config) ->
     AccRef = make_ref(),
     PurgedRef = make_ref(),
-    PurgedFun = purged_old_fun(),
+    PurgedFun = purged_fun(),
     PurgedState = #state{callbacks = #{
-        PurgedRef => {callback, PurgedFun, AccRef}, AccRef => old_local}},
-    {{legacy_outcome, purged_reply, PurgedClean}, PurgedClean} = async_m:run_info(
-        {PurgedRef, purged_reply}, #state.callbacks, PurgedState),
-    {legacy_outcome, purged_reply, PurgedClean} = async_m:handle_info(
-        {PurgedRef, purged_reply}, #state.callbacks, PurgedState),
-    ?assertEqual(#{}, PurgedClean#state.callbacks).
+        PurgedRef => {callback, PurgedFun, AccRef, undefined}, AccRef => old_local}},
+    ?assertException(error, {badfun, PurgedFun},
+        async_m:run_info({PurgedRef, purged_reply},
+            #state.callbacks, PurgedState)).
 
-old_three_tuple_classifier_negatives(_Config) ->
+ordinary_callback_errors(_Config) ->
     AccRef = make_ref(),
     NestedRef = make_ref(),
     NestedUndef = fun(_) -> async_sf_cc_missing_nested:missing() end,
     NestedState = #state{callbacks = #{
-        NestedRef => {callback, NestedUndef, AccRef}}},
+        NestedRef => {callback, NestedUndef, AccRef, undefined}}},
     ?assertException(error, undef,
         async_m:handle_info({NestedRef, nested}, #state.callbacks, NestedState)),
 
     BusinessRef = make_ref(),
     Business = fun(_) -> erlang:error(business_failure) end,
     BusinessState = #state{callbacks = #{
-        BusinessRef => {callback, Business, AccRef}}},
+        BusinessRef => {callback, Business, AccRef, undefined}}},
     ?assertException(error, business_failure,
         async_m:handle_info({BusinessRef, business}, #state.callbacks,
             BusinessState)).
@@ -237,15 +303,15 @@ matcher_privacy_and_atomicity(_Config) ->
         put(preflight_count, N),
         case N of 1 -> true; 2 -> erlang:error(matcher_crash) end
     end,
-    {error, {matcher_failed, error, matcher_crash}, State0} =
+    ?assertError(matcher_crash,
         async_m:fail_sf_callbacks(CrashSecond, abort,
-            #state.callbacks, State0),
+            #state.callbacks, State0)),
     ?assertMatch({ok, #{kind := sf_cc_ref}},
         async_util:find(CcRef, State0#state.callbacks)),
     assert_not_received(privacy),
-    {error, {invalid_matcher_return, 'maybe'}, State0} =
+    ?assertError({invalid_matcher_return, 'maybe'},
         async_m:fail_sf_callbacks(fun(_) -> 'maybe' end, abort,
-            #state.callbacks, State0),
+            #state.callbacks, State0)),
     erase(matcher_calls),
     erase(preflight_count).
 
@@ -253,7 +319,7 @@ matcher_privacy_and_atomicity(_Config) ->
 active_fail_dedupe(_Config) ->
     {Protected0, _MRefs, _CcRef} = matcher_state(dedupe),
     OldRef = make_ref(),
-    Old = {callback, fun(A) -> async_m:pure_return(A) end, make_ref()},
+    Old = {callback, fun(A) -> async_m:pure_return(A) end, make_ref(), undefined},
     State0 = Protected0#state{callbacks = maps:put(OldRef, Old,
         Protected0#state.callbacks)},
     {ok, Results, State1} = async_m:fail_sf_callbacks(
@@ -280,6 +346,20 @@ direct3(Outcome, {Pid, Tag}, #state{} = CleanState) ->
     Pid ! {Tag, Outcome, CleanState#state.callbacks},
     CleanState#state{events = [Tag | CleanState#state.events]}.
 
+crash_direct3(Outcome, {Pid, Tag}, #state{} = CleanState) ->
+    Pid ! {Tag, Outcome, CleanState#state.callbacks},
+    erlang:error(callback_crash).
+
+nested_undef_direct3(Outcome, {Pid, Tag}, #state{} = CleanState) ->
+    Pid ! {Tag, Outcome, CleanState#state.callbacks},
+    async_sf_cc_missing_callback:nested().
+
+crash_async_effect(Outcome, {Pid, Tag}) ->
+    Pid ! {Tag, Outcome},
+    MR = async_r_t:new(identity),
+    monad:'>>='(async_r_t:do_get_state(MR),
+        fun(_) -> erlang:error(callback_effect_crash) end, MR).
+
 async2(Outcome, {Pid, Tag}) ->
     Pid ! {Tag, Outcome},
     async_r_t:return(Outcome, async_r_t:new(identity)).
@@ -297,7 +377,6 @@ replace_action(MRef, NewCc, #state{callbacks = Callbacks} = State) ->
     State#state{callbacks = maps:put(MRef, New, Callbacks)}.
 
 terminal(#{kind := sf_next, downstream := Downstream}) -> terminal(Downstream);
-terminal(#{kind := sf_legacy_next, downstream := Downstream}) -> terminal(Downstream);
 terminal(#{kind := sf_cc_ref} = Terminal) -> Terminal.
 
 matcher_state(Tag) ->
@@ -328,7 +407,7 @@ matcher_state(Tag) ->
     {#state{callbacks = Callbacks, events = [secret_context]},
         [MRef1, MRef2], CcRef}.
 
-purged_old_fun() ->
+purged_fun() ->
     Module = async_sf_cc_old_runtime_fixture,
     {ok, Module, V1} = compile_old_module(Module, old_v1),
     {module, Module} = code:load_binary(Module, "old_v1.erl", V1),

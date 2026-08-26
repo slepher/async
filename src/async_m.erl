@@ -104,7 +104,12 @@
     remote => async_t,
     args => identity,
     extra_call => {identity, run},
-    functions => [wait/1, wait_t/2, exec_cc/4, run_cc/2, run_with_cc/4]
+    functions => [wait/1, wait_t/2, exec_cc/4, run_with_cc/4]
+}).
+-gen_fun(#{
+    remote => async_t,
+    args => identity,
+    functions => [run_cc/2]
 }).
 -gen_fun(#{
     remote => async_t,
@@ -218,10 +223,8 @@ exec_sf_cc(Async, Callback, Context, Offset, State) ->
         Async, Callback, Context, Offset, State, async_t:new(identity))).
 
 handle_info(Info, Offset, State) ->
-    case run_info(Info, Offset, State) of
-        {{legacy_outcome, _Outcome, _CleanState} = Tagged, _State} -> Tagged;
-        {_Outcome, NewState} -> NewState
-    end.
+    {_Outcome, NewState} = run_info(Info, Offset, State),
+    NewState.
 
 inspect_sf_callbacks(MatchFun, Offset, State) ->
     async_sf_cc:inspect(MatchFun, Offset, State).

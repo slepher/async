@@ -39,7 +39,7 @@
 -gen_fun(#{
     remote => async_r_t,
     args => identity,
-    functions => [get_local_ref/0, local_ref/2, local/1, get_local/0, put_local/1, modify_local/1]
+    functions => [get_local_ref/0, local_ref/2, local/2, get_local/0, put_local/1, modify_local/1]
 }).
 -gen_fun(#{
     remote => async_r_t,
@@ -50,5 +50,10 @@
     remote => async_r_t,
     args => identity,
     extra_call => {identity, run},
-    functions => [eval/4, exec/4, run/4, map/2]
+    functions => [eval/4, exec/4, run/4]
+}).
+-gen_fun(#{
+    remote => async_r_t,
+    args => identity,
+    functions => [map/2]
 }).

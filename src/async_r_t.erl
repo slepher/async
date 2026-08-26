@@ -10,12 +10,16 @@
 
 -export_type([async_r_t/3]).
 -opaque async_r_t(S, M, A) :: {async_r_t, inner_async_r_t(S, M, A)}.
+-type async_ref() :: reference() | integer() | binary().
+-type storage_key() ::
+    async_ref() | {sf_cc_timer, reference(), async_ref()}.
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
 -type inner_async_r_t(S, M, A) ::
     fun((S) -> fun((reference()) -> fun((reference() | undefined) ->
         fun((callback_gs(S)) -> monad:m(M, {S, A}))))).
 -type callback_gs(S) ::
-    {fun((S) -> #{reference() => Val}), fun((#{reference() => Val}, S) -> S)}.
+    {fun((S) -> #{storage_key() => Val}),
+        fun((#{storage_key() => Val}, S) -> S)}.
 
 -include_lib("erlando/include/do.hrl").
 -compile({parse_transform, cut}).
@@ -271,7 +275,7 @@ modify_local(Fun, {?MODULE, _IM} = ART) ->
         put_local(Fun(Local), ART)
     ]).
 
--spec find_ref(reference(), M) -> async_r_t(_S, M, {ok, _A} | error).
+-spec find_ref(storage_key(), M) -> async_r_t(_S, M, {ok, _A} | error).
 find_ref(MRef, {?MODULE, _IM} = ART) ->
     do([
         ART
@@ -281,7 +285,7 @@ find_ref(MRef, {?MODULE, _IM} = ART) ->
         return(async_util:find(MRef, Callbacks))
     ]).
 
--spec get_ref(reference(), A, M) -> async_r_t(_S, M, A).
+-spec get_ref(storage_key(), A, M) -> async_r_t(_S, M, A).
 get_ref(MRef, Default, {?MODULE, _IM} = ART) ->
     do([
         ART
@@ -291,7 +295,7 @@ get_ref(MRef, Default, {?MODULE, _IM} = ART) ->
         return(async_util:get(MRef, Callbacks, Default))
     ]).
 
--spec put_ref(reference(), _A, M) -> async_r_t(_S, M, ok).
+-spec put_ref(storage_key(), _A, M) -> async_r_t(_S, M, ok).
 put_ref(MRef, Data, {?MODULE, _IM} = ART) ->
     do([
         ART
@@ -306,7 +310,7 @@ put_ref(MRef, Data, {?MODULE, _IM} = ART) ->
         )
     ]).
 
--spec modify_ref(reference(), fun((A) -> A), M) -> async_r_t(_S, M, ok).
+-spec modify_ref(storage_key(), fun((A) -> A), M) -> async_r_t(_S, M, ok).
 modify_ref(MRef, Fun, {?MODULE, _IM} = ART) ->
     do([
         ART
@@ -323,7 +327,7 @@ modify_ref(MRef, Fun, {?MODULE, _IM} = ART) ->
         )
     ]).
 
--spec remove_ref(reference(), M) -> async_r_t(_S, M, ok).
+-spec remove_ref(storage_key(), M) -> async_r_t(_S, M, ok).
 remove_ref(MRef, {?MODULE, _IM} = ART) ->
     do([
         ART

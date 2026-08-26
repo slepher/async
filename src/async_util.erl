@@ -13,6 +13,7 @@
 -export([clear/1, merge/2]).
 -export([same_type_state/2, match_state/3, callback_exists/1]).
 -export([decode_callback/1, callback_value_kind/1, to_list/1]).
+-export([fun_availability/1]).
 
 -include("async_internal.hrl").
 
@@ -78,8 +79,6 @@ callback_exists(Callbacks) ->
         to_list(Callbacks)
     ).
 
-decode_callback({callback, Cc, AccRef}) ->
-    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => undefined}};
 decode_callback(#callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = CcRef}) ->
     {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => CcRef}};
 decode_callback(_) ->
@@ -101,6 +100,27 @@ to_list(Dict) when is_list(Dict) ->
     Dict;
 to_list(Dict) ->
     dict:to_list(Dict).
+
+fun_availability(Fun) when is_function(Fun) ->
+    case erlang:fun_info(Fun, type) of
+        {type, local} -> ok;
+        {type, external} ->
+            {module, Module} = erlang:fun_info(Fun, module),
+            {name, Function} = erlang:fun_info(Fun, name),
+            {arity, Arity} = erlang:fun_info(Fun, arity),
+            MFA = {Module, Function, Arity},
+            case code:ensure_loaded(Module) of
+                {module, Module} ->
+                    case erlang:function_exported(Module, Function, Arity) of
+                        true -> ok;
+                        false -> {unavailable, MFA}
+                    end;
+                {error, nofile} ->
+                    {unavailable, MFA};
+                {error, Reason} ->
+                    {error, {module_load_failed, MFA, Reason}}
+            end
+    end.
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

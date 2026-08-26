@@ -58,12 +58,13 @@ call({Name, Node} = Process, Label, Request) when is_atom(Name), is_atom(Node) -
 call(Name, _Label, _Request) ->
     {error, {invalid_process_name, Name}}.
 
+-spec message({pid(), term()}, term()) -> ok.
 message({PId, MRef}, Message) ->
     try
-        PId ! {message, MRef, Message}
+        PId ! {message, MRef, Message},
+        ok
     catch
-        error:Reason:Stacktrace ->
-            {'EXIT', {Reason, Stacktrace}}
+        error:_Reason:_Stacktrace -> ok
     end.
 
 promise_action(Action, Timeout) ->
