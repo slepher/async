@@ -72,9 +72,8 @@ complete(CcRef, Outcome, {async_r_t, _} = MR) ->
                     async_r_t:return(unhandled, MR);
                 {error, Reason} ->
                     erlang:error({invalid_sf_cc, Reason});
-                {ok, SfCc, CleanState, AccSnapshot} ->
-                    invoke_prepared(SfCc, Outcome, ActiveAccRef, AccSnapshot,
-                        CleanState, MR)
+                {ok, SfCc, CleanState} ->
+                    invoke_prepared(SfCc, Outcome, ActiveAccRef, CleanState, MR)
             end
         end, MR)
       end, MR)
@@ -124,16 +123,13 @@ prepare(CcRef, ActiveAccRef, State, CallbacksG, CallbacksS) ->
         {ok, #{kind := sf_cc_ref, protocol := 1, cc := SfCc}} ->
             case validate_cc(SfCc) of
                 ok ->
-                    ActiveAcc = async_util:find(ActiveAccRef, Callbacks),
                     Taken = async_util:remove(CcRef, Callbacks),
                     ResourcesClean = remove_owned_resources(CcRef, Taken),
                     {CleanCallbacks, RemovedAccRefs} = remove_owned(CcRef, ResourcesClean),
                     FinalCallbacks = remove_orphan_accumulators(
                         [ActiveAccRef | RemovedAccRefs],
-                        CleanCallbacks),
-                    AccSnapshot = accumulator_snapshot(
-                        ActiveAccRef, ActiveAcc, FinalCallbacks),
-                    {ok, SfCc, CallbacksS(FinalCallbacks, State), AccSnapshot};
+                        CleanCallbacks, descriptor_acc_refs(SfCc, ActiveAccRef)),
+                    {ok, SfCc, CallbacksS(FinalCallbacks, State)};
                 Error -> Error
             end;
         {ok, Other} -> {error, {invalid_sf_cc_ref, Other}};
@@ -160,7 +156,10 @@ remove_owned_resources(CcRef, Callbacks) ->
     end, Callbacks, async_util:to_list(Callbacks)).
 
 remove_orphan_accumulators(AccRefs, Callbacks) ->
-    Surviving = [AccRef || {_MRef, Value} <- async_util:to_list(Callbacks),
+    remove_orphan_accumulators(AccRefs, Callbacks, []).
+
+remove_orphan_accumulators(AccRefs, Callbacks, DescriptorRefs) ->
+    Surviving = DescriptorRefs ++ [AccRef || {_MRef, Value} <- async_util:to_list(Callbacks),
         {ok, #{acc_ref := AccRef}} <- [async_util:decode_callback(Value)]],
     lists:foldl(fun(AccRef, Acc) ->
         case lists:member(AccRef, Surviving) of
@@ -169,12 +168,8 @@ remove_orphan_accumulators(AccRefs, Callbacks) ->
         end
     end, Callbacks, lists:usort(AccRefs)).
 
-accumulator_snapshot(AccRef, {ok, Value}, Callbacks) ->
-    case async_util:find(AccRef, Callbacks) of
-        {ok, _} -> retained;
-        error -> {removed, Value}
-    end;
-accumulator_snapshot(_AccRef, error, _Callbacks) -> none.
+descriptor_acc_refs(#{mode := legacy}, ActiveAccRef) -> [ActiveAccRef];
+descriptor_acc_refs(_SfCc, _ActiveAccRef) -> [].
 
 cleanup_request(MRef, Callback) ->
     cleanup_timer(Callback),
@@ -215,7 +210,7 @@ invoke(#{mode := direct_state, callback := Callback, context := Context}, Outcom
     end, MR).
 
 invoke_prepared(#{mode := direct_state} = SfCc, Outcome, ActiveAccRef,
-        _AccSnapshot, CleanState, MR) ->
+        CleanState, MR) ->
     bind(async_r_t:ask(MR), fun({CallbacksG, CallbacksS}) ->
         Callbacks = remove_orphan_accumulators([ActiveAccRef], CallbacksG(CleanState)),
         StateForCallback = CallbacksS(Callbacks, CleanState),
@@ -223,37 +218,10 @@ invoke_prepared(#{mode := direct_state} = SfCc, Outcome, ActiveAccRef,
             invoke(SfCc, Outcome, MR)
         end, MR)
     end, MR);
-invoke_prepared(SfCc, Outcome, ActiveAccRef, AccSnapshot, CleanState, MR) ->
+invoke_prepared(SfCc, Outcome, _ActiveAccRef, CleanState, MR) ->
     bind(async_r_t:do_put_state(CleanState, MR), fun(_) ->
-        with_accumulator_snapshot(ActiveAccRef, AccSnapshot,
-            invoke(SfCc, Outcome, MR), MR)
+        invoke(SfCc, Outcome, MR)
     end, MR).
-
-with_accumulator_snapshot(AccRef, {removed, Value}, Action, MR) ->
-    local_callbacks(fun({CallbacksG, CallbacksS}) ->
-        {fun(State) ->
-            async_util:store(AccRef, Value, CallbacksG(State))
-        end,
-        fun(Callbacks, State) ->
-            CallbacksS(async_util:remove(AccRef, Callbacks), State)
-        end}
-    end, Action, MR);
-with_accumulator_snapshot(_AccRef, _Snapshot, Action, _MR) -> Action.
-
-local_callbacks(F, Action, {async_r_t, IM}) ->
-    M1 = reader_t:new(IM),
-    M2 = reader_t:new(M1),
-    M3 = reader_t:new(M2),
-    RM = state_t:new(M3),
-    LocalCallbacks = fun(R3) ->
-        reader_t:map(fun(R2) ->
-            reader_t:map(fun(R1) ->
-                reader_t:local(F, R1, M1)
-            end, R2, M2)
-        end, R3, M3)
-    end,
-    Real = state_t:state_t(async_r_t:run_async_r_t(Action)),
-    async_r_t:async_r_t(state_t:run_state_t(state_t:map(LocalCallbacks, Real, RM))).
 
 summaries(Callbacks) ->
     lists:sort(fun(A, B) -> maps:get(request_mref, A) =< maps:get(request_mref, B) end,
@@ -333,11 +301,10 @@ complete_state_result(CcRef, Outcome, Offset, State) ->
         case prepare(CcRef, make_ref(), State, Get, Set) of
             unhandled -> {ok, {unhandled, State}};
             {error, Error} -> erlang:error({invalid_sf_cc, Error});
-            {ok, SfCc, CleanState, AccSnapshot} ->
+            {ok, SfCc, CleanState} ->
                 MR = async_r_t:new(identity),
                 AccRef = make_ref(),
-                Action = invoke_prepared(SfCc, Outcome, AccRef, AccSnapshot,
-                    CleanState, MR),
+                Action = invoke_prepared(SfCc, Outcome, AccRef, CleanState, MR),
                 try identity:run(async_r_t:run_scope(Action, {Get, Set}, AccRef,
                         undefined, CleanState, MR)) of
                     Pair -> {ok, Pair}
