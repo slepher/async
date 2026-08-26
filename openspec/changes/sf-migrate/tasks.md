@@ -6,9 +6,9 @@ worktree/branch 的实现仅可作为历史证据，不得据此勾选本文件�
 
 ## Dependency gate
 
-- [ ] `sf-do` 的 AsyncId 协议已实现并冻结：一/二参数 derived identity 使用 async-only
-  index + scope-aware canonical AsyncForm；三参数 named identity 使用 BlockName + StepName；
-  continuation/capture 不参与 identity，相同 AsyncId/MFA 默认自动继承但允许显式 Env-only
+- [ ] `sf-do` 的 identity 协议已实现并冻结：`sf_do/1,2` 使用 inline atom marker，named identity
+  只使用 Protocol + BlockPath + StepName；unnamed frame warning、普通执行可用、migration failure；
+  Action/index/continuation/capture 不参与 identity，相同 named AsyncId/MFA 默认自动继承但允许显式 Env-only
   migration，不同 AsyncId 默认 directional `incompatible_frame`。
 - [x] 当前 master 不含 sf-migrate 产品实现；开始 Task 1 前只运行 dependency baseline，
   不把 baseline 或最终命令验证建立为独立产品 task。
@@ -21,12 +21,11 @@ current-refresh 到 current stable function，并获得最终 abort-only result/
 **依赖：** dependency gate。Task 1 不支持 down execution 或 State-aware context；在后续
 task 完成前，相关字段必须被明确拒绝，不能静默接受后失效。
 
-- [ ] 在 `async_sf_transform` 中实现完整 `sf_migrate/2` declaration、named/anonymous
-  transition、exact version anchors、唯一 name/content selectors 和 current/historical
+- [ ] 在 `async_sf_transform` 中实现 inline-marker `sf_migrate/2` declaration、
+  explicit/anonymous-path transition、exact version anchors、StepName selectors 和 current/historical
   cross-validation；historical block 只生成 metadata。
-- [ ] 支持 derived `sf_migrate([Monad || ...], Spec)` 与 named
-  `sf_migrate(StepNames, [Monad || ...], Spec)` historical block，
-  复用 sf-do 的 record/list StepNames 解析，并实现 `{step,StepName}` selector。
+- [ ] 只支持 `sf_migrate([Monad || ...], Spec)` historical block，复用 sf-do 的 inline marker
+  parser/warnings，并只实现 `{step,StepName}` selector；unnamed historical boundary 不可映射。
 - [ ] 采用最终 directional format-1 manifest schema并原子更新 compiler/runtime；Task 1
   生成 `plans.up` 和空 `plans.down`，只接受 `directions.up`。不兼容旧 flat draft，也不
   增加 format/protocol 版本。
@@ -50,41 +49,35 @@ task 完成前，相关字段必须被明确拒绝，不能静默接受后失效
 - [ ] 添加 declaration/anchor/selector/current-refresh、manifest collision/conditional export、
   same-ABI/migrator、abort/forced-abort、notification failure、deterministic order、mixed
   callbacks、pending request continuity、purge 和 structured error/result behavior tests。
-- [ ] 添加 derived → named adoption、named → named step rename、相同 named step automatic
-  inheritance、same-identity capture rename/同名 value 转换，以及缺少显式 mapping 默认失败的 tests。
+- [ ] 添加 BlockPath/StepName rename、相同 named step automatic inheritance、Action/index changes
+  不影响 identity、same-identity capture rename/同名 value 转换，以及缺少显式 mapping 默认失败的 tests。
 - [ ] 同步 README：upgrade declaration/options、current refresh、result/error 与排错。
 
 **独立验收：** 仅使用 `directions.up` 的应用能完成真实 pending-frame upgrade；Task 1
 commit 不包含半成品 down frame、State context 或 replacement compatibility seam。
 
-## Task 2 — 编译期 selector index 与 Offset
+## Task 2 — StepName-only selector surface
 
-**目标：** 用户可用稳定的 source statement index 或唯一 anchor + forward Offset 映射
-historical/current async，runtime 仍只消费已解析 AsyncId。
+**目标：** migration 只通过 source 显式 StepName 定位 historical/current boundary，不维护第二套
+index/content/name matching 机制。
 
 **依赖：** Task 1。该 task 不改变 runtime migration protocol，可与 Task 3 的设计并行，
 但若修改同一 transform 文件必须串行集成。
 
-- [ ] 为 historical/current block 建立统一 1-based `bind|then|let` source statement table，
-  实现 `{index,N}`、`{name,Name,Offset}`、`{content,Expr,Offset}`。
-- [ ] name/content 在应用 Offset 前必须唯一；Index/Offset 必须为正整数且 target 不越界。
-- [ ] bind/then target 解析为 continuation AsyncId；let 只参与 statement 计数/anchoring
-  且不占 async-only index，作为最终 target
-  时编译失败。
-- [ ] old/new selector 独立解析，source index 漂移不得影响已编译 plan；manifest/runtime
-  不保存或重算 selector AST。
-- [ ] 添加 direct/offset、重复 anchor、非法数字、越界、let target、bind/then 和
-  historical/current index drift tests，并同步 README selector 表。
+- [ ] historical/current block 仅建立 StepName → AsyncId table；old/new selector 分别精确解析。
+- [ ] index、bind name、content 和 Offset selector 均在编译期作为 unsupported syntax 拒绝。
+- [ ] manifest/runtime 只消费 resolved AsyncId，不保存或重算 selector AST。
+- [ ] 添加 StepName found/missing/duplicate/rename 与所有 fuzzy selector rejection tests，并同步
+  README selector 表。
 
-**独立验收：** 所有 selector 错误均在编译期确定；Task 1 的 name/content 行为和 runtime
-结果完全保持兼容。
+**独立验收：** 所有 selector 错误均在编译期确定，Action/index 变化不会改变同名 step 的解析。
 
 ## Task 3 — OTP-ordered downgrade migration
 
 **目标：** v4 current module 在 OTP 加载 v3 前，把 pending current frame 原子迁移为可由
 v3 接管的 historical frame，或按显式 policy abort；失败阻止 code rollback。
 
-**依赖：** Task 1。Task 2 非必需；本 task 可先使用 name/content selectors。
+**依赖：** Task 1。Task 2 非必需；本 task 使用 `{step,StepName}` selectors。
 
 - [ ] 固定 old=historical/new=current；启用 `directions.down`，up/down 使用独立 plan 与
   Env migrator，绝不推断逆函数。

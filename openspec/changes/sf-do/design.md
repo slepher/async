@@ -19,7 +19,7 @@ hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why
 - callback 的 continuation slots 使用 generated/downstream frame 或 terminal `sf_cc` descriptor，
   而不是 transform 生成的 remainder closure。
 - nested `sf_do` 使用普通 Monad composition。
-- identity 描述正在等待的 async action，不描述其后的完整 continuation。
+- identity 描述 source 显式命名的恢复步骤，不描述 Action AST 或其后的完整 continuation。
 - Env 是当前 continuation 的最小 lexical environment，不预测未来版本。
 
 ## Non-Goals
@@ -40,14 +40,13 @@ hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why
 ```erlang
 sf_do([Monad || Qualifiers])
 sf_do(BlockName, [Monad || Qualifiers])
-sf_do(BlockName, StepNames, [Monad || Qualifiers])
 ```
 
 最后一个 argument 是 single-head list comprehension。以下不是公开语法：
 
 ```erlang
-sf_do([BlockName, Monad || Qualifiers]).
 sf_do([BlockName, StepNames, Monad || Qualifiers]).
+sf_do(BlockName, StepNames, [Monad || Qualifiers]).
 ```
 
 匿名 block 沿用 Erlang fun 风格，在 enclosing source function 内按 occurrence 编号：
@@ -60,10 +59,24 @@ sf_do([BlockName, StepNames, Monad || Qualifiers]).
 不消耗该序号。BlockName 必须是 atom literal。named BlockPath 在 module 内必须唯一；相同 local
 block name 只有位于不同 parent BlockPath 时才允许复用。
 
-显式 StepNames 可以是同 module 已声明 record 的 name 或完整 atom literal list；record 取 field
-declaration order，忽略 default/type。名称按 async-only
-顺序分配给所有非最终 continuation boundaries；pure let 和 final action 不消耗名称。named
-mode 必须完整覆盖，不允许部分命名，且同一 block 内 StepName 不得重复。
+StepName 直接写成 standalone literal atom qualifier，并修饰紧随其后的一个非最终 continuation
+boundary：
+
+```erlang
+sf_do(flow, [async_m
+ || load_user,
+    User <- fetch_user(),
+    save_result,
+    persist(User),
+    return(User)
+]).
+```
+
+`load_user`、`save_result` 是 compile-time metadata，不作为 Monad action 执行。standalone literal
+atom qualifier 不存在普通-action 语义：它若没有紧邻一个非最终 `bind`/`then` action，或出现在
+pure let/final action/连续 marker 等其他位置，必须报 source error。同一 BlockPath 内 StepName
+不得重复。未被 marker 修饰的非最终 boundary 仍可编译和普通执行，但必须产生 warning，并标记为
+non-migratable。pure let 和 final action 不形成当前 block frame，不需要 StepName。
 
 ## 与 classic_do 的核心对照
 
@@ -72,7 +85,7 @@ pattern、local-call 或 final-expression 行为，均不得由 `sf_do` 另行�
 
 | 方面 | `classic_do` | `sf_do` |
 | --- | --- | --- |
-| public source | `do([Monad || Qualifiers])` | `sf_do/1,2,3`；二、三参数形式增加 BlockName/StepNames |
+| public source | `do([Monad || Qualifiers])` | `sf_do/1,2`；StepName 作为 inline atom marker，二参数形式增加 BlockName |
 | result | final expression 的原 Monad | 相同；不引入 `sf_program` |
 | `Pattern <- Action` | `>>=(Action, FunContinuation)` | `monad_frame:bind_frame(Action, FrameMFA, Context, Monad)` |
 | 无绑定 `Action` | `>>=(Action, fun(_) -> Remainder end)` | `monad_frame:then_frame(Action, IgnoreInputMFA, Context, Monad)` |
@@ -84,7 +97,7 @@ pattern、local-call 或 final-expression 行为，均不得由 `sf_do` 另行�
 | lexical scope/evaluation | zero-argument fun 隔离 block bindings；qualifiers 按 source order、一次求值 | 保持相同可观察语义；call-site lets/generated frames 不得泄漏 binding 或重复求值 |
 | continuation representation | anonymous fun 和隐式 closure captures | transform 生成 external MFA + 显式 Env frame，不生成 remainder closure |
 | suspension persistence | `classic_do` 本身不提供跨版本保证 | stable runner 持久化 frame/downstream data |
-| identity/naming | 无 stable boundary identity 或 manifest | 非最终 continuation boundary 可使用 derived/named identity 和 manifest |
+| identity/naming | 无 stable boundary identity 或 manifest | named boundary 使用 BlockPath/StepName；unnamed boundary warning 且不可迁移 |
 | compiler pipeline | 单次 Astranaut traversal，post-order lowering | 两遍 Astranaut traversal，先冻结 source facts，再按 plan rewrite |
 | completion interface | 不定义 async stable completion | stable path 使用独立 external MFA/context `sf_cc` |
 
@@ -126,6 +139,7 @@ monad_frame:default_then_frame(Action, IgnoreInputMFA, FrameContext, Monad)
 #{
     protocol := 1,
     block_path := [atom()],
+    step_name := atom() | undefined,
     async_id := binary(),
     env := #{atom() => term()}
 }
@@ -142,7 +156,9 @@ invoke(Frame, Input) -> Monad
 ```erlang
 sf_do(flow, [
     async_m
- || Reply1 <- request1(),
+ || request1_step,
+    Reply1 <- request1(),
+    request2_step,
     Reply2 <- request2(Reply1),
     async_m:pure_return({Reply1, Reply2})
 ]).
@@ -189,6 +205,7 @@ SfFrame = #{
     kind := sf_frame,
     protocol := 1,
     block_path := BlockPath,
+    step_name := StepName | undefined,
     async_id := AsyncId,
     mfa := {Module, Function, 2},
     env := Env
@@ -237,7 +254,8 @@ Downstream 可以是 outer generated/composite continuation，最外层终止于
 ```erlang
 sf_do(outer, [
     async_m
- || InnerResult <- sf_do(inner, [async_m || ...]),
+ || run_inner,
+    InnerResult <- sf_do(inner, [async_m || inner_step, inner_action(), final_action()]),
     continue_outer(InnerResult)
 ]).
 ```
@@ -376,6 +394,11 @@ atom 就足以作为 key。在同一个 frame 的可见 lexical environment 中�
 binding；不同 frame 各自拥有 Env，不需要把 binder origin 编入 key。transform 自己使用的 Input、
 Env 和临时变量必须 hygienic，不能占用 source variable key。
 
+binding classifier 必须区分两类 clause pattern：`fun`/named-fun clause parameters 创建 fresh
+bindings；`case`、`receive`、`try` clause pattern 中已经在外层绑定的变量是 equality reference，
+必须作为 continuation free dependency 捕获。Pass 1 scope collection、capture analysis 与其他需要
+理解 lexical binding 的分析必须复用同一分类规则，不能各自维护会漂移的 clause 语义。
+
 CaptureLayout 按 variable atom 排序，用于确定性诊断和 required-capture schema；它本身就是
 `sf-migrate` 使用的 CaptureAbi，不再另做 capture hash。CaptureLayout、runtime values 均不参与
 AsyncId。变量改名会表现为旧 key 缺失；跨版本把同名变量改成不同语义默认仍会复用旧值。这两类
@@ -405,40 +428,32 @@ TargetRequiredCaptures ⊄ StoredEnv
 
 ## Identity
 
-每个具有 block-local remainder 的非最终 monadic qualifier 获得零基 AsyncIndex；pure let 和
-final action 不占 index。final action 仍可按 Monad 自身语义 immediate completion 或 suspend，
+每个具有 block-local remainder 的非最终 monadic qualifier MAY 由前置 inline atom marker 获得一个
+source StepName。缺少 marker 时 transform 产生 warning，并生成只能普通执行、不能 migration 的
+unnamed frame。pure let 和 final action 不消费 StepName。实现 MAY 保留 source-order index 作为
+诊断或 unnamed local-frame metadata，但它不得参与 migration identity 或 target 推断。final action
+仍可按 Monad 自身语义 immediate completion 或 suspend，
 但它没有 `sf_do` block-local continuation，因此不生成 frame identity；运行时直接保留既有
 downstream（outer frame 或顶层 `sf_cc`）。若 final action 挂起，保存的仍是该既有 downstream；
 `sf_do` 不为它人工制造 boundary、identity 或 wrapper continuation。
 
-derived identity：
+named migration identity：
 
 ```erlang
-sha256(canonical({
-    sf_async,
-    Protocol,
-    BlockPath,
-    AsyncIndex,
-    AsyncForm
-})).
+crypto:hash(sha256,
+    term_to_binary({sf_named_async, Protocol, BlockPath, StepName})).
 ```
 
-AsyncForm 只描述正在等待的 Action，不包含 bind pattern、suffix continuation、CaptureLayout 或
-runtime Env。canonicalization 必须 scope-aware，使 binder rename 保持 identity，但参数来源和
-顺序变化仍可区分。`canonical/1` 删除 source position/annotation，把 lexical binder/reference
-alpha-normalize 为结构 slot，并把 map 转为按 canonical key 排序的 pair list；digest 固定为
-`crypto:hash(sha256, term_to_binary(CanonicalTerm))`。没有独立 compile-options 字段；影响语义的
-全局变更通过 bump `Protocol` 表达，默认 protocol 为 `1`。
+AsyncId 只是 `{Protocol, BlockPath, StepName}` 的固定长度编码。Action AST、source annotation、
+variable names、map order、source-order index、pattern、suffix、CaptureLayout 和 runtime Env 都不
+参与 identity，因此 transform 不需要 Action canonicalizer 或 AsyncForm digest。generated function
+atom 固定为 `'$sf_' ++ lowercase_hex(AsyncId)`，使用完整 32-byte digest，不截断，并做
+module-local collision check。影响整体编码语义的变更通过 bump Protocol 表达，默认 protocol 为 `1`。
 
-named identity：
-
-```erlang
-sha256(canonical({sf_named_async, Protocol, BlockPath, StepName})).
-```
-
-derived/named 使用不同 namespace；切换 mode 需要外部显式迁移。两种 mode 的 generated function
-atom 均固定为 `'$sf_' ++ lowercase_hex(AsyncId)`，使用完整 32-byte digest，不截断，并做
-module-local collision check。这样 MFA 只取决于 AsyncId，不再引入另一套 name escaping 规则。
+unnamed frame 没有 migration identity。实现仍须为它生成 module-local external MFA 和 runtime frame
+locator，以支持普通执行和同版本 resume；current manifest entry 必须明确记录
+`step_name => undefined`。appup/appdown migration 遇到该 entry 时必须返回 directional
+`incompatible_frame`，不得按 locator、source index、Action AST 或邻近 named step 推断 target。
 
 ## High-Level Implementation Design
 
@@ -451,11 +466,16 @@ transform 使用两遍 Astranaut traversal。两遍都是线性遍历，总成�
 Pass 1 — collect original AST, never rewrite
   -> source function owner and lexical sf_do stack
   -> occurrence id, block path, Monad and original qualifiers
-  -> bindings, source metadata and async-only indexes
+  -> bindings, inline StepName markers, unnamed warnings and source metadata
 
 Global analysis — no traversal mutation
-  -> captures, identities, generated names and frame plans
+  -> captures, named identities/local frame locators, generated names and frame plans
   -> nested/name/function conflicts
+
+Pass 1 error gate
+  -> accumulate expected source diagnostics in astranaut_return
+  -> any error: astranaut_return:to_compiler/1 and stop
+  -> no error: enter Pass 2
 
 Pass 2 — rewrite by frozen plan
   -> scoped local return/fail rewrite
@@ -467,8 +487,9 @@ Finish — outside the traversal
 ```
 
 Pass 1 保留完整 original AST，因而 global analysis 可以一次性看到所有 block，并在任何 replacement
-改变 tree shape 之前完成 identity、capture 和 collision 校验。Pass 2 不重新发现 boundary、不重新计算
-identity，也不对已经生成的 function 做第三次 source analysis；它只消费冻结的 frame plan。
+改变 tree shape 之前完成 identity、capture 和 collision 校验。Pass 2 不重新发现 boundary、不重新
+校验 source form/name-marker grammar、不重新计算 identity/capture，也不对已经生成的 function 做第三次 source
+analysis；它只消费冻结的 frame plan。
 
 ### Stable occurrence matching
 
@@ -484,17 +505,24 @@ Pass 1 保存 occurrence 对应的 original-node digest 和 plan；Pass 2 重新
 mismatch，必须报错，不能 silent fallback。未包含 `sf_do` 的 function 可以在 Pass 2 跳过，作为
 不改变语义的优化。
 
+所有可预期的 source validation error 必须由 Pass 1 callback 返回为 Astranaut error result，而不是
+`throw`/`error`。Pass 1 应完成可继续的遍历以累计互相独立的 diagnostics；完成后若结果包含任何
+error，入口直接调用 `astranaut_return:to_compiler/1`，不得初始化或运行 Pass 2。unexpected internal
+fault 可以按 compiler internal error 单独报告，但不得伪装成普通 source diagnostic。
+
 ### Nested rewrite order
 
 Pass 2 在进入 `sf_do` 时按 occurrence id 取得 plan，并把当前 Monad/plan 压入 lexical stack；
 child traversal 完成 local `return/1`、`fail/1` rewrite，并在 nested `sf_do` 的 post callback 中
 先生成 inner expression。随后 outer `sf_do` 的 post callback 使用：
 
-- Pass 1 冻结的 original qualifiers 做 identity、capture 和 source metadata lookup；
+- Pass 1 冻结的 original qualifiers 做 capture、name pairing 和 source metadata lookup；
 - Pass 2 已转换的 child expressions 生成实际 remainder/frame body。
 
 这样执行 AST 是由内到外生成的，但所有语义事实已经在第一遍从稳定的 original AST 收集完成。
 nested block 不会被当作 generated function 的新 source occurrence，也不会在第二遍重复分析。
+第二遍不得重新调用 source-form、name-marker、identity 或 capture validator；生成 executable AST
+需要的改写后 qualifiers 必须与冻结 plan 组合使用，而不是重建另一份分析结果。
 
 ### Qualifier lowering boundary
 
@@ -512,10 +540,11 @@ Pattern = Expr, Remainder      -> match followed by Remainder inside the frame b
 `then_frame`，也不生成 AsyncId、StepName、frame function 或 manifest entry。terminal generator
 或 pure match 没有 remainder，必须在 transform 阶段拒绝。
 
-不能用 generic tuple/list recursion 代替 AST traversal。identity analysis 必须基于 original source
-AST，不能把已经生成的 frame AST 当作用户 Action canonical form。把 original/lowered AST 同时携带
-在单遍 state 中理论上可行，但会把 global validation、nested scheduling 和 code generation 耦合在
-同一 callback 中，不作为首选实现。
+不能用 generic tuple/list recursion 代替 AST traversal。identity 必须从 Pass 1 冻结的
+BlockPath/StepName 产生；unnamed locator 不能被当作 migration identity，也不能从 generated AST
+或 Action 内容推导 migration target。把 original/lowered AST
+同时携带在单遍 state 中理论上可行，但会把 global validation、nested scheduling 和 code
+generation 耦合在同一 callback 中，不作为首选实现。
 
 ## Manifest
 
@@ -530,9 +559,7 @@ transform 固定生成并 export `'$async_sf_manifest'/0`。current manifest 描
         BlockPath => #{
             asyncs => #{
                 AsyncId => #{
-                    identity => derived | {named, StepName},
-                    async_index => AsyncIndex,
-                    async_form_digest => AsyncFormDigest,
+                    step_name => StepName | undefined,
                     mfa => {Module, Function, 2},
                     required_captures => RequiredCaptureLayout
                 }
@@ -563,7 +590,8 @@ existing cleanup path 负责 remove、cancel timer 和适用的 demonitor。
 
 ```text
 identity compatible:
-    target manifest contains same AsyncId/MFA
+    frame has StepName
+    and target manifest contains same BlockPath/StepName and its generated AsyncId/MFA
 
 environment compatible:
     TargetRequiredCaptures ⊆ StoredEnv keys
@@ -573,6 +601,7 @@ identity compatible 但 Env 缺失仍不能执行。runtime 不猜测或重放�
 没有在恢复前完成 Env migration，则 upgrade 返回 `{error, {appup, incompatible_frame}}`，
 downgrade 返回 `{error, {appdown, incompatible_frame}}`。StoredEnv 多余字段不构成不兼容。
 
-同 module 其他 block、pending action 后面的代码和 capture runtime values 不改变 AsyncId。
-改变 derived BlockPath/AsyncIndex/AsyncForm，改变 named BlockPath/StepName，或切换 identity mode，
-都需要显式 frame mapping，否则按 code-change direction 失败。
+同 module 其他 block、pending Action AST、pending action 后面的代码和 capture runtime values 不改变
+AsyncId。改变 BlockPath 或 StepName 需要显式 frame mapping，否则按 code-change direction 失败；
+没有 StepName 的 historical/current frame 在 migration 中默认不兼容，runtime 不按 local locator、
+index 或 AST 猜测 target。

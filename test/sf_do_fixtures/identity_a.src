@@ -1,0 +1,11 @@
+-module(sf_do_version_fixture).
+-define(ASYNC_DO, true).
+-include_lib("async/include/async.hrl").
+-export([action/3]).
+action(PrefixValue, Ref, Extra) ->
+    _Ignored = Extra,
+    sf_do(versioned, [async_m
+        || stable_step,
+           Reply <- async_m:promise(Ref),
+           return({PrefixValue, Reply})
+    ]).

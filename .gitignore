@@ -9,6 +9,7 @@ deps
 .rebar3
 _build
 _checkouts
+/.worktree/
 /.workflow/
 .worktrees
 rebar.lock

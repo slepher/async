@@ -2,14 +2,13 @@
 
 ## Why
 
-`sf-do` 已自动继承 identity 未变的 pending frame：一、二参数形式按 BlockName、
-AsyncIndex 和 canonical AsyncForm 派生；三参数形式按 BlockName + StepName 命名。目标
-manifest 仍有相同 AsyncId/MFA 时，旧 reply 直接进入目标版本同名 continuation function，
-不需要 migration declaration 或 API。
+`sf-do` 使用 inline atom StepName marker。named frame 在目标 manifest 仍有相同
+BlockPath/StepName 及其 generated AsyncId/MFA 时，旧 reply 直接进入目标版本同名 continuation
+function，不需要 migration declaration 或 API。unnamed frame 可普通执行，但 migration 必须失败。
+Action AST、source index 和代码相似度不参与该判断。
 
-`sf-migrate` 解决两类显式 code-change：一类是无法自动识别的 async boundary，例如在前面
-插入/删除/重排 async 导致 AsyncIndex 变化，async action form 改写，named/anonymous block
-identity 改变、derived/named mode 切换或 StepName 改名；另一类是 identity 未变但 Env 需要显式
+`sf-migrate` 解决两类显式 code-change：一类是 BlockPath 或 StepName 改名导致 identity 改变；
+另一类是 identity 未变但 Env 需要显式
 转换，例如 capture 变量改名或同名变量的 value 含义变化。
 runtime 不得在这些情况下使用 index 接近、AST/capture 相似度或 bind name 猜测
 target；未显式迁移时默认失败。
@@ -22,16 +21,16 @@ target；未显式迁移时默认失败。
 
 ## What Changes
 
-- 新增 `sf_migrate(OldDoBlock, Spec)`，以及 named historical block 使用的
-  `sf_migrate(StepNames, OldDoBlock, Spec)` module-level declaration。
+- 新增 `sf_migrate(OldDoBlock, Spec)` module-level declaration；historical StepName 与 `sf_do` 一样
+  作为 inline atom marker 写入 block，不使用额外 list/record 参数。
 - migration 用一个双向 `transition` 引用两个 block endpoint；endpoint 可以是命名 atom，
   也可以是匿名 `{Function, Arity, N}`。upgrade 与 downgrade 使用同一模型和 API。
 - 遵循 OTP dynamic callback 的 advanced update 时序：upgrade 在较新代码加载后执行
   `code_change(Vsn, ...)`；downgrade 在旧代码加载前由较新代码执行
   `code_change({down, TargetVsn}, ...)`。
-- 每个历史 block 以完整 `[async_m || ...]` derived 形式，或通过
-  `sf_migrate(StepNames, [async_m || ...], Spec)` named 形式保存在当前源码中，并具有显式 historical
-  block key。StepNames 与 `sf_do` 一样支持 record 名或 atom literal list。
+- 每个历史 block 通过 `sf_migrate([async_m || ...], Spec)` 保存在当前源码中，并具有显式
+  historical block key。只有带 inline StepName 的 historical boundary 可作为 mapping endpoint；
+  unnamed historical boundary 产生 warning 且不可迁移。
 - 支持 `v1 => block_1, v2 => block_1, v3 => block_2, v4 => current` 一类 version
   anchors；upgrade source 未锚定时保持 unhandled，downgrade target 未锚定且存在 pending
   current frame 时阻止 code rollback。
@@ -41,10 +40,8 @@ target；未显式迁移时默认失败。
   `sf-do` 自动继承；但 mapping 若为至少一个 enabled direction 显式配置 `migrate_env`，则允许作为
   Env-only migration，只转换 capture-name map，保持 AsyncId/MFA 不变。没有 Env migrator 的
   same-identity mapping 仍是 redundant。
-- 支持 named identity 的 `{step, StepName}`、1-based source index selector、唯一
-  name/content selector、正向 Offset 和可选
-  capture Env migration MFA。source index 统一计数 `bind|then|let`；`bind` 与 `then` 可作为
-  migration target，纯计算 `let` 只参与定位和计数，不可迁移。
+- step mapping 只支持 `{step, StepName}` selector 和可选 capture Env migration MFA；compiler
+  不按 source index、bind variable name 或 Action content 定位恢复步骤。
 - declaration 或 step mapping 可分别声明 `up_state` 与 `down_state` source capture；
   `state => Name` 是两者同为 Name 的 shorthand。declaration-level 值是所有 step 的默认值，
   step 只能继承或重复同方向值，不得覆盖为不同 capture name。Env migrator context 使用

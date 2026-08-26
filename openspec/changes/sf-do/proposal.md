@@ -21,8 +21,9 @@ frame 携带 stable identity、external MFA 和显式 Env。挂起时 callback �
 
 ## What Changes
 
-- 新增 `sf_do/1`、`sf_do/2` 和可选 named-step `sf_do/3` source syntax；表达式结果仍是声明
-  Monad 的普通 monadic value，不生成独立 `sf_program()` 类型。
+- 新增 `sf_do/1`、`sf_do/2` source syntax；表达式结果仍是声明 Monad 的普通 monadic value，
+  不生成独立 `sf_program()` 类型。StepName 作为 standalone literal atom qualifier 内联在其修饰的
+  非最终 action 前，不再使用额外 list/record 参数。
 - 新增 `monad_frame` capability。兼容 Monad 的 `bind_frame`、`then_frame` 必须保持 Monad
   类型，只把 continuation 从 fun 改为 frame；`default_then_frame` 委托 `bind_frame`。
 - parse transform 仿照 ErLando `do` 使用 Astranaut AST traversal：有绑定的非最终
@@ -55,8 +56,13 @@ frame 携带 stable identity、external MFA 和显式 Env。挂起时 callback �
   捕获 local fun，升级不会自动清除或替换该 term，旧 code purge 后它可能不可调用。应用应通过
   `sf-migrate` Env migrator 用目标版本代码重新生成 fun，或改存 external MFA/data descriptor；
   自动检测与强制迁移不属于当前 `sf_do` 验收。
-- derived identity 使用 protocol、logical block、非最终 continuation-boundary index 和 canonical Action；可选 named identity
-  使用 BlockName + StepName。后续 continuation、captures 和 runtime Env 不参与 AsyncId。
+- 有 StepName 的 continuation boundary identity 只使用 protocol、logical BlockPath 和 StepName；
+  AsyncIndex、Action AST、后续 continuation、captures 和 runtime Env 均不参与 AsyncId。AsyncId
+  只是该 named tuple 的固定长度编码，不是额外的 source-similarity 判断。缺少 name 的 boundary
+  允许普通执行但产生 compiler warning，并且在 migration 时确定性失败。
+- transform 第一遍必须用 Astranaut 的普通错误结果累计 source diagnostics；第一遍存在任何错误时
+  直接通过 `astranaut_return:to_compiler/1` 返回 compiler errors，不运行第二遍。第二遍只消费冻结
+  plan，不得重新执行 source validation、identity 或 capture analysis。
 - callbacks 继续使用现有 callbacks field、request correlation key、monitor、timer、accumulator
   reference 和 `async_r_t` State/store 机制。
 
@@ -65,20 +71,20 @@ frame 携带 stable identity、external MFA 和显式 Env。挂起时 callback �
 ```erlang
 sf_do([Monad || Qualifiers])
 sf_do(BlockName, [Monad || Qualifiers])
-sf_do(BlockName, StepNames, [Monad || Qualifiers])
 ```
 
-最后一个参数必须是 OTP 21 可解析的 single-head list comprehension。BlockName/StepNames 不得
-放入 comprehension head。StepNames 只覆盖具有 block-local remainder 的非最终 monadic
-qualifiers；pure let 和 final action 不消耗名称。
+最后一个参数必须是 OTP 21 可解析的 single-head list comprehension。BlockName 不得放入
+comprehension head。standalone literal atom qualifier 只能作为紧随其后的非最终 `bind`/`then`
+action 的 StepName marker；marker 不执行。literal atom qualifier 出现在其他位置必须报 error。
+未被 marker 修饰的非最终 action 产生 warning；pure let 和 final action 不需要 name。
 
 ## Compatibility Boundary
 
 - ordinary `do`、legacy callbacks 和 ordinary bind 保持原行为。
 - stable frame path 显式启用；不得把 legacy closure callback 自动宣称为可迁移 frame。
-- frame identity 相同只表示等待同一个 async action，不保证 source Env 满足未来 continuation。
-- runtime 不按 AST、index 接近度、capture 名称或值猜测 migration target，也不重放 boundary
-  之前的 action。
+- named frame identity 相同只表示相同 BlockPath/StepName，不保证 source Env 满足未来 continuation。
+- runtime 不按 AST、index、action 内容、capture 名称或值猜测 migration target，也不重放 boundary
+  之前的 action。没有 StepName 的 frame 在普通执行中可用，但在 migration 中默认不兼容。
 
 ## Capabilities
 

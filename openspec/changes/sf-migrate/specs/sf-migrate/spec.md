@@ -5,9 +5,9 @@
 ### Requirement: Automatic identity inheritance is the default
 
 目标 current manifest 中相同的 pending AsyncId/MFA MUST 默认自动继承。
-derived identity MUST 使用 protocol、
-BlockName、零基 AsyncIndex 和 scope-aware canonical AsyncForm；named identity MUST 使用
-protocol、BlockName 和 StepName。没有显式 Env-only plan 时，该路径 MUST NOT 要求 `sf_migrate`
+named identity MUST 只使用 protocol、BlockPath 和 inline StepName。unnamed frame 在 migration
+中 MUST incompatible。没有显式 Env-only plan 时，named automatic path
+MUST NOT 要求 `sf_migrate`
 declaration、version anchor、step mapping 或 `migrate_sf_callbacks/4`。用户显式调用 migration
 API 且当前方向存在 same-identity `migrate_env` 时，runtime MUST 在 resume 前转换 Env，同时保持
 AsyncId/MFA。该 async 之后的
@@ -15,8 +15,8 @@ continuation、bind pattern、CaptureAbi 和 Env values MUST NOT 参与 automati
 
 #### Scenario: Same async automatically resumes new continuation
 
-- **给定**old/new block 的 AsyncIndex 1 都是同一 canonical `fetch_order(User)`
-- **并且**新版本完全重写该 action 之后的 continuation/captures
+- **给定**old/new block 使用相同 BlockPath/StepName
+- **并且**新版本完全重写 Action AST、source index、continuation/captures
 - **当**old pending reply 在 code change 与 old-code purge 后到达
 - **那么**runtime 使用相同 AsyncId/MFA 进入新 continuation
 - **并且**不查询 migration manifest
@@ -29,34 +29,31 @@ continuation、bind pattern、CaptureAbi 和 Env values MUST NOT 参与 automati
 
 ### Requirement: Unmatched async fails closed
 
-runtime MUST 在 source AsyncId 不存在于目标 manifest 时 fail closed。触发条件包括 derived
-identity 的 BlockName、AsyncIndex 或 AsyncForm 变化，named identity 的 BlockName 或
-StepName 变化，以及 derived/named mode 切换。runtime MUST NOT 使用相邻 index、
+runtime MUST 在 source AsyncId 不存在于目标 manifest 时 fail closed。触发条件包括 BlockPath 或
+StepName 变化。runtime MUST NOT 使用相邻 index、
 AST/capture 相似度、bind name 或 runtime value 猜测
 target。若 `sf_migrate.steps` 未显式将 source selector 映射到 target selector，或
 application 未在 `code_change/3` 调用 migration API，frame MUST 默认失败。
 
-#### Scenario: Async index shifts without mapping
+#### Scenario: Step moves without identity change
 
-- **给定**old pending action 之前插入新 async，使它的 AsyncIndex/AsyncId 改变
-- **并且**没有执行显式 migration
+- **给定**old pending action 之前插入新 async，但 BlockPath/StepName 不变
 - **当**pending reply 到达
-- **那么**upgrade 返回 `{error, {appup, incompatible_frame}}`，downgrade 返回
-  `{error, {appdown, incompatible_frame}}`
+- **那么**相同 named AsyncId/MFA 自动继承
 
-#### Scenario: Async form changes without mapping
+#### Scenario: StepName changes without mapping
 
-- **给定**AsyncIndex 不变但 action 从 `fetch_order(User)` 改为 `fetch_order_v2(User)`
+- **给定**StepName 从 `load_user` 改为 `fetch_user`
 - **并且**无显式 old/new selector mapping
 - **当**runtime 恢复 source frame
-- **那么**runtime 不得因两个 action 语法相似而继承
+- **那么**runtime 默认 incompatible，且不得按 Action AST 相似度继承
 
 ### Requirement: Explicit complete historical block
 
-每个 `sf_migrate` declaration MUST 接收完整 historical block 和 Spec。derived historical
-block MUST 使用 `[Monad || ...]`；named historical block MUST 使用
-`sf_migrate(StepNames, [Monad || ...], Spec)`，其中 StepNames 与三参数 `sf_do` 一样支持 record 名或 atom
-literal list，并遵守唯一、async-only order 和 exact-count 规则。compiler MUST 使用该
+每个 `sf_migrate` declaration MUST 使用 `sf_migrate([Monad || ...], Spec)` 接收完整 historical
+block 和 Spec。historical StepName MUST 使用与 `sf_do` 相同的 inline literal atom marker grammar；
+marker 不执行，duplicate/invalid placement 报 error。unnamed historical boundary MUST 产生 warning，
+且不得进入 StepName selector table。compiler MUST 使用该
 block 生成 historical metadata，不得从 current block 或旧 BEAM 推断历史内容。
 
 #### Scenario: Historical source differs from current
@@ -197,38 +194,15 @@ MUST 继续 automatic inheritance，不得生成 no-op plan。
 - **那么**该 step 不允许 down migration
 - **并且**runtime 不得自动反转 up plan
 
-### Requirement: Unique source-level selectors
+### Requirement: StepName-only selectors
 
-mapping MUST 支持 `{index, N}`、`{name, Name}`、`{content, Expression}` 以及带正向
-Offset 的 `{name, Name, Offset}`、`{content, Expression, Offset}` selector。compiler MUST
-为每个 historical/current block 按源码顺序建立统一的 1-based `bind|then|let` statement
-index。每个 bind/then monadic action 还 MUST 拥有不计 let 的独立零基 AsyncIndex。
+mapping MUST 只支持 `{step, StepName}`。old selector MUST 在 historical block 的 inline named
+boundaries 中精确解析，new selector MUST 在 current block 中精确解析。selector MUST NOT 依赖
+source index、Action AST、bind variable name 或 qualifier kind，也 MUST NOT 接受 Offset。runtime
+manifest MUST 只保存解析后的 source/target AsyncId，不得在 code change 时重新解析 source selector。
 
-name/content selector MUST 在应用 Offset 前唯一定位 anchor；Offset MUST NOT 用于选择
-重复匹配中的第 N 次出现。Index 和 Offset MUST 是 `>= 1` 的 integer，最终 source index
-MUST 在对应 block 范围内。无 Offset 时 selector 选择 anchor 本身；有 Offset 时 target
-MUST 是 `AnchorIndex + Offset`。
-
-最终 target MUST 是 bind 或 then 对应的 continuation；let MAY 参与计数并作为 content
-anchor，但 MUST NOT 作为 migration target。所有 selector 解析和合法性检查 MUST 在编译期
-完成。runtime manifest MUST 只保存解析后的 AsyncId，不得在升级时重新解析 index、Offset
-或 AST。
-
-old selector MUST 始终在 historical block 解析，new selector MUST 始终在 current block
-解析。downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交换 old/new 的
-版本含义。
-
-mapping MUST 另外支持 `{step, StepName}`，直接解析 named BlockPlan 中由 StepNames 声明的
-identity。该 selector MUST NOT 依赖 source index 或 action form，MUST NOT 接受 Offset；
-对 derived BlockPlan 使用时 MUST 报 `sf_step_not_found`。
-
-#### Scenario: Adopt names from a derived block
-
-- **给定**historical block 使用 derived identity，current 三参数 `sf_do` 声明 `load_user`
-- **并且**mapping 的 old 为 `{content, fetch_user(UserId)}`，new 为 `{step, load_user}`
-- **当**compiler 解析 mapping
-- **那么**mapping 保存不同 namespace 的 OldAsyncId 与 NewAsyncId
-- **并且**runtime 可显式迁移该 pending frame
+downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交换 old/new 的版本含义。
+缺失 StepName MUST 报 `sf_step_not_found`；duplicate StepName MUST 在 block validation 阶段失败。
 
 #### Scenario: Same named step needs no mapping
 
@@ -247,58 +221,26 @@ identity。该 selector MUST NOT 依赖 source index 或 action form，MUST NOT 
 - **当**compiler 解析 mapping
 - **那么**两个 StepName 分别解析为 OldAsyncId 与 NewAsyncId
 
-#### Scenario: Resolve by bind name
+#### Scenario: Unsupported fuzzy selector
 
-- **给定**historical block 只有一个 `<-` boundary 使用 selector name `'Reply2'`
-- **当**compiler 解析 `{name, 'Reply2'}`
-- **那么**mapping 保存该 boundary 的 OldAsyncId
-
-#### Scenario: Resolve by direct source index
-
-- **给定**block 的前三个 source statements 依次是 bind、let、then
-- **当**compiler 解析 `{index, 3}`
-- **那么**mapping 保存该 then statement 对应 continuation 的 AsyncId
-
-#### Scenario: Resolve forward from a unique anchor
-
-- **给定**`{content, Expression}` 在 block 中唯一匹配 source index 2
-- **并且**source index 4 是 bind 或 then
-- **当**compiler 解析 `{content, Expression, 2}`
-- **那么**target source index 为 4
-- **并且**mapping 保存 index 4 对应 continuation 的 AsyncId
-
-#### Scenario: Ambiguous content
-
-- **给定**同一 block 有两个 canonical action 与 content selector 相同
-- **当**module 使用 `{content, Expression, 1}` 编译
-- **那么**transform 报 `sf_step_ambiguous`
-
-#### Scenario: Invalid or out-of-range selector number
-
-- **给定**selector 的 Index/Offset 不是 `>= 1` 的 integer，或计算后的 target 超出 block
+- **给定**mapping 使用 index、bind name、content 或 Offset selector
 - **当**module 编译
-- **那么**transform 报对应的 invalid/out-of-range selector error
+- **那么**transform 报 invalid selector diagnostic
+- **并且**不建立基于 source similarity 的 mapping
 
-#### Scenario: Let cannot be migrated
+#### Scenario: Unnamed boundary is not selectable
 
-- **给定**direct index 或 anchored Offset 的最终 target 是 let statement
-- **当**module 编译
-- **那么**transform 报 `sf_step_not_migratable`
-
-#### Scenario: Old and new indexes are compiled independently
-
-- **给定**同一逻辑 step 在 historical block 与 current block 的 source index 不同
-- **并且**mapping 显式提供 old selector 与 new selector
-- **当**module 编译
-- **那么**两侧分别解析为 OldAsyncId 与 NewAsyncId
-- **并且**runtime 不受 source index 漂移影响
+- **给定**historical 或 current boundary 没有 inline StepName
+- **当**declaration 尝试为它建立 migration mapping
+- **那么**没有合法 `{step,StepName}` selector 可引用它
+- **并且**runtime 对 pending unnamed frame 返回 directional `incompatible_frame`
 
 ### Requirement: Shared compiler analysis
 
-historical block MUST 使用 `sf-do` 相同的 boundary analyzer、async-only index、scope-aware
-canonicalizer、AsyncId 和
-CaptureLayout。CaptureAbi MUST 直接是排序后的 capture-name atom list；不得为 capture 维护
-第二套 canonicalizer/hash。`sf-migrate` MUST 扩展同一个 `async_sf_transform` orchestrator。
+historical block MUST 使用 `sf-do` 相同的 boundary analyzer、inline marker parser、named AsyncId
+和 CaptureLayout。CaptureAbi MUST 直接是排序后的 capture-name atom list。`sf-migrate` MUST
+扩展同一个 `async_sf_transform` orchestrator，且不得引入 Action canonicalizer、source index 或
+content digest。
 
 #### Scenario: Current and historical cross-validation
 

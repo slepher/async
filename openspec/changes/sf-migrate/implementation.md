@@ -5,8 +5,8 @@
 
 ## 0. Responsibility Boundary
 
-`sf-do` 已负责 exact automatic inheritance：derived frame 使用 protocol、BlockName、
-AsyncIndex 和 canonical AsyncForm；named frame 使用 protocol、BlockName 和 StepName。
+`sf-do` 已负责 named frame 的 exact automatic inheritance：有 inline StepName 的 frame 使用
+protocol、BlockPath 和 StepName；unnamed frame 在 migration 中直接 incompatible。
 AsyncId/MFA 未变时 pending frame 默认不经本 API 直接进入目标 continuation。实现 MUST NOT
 为该路径生成或要求无操作 migration plan；但显式 directional `migrate_env` MUST 可生成
 same-identity Env-only plan。
@@ -34,12 +34,6 @@ sf_migrate(
         on_mismatch => {Module, Function, 3}         %% optional
     }
 ).
-
-sf_migrate(
-    HistoricalStepNames,
-    [async_m || HistoricalQualifiers],
-    Spec
-).
 ```
 
 ```erlang
@@ -64,21 +58,15 @@ sf_migrate(
 -type direction_config() :: #{migrate_env => undefined | {module(), atom(), 1}}.
 
 -type step_selector() ::
-    {step, atom()}
-  | {index, pos_integer()}
-  | {name, atom()}
-  | {name, atom(), pos_integer()}
-  | {content, Expression}
-  | {content, Expression, pos_integer()}.
+    {step, atom()}.
 ```
 
 要求：
 
-- historical block 必须是完整、非空、Monad 为 `async_m` 的 do block；`sf_migrate/2`
-  表示 derived historical identity，带 HistoricalStepNames 的 `sf_migrate/3` 表示 named
-  historical identity；
-- HistoricalStepNames 与 `sf_do` 的 StepNames 使用相同 record/list 展开、唯一性与 exact
-  async-count 规则；historical runtime BlockName 从 transition endpoint 取得；
+- historical block 必须是完整、非空、Monad 为 `async_m` 的 do block，只接受 `sf_migrate/2`；
+- historical StepName 使用与 `sf_do` 相同的 inline literal atom marker grammar；marker 不执行，
+  duplicate/invalid placement 报 error，unnamed boundary warning 且不进入 selector table；historical
+  runtime BlockName 从 transition endpoint 取得；
 - `transition` 两端中必须恰有一个解析到 current manifest；
 - 匿名 `{F, A, N}` 必须展开为 `'-F/A-fun-N-'`，不得接受 generated hash；
 - `block` 在该 name 内唯一且不能使用保留 atom `current`；
@@ -88,9 +76,7 @@ sf_migrate(
 - old/new selector 的版本角色固定：old 属于 historical block，new 属于 current block；
 - `directions` 至少包含 up/down 之一；up 表示 old → new，down 表示 new → old；
 - 每个方向独立提供 `migrate_env`；不得接受方向不明的 plain step-level `migrate_env`；
-- direct index 和 Offset 必须是 `>= 1` 的 integer，且最终 index 不得超出对应 block；
-- name/content anchor 必须在 old/current block 内唯一，Offset 不参与消歧；
-- selector 的最终 target 必须是 `bind` 或 `then`，不得是 `let`；
+- selector 只接受 `{step,StepName}`，并必须在对应 historical/current block 中存在；
 - mapping old selector 不得重复；
 - resolved old/new AsyncId 与 runtime BlockName 都相同、且所有 enabled direction 均无
   `migrate_env` 时报 `redundant_sf_migration_mapping`；至少一个方向有 migrator 时生成 Env-only plan；
@@ -126,10 +112,9 @@ collect current sf_do
   -> generate both manifests and current stable functions
 ```
 
-historical analysis必须复用 `sf-do` 的 qualifier boundary、async-only index、scope-aware
-canonicalization、AsyncId 和
-CaptureLayout。CaptureAbi 直接使用排序后的 capture-name atom list，不得为 capture 维护
-canonicalizer/hash。historical plan 不生成 function/export。
+historical analysis 必须复用 `sf-do` 的 qualifier boundary、inline marker parser、named AsyncId 和
+CaptureLayout。CaptureAbi 直接使用排序后的 capture-name atom list。historical plan 不生成
+function/export，也不建立 Action canonicalizer、source index 或 content digest。
 
 `async_m:migrate_sf_callbacks/4` 必须保持薄 facade。manifest preflight、entry migration、
 mismatch 和 commit orchestration 保持在独立 `async_sf_migration`，并复用现有
@@ -139,33 +124,14 @@ migration 大段并入 `async_sf_runtime`。
 
 ## 3. Selector Resolution
 
-shared analyzer 必须为每个 block 建立 1-based source statement table，按源码顺序统一记录
-`bind|then|let`。entry 至少包含 `source_index`、`kind`、canonical content，以及 bind/then
-对应的 continuation AsyncId。另外必须按 bind/then monadic action 单独记录零基
-AsyncIndex，`let` 不占用该序号。该 table 只服务编译期 selector resolution，不进入 runtime
-manifest。
-
-`{step, StepName}` 直接选择 named BlockPlan 中的唯一 StepName，并解析到该 action 的
-AsyncId；对 derived BlockPlan 使用该 selector 必须报 `sf_step_not_found`。它不接受 Offset。
-
-`{index, N}` 直接选择第 N 个 source statement。N 必须是 `>= 1` 的 integer 且在范围内。
-
-`{name, Name}` 只匹配 `<-` bind 的唯一 simple variable selector metadata。
-`{content, Expr}` 对 Expr AST 使用 shared canonicalizer，并匹配 source statement content；
-bind 匹配 `<-` 右侧 action，then 匹配 monadic action，let 也保留可作为 anchor 的 canonical
-content。
-
-`{name, Name, Offset}` 与 `{content, Expr, Offset}` 必须先按无 Offset 形式得到唯一
-AnchorIndex，再计算 `TargetIndex = AnchorIndex + Offset`。Offset 必须是 `>= 1` 的 integer，
-且 TargetIndex 必须在范围内。即使给出 Offset，base name/content 零匹配或多匹配仍分别是
-not-found/ambiguous；Offset 不是 occurrence selector。
-
-最终 source statement kind 必须是 bind 或 then，并解析为它对应的 continuation AsyncId。
-let 参与 index 和 Offset 计算，也可作为 content anchor，但不能作为最终 migration target。
+shared analyzer 必须为 historical/current block 的 named boundaries 建立唯一 StepName → AsyncId table。
+`{step, StepName}` 直接选择对应 BlockPlan 中的 StepName；它不依赖 Action AST、source index、
+bind variable name 或 qualifier kind，也不接受 Offset。缺失时报 `sf_step_not_found`，重复名称在
+block StepNames validation 阶段报错。
 
 解析结果必须在编译期固定为 `{HistoricalBlockKey, OldAsyncId}` 和 current
 `NewAsyncId`。up plan 以 OldAsyncId 为 source，down plan 以 NewAsyncId 为 source；runtime 不解析源级
-selector，也不因 direction 反转 old/new 的版本角色。
+selector，也不因 direction 反转 old/new 的版本角色。runtime 不按 AST/index/name 猜测 target。
 
 错误：
 
@@ -174,15 +140,9 @@ selector，也不因 direction 反转 old/new 的版本角色。
 - `duplicate_sf_historical_block`；
 - `sf_version_anchor_conflict`；
 - `sf_step_not_found`；
-- `sf_step_ambiguous`；
 - `invalid_sf_step_names`；
 - `unknown_sf_step_record`；
 - `sf_step_name_count_mismatch`；
-- `invalid_sf_selector_index`；
-- `sf_selector_index_out_of_range`；
-- `invalid_sf_selector_offset`；
-- `sf_selector_offset_out_of_range`；
-- `sf_step_not_migratable`；
 - `sf_state_capture_conflict`；
 - `invalid_sf_state_capture`；
 - `invalid_sf_migration_direction`；
@@ -222,8 +182,7 @@ manifest 顶层必须包含：
         HistoricalBlockKey => #{
             endpoint => HistoricalRuntimeBlockName,
             asyncs => #{OldAsyncId => #{
-                async_index => OldAsyncIndex,
-                async_form_digest => OldAsyncFormDigest,
+                step_name => HistoricalStepName,
                 mfa => {Module, HistoricalStepFunction, 2},
                 capture_abi => OldAbi
             }}
@@ -379,7 +338,7 @@ downgrade 每个 `#sf_callback{frame = SourceFrame}`：
 
 1. `{down, TargetVsn}` exact lookup historical target anchor；未锚定时 preflight error；
 2. 从 SourceFrame 读取 current BlockName、NewAsyncId、NewAbi，并对 current manifest 验证；
-3. 若 historical endpoint 按对应 identity mode产生相同 AsyncId/MFA，且存在该方向的
+3. 若 historical endpoint 的 BlockPath/StepName 产生相同 AsyncId/MFA，且存在该方向的
    same-identity Env-only plan，则调用其 `migrate_env` 并保持 identity/MFA；若无该 plan，该 entry
    是 automatic inheritance，Env 原样；
 4. 否则查找 down plan `{HistoricalBlock, NewAsyncId}`；没有 plan 时进入显式 mismatch policy，
@@ -520,12 +479,8 @@ downgrade“先 code_change、后加载旧 module”的顺序阻止代码回退�
 - exact version term，无 atom/binary coercion；
 - conflicting anchors 编译失败；
 - full historical block 只生成 metadata，不生成 executable functions；
-- direct index selectors 对 bind/then 成功，并按 `bind|then|let` 的统一 1-based 顺序计数；
-- name/content selectors 成功、missing 和 ambiguous；
-- name/content Offset 在唯一 anchor 后前移，且 old/new 两侧独立解析；
-- 非正数/非整数 index 或 Offset、越界 index 或 Offset 均编译失败；
-- Offset 不得消除重复 name/content 的歧义；
-- direct/offset selector 最终落到 let 时编译失败；
+- old/new `{step,StepName}` 分别在 historical/current block 精确解析；缺失 step 编译失败；
+- index、bind name、content 和 Offset selector 均作为 unsupported syntax 编译失败；
 - omitted mapping 对不同 AsyncId 导致 `async_not_mapped`，不会 fuzzy match；相同
   AsyncId 属于 `sf-do` automatic path，不是 migration identity-map；
 - upgrade unanchored source 保持 unhandled；downgrade unanchored target 阻止 code change；

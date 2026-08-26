@@ -2,6 +2,14 @@
 
 ## 2026-08-24
 
+- 收敛 `sf-do` dependency 为 inline StepName marker：使用 `sf_do(Comprehension)` 与
+  `sf_do(BlockName, Comprehension)`；named identity 只使用 Protocol、BlockPath 和 StepName，
+  unnamed frame warning 且 migration failure。删除 derived identity、Action canonicalizer/AsyncForm
+  digest 依赖。
+- historical declaration 同步收敛为 `sf_migrate(OldDoBlock, Spec)`，StepName 内联在 historical
+  qualifiers 中；mapping 只接受 `{step,StepName}`，unnamed boundary 不可映射，也不再支持 index、
+  bind name、content 或 Offset fuzzy selectors。本文以下
+  2026-08-21 的 derived/adoption 记录仅保留为被本条取代的历史草案。
 - frame Env 与 CaptureAbi 收敛为 capture-name atom map及排序后的 atom list，不为 capture key/layout
   维护 SHA、binder-origin identity 或第二套 canonicalizer。
 - 修正 Env migration 边界：相同 AsyncId/MFA 仍默认 automatic inheritance，但允许显式配置

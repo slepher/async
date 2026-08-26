@@ -32,6 +32,11 @@ sf_do:       Action + external MFA + explicit Env data frame
 runtime 通过 external MFA 进入当前加载版本的 generated function；该 function 从 Env 恢复所需
 bindings、消费 action outcome，并返回后续 Monad。
 
+source 可以在非最终 action 前用 standalone literal atom qualifier 显式提供 StepName。runtime 只用
+lexical BlockPath 和 StepName 判断当前版本是否仍声明同一个恢复点；它不比较 Action AST，也不从
+source index 或代码相似度派生恢复身份。缺少 StepName 的 boundary 仍可普通执行，但 transform
+必须产生 warning，且该 frame 不获得 migration 资格。
+
 因此，`sf_do` 解决的是由 transform 生成的 bind/then continuation 对旧 code version 的隐式依赖。
 frame identity 与 Env compatibility 仍须按 `sf-do` 和 `sf-migrate` 合同判断；`sf_do` 不根据源码
 相似度猜测版本兼容性，也不自动迁移历史 callback。

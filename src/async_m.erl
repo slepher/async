@@ -21,7 +21,7 @@
                     mode => source,
                     requires => identity,
                     remote => async_t,
-                    capabilities => [functor, monad, monad_fail, monad_error]
+                    capabilities => [functor, monad, monad_fail, monad_error, monad_frame]
                 }
             ]
     }
@@ -32,6 +32,7 @@
 -export([return_error_m/1]).
 -export([then/2, then/4]).
 -export([update/2, exec/4, run/4]).
+-export([run_sf_frame/4]).
 -export([promise/2]).
 -export([callback_to_cc/1]).
 -export([map_promises/2]).
@@ -193,6 +194,9 @@ exec(X, Callback, Offset, State) ->
 run(Async, Callback, Offset, State) ->
     CC = callback_to_cc(Callback),
     run_with_cc(Async, CC, Offset, State).
+
+run_sf_frame(Async, SfCc, Offset, State) ->
+    async_sf_runtime:run_sf_frame(Async, SfCc, Offset, State).
 %%--------------------------------------------------------------------
 %% @doc
 %% @spec

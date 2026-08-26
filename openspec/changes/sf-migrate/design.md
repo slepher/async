@@ -6,9 +6,8 @@ pending `#sf_callback{}` 保存的是当前等待点之后的 frame。升级时�
 的 step，也不能重新发起当前 pending request。迁移只需要把旧 frame 替换为指向当前
 stable function 的新 frame：原 reply 到达后，从新的 continuation 继续。
 
-`sf-do` 的一、二参数形式使用 `{BlockName, AsyncIndex, CanonicalAsyncForm}` 派生
-AsyncId；三参数形式使用 `{BlockName, StepName}` 命名 AsyncId 和 frame function。
-各自 identity 未变时 pending frame 自动继承；后续 continuation 和 captures 不参与身份
+`sf-do` 只使用 `{Protocol, BlockPath, StepName}` 命名 AsyncId 和 frame function。
+identity 未变时 pending frame 自动继承；Action AST、source index、后续 continuation 和 captures 不参与身份
 判断。`sf-migrate` 为 AsyncId 无法直接匹配的 boundary 提供显式 old/new 对应，也允许用户在
 AsyncId/MFA 未变时显式声明 Env-only migration；后者只转换 capture-name map，不改变 identity。
 
@@ -48,18 +47,7 @@ block 已由 current `sf_do` 定义，可直接引用，不应再复制一份 cu
 
 ## Automatic Inheritance Boundary
 
-对于 source frame，系统必须先判断 `sf-do` 的 exact identity rule。derived mode：
-
-```text
-same protocol
-and same runtime BlockName
-and same zero-based AsyncIndex
-and same scope-aware canonical AsyncForm
-and target manifest contains the resulting AsyncId/MFA
-    => automatically inherited
-```
-
-named mode：
+对于 source frame，系统必须先判断 `sf-do` 的 exact named identity rule：
 
 ```text
 same protocol
@@ -76,13 +64,11 @@ Env runtime values 均不参与 identity 判断。
 
 以下任一情况越过自动继承边界：
 
-- 在该 action 之前插入、删除或重排 async，导致 AsyncIndex 变化；
-- async action form 改变，即使开发者知道它在业务上仍是同一 request；
-- named block 改名，或 anonymous block ordinal 变化；
-- derived/named identity mode 切换，或 named StepName 改名；
-- async boundary 被拆分、合并或移到另一 block。
+- explicit block 改名，或 anonymous lexical BlockPath 改变；
+- StepName 改名；
+- async boundary 被移到另一 BlockPath。
 
-此时 runtime 必须默认失败，不得按最近 index、canonical content 相似度、bind
+此时 runtime 必须默认失败，不得按最近 index、Action content 相似度、bind
 name、CaptureAbi 或 Env value 自动选择 target。upgrade 不经迁移恢复时完成为
 `{error, {appup, incompatible_frame}}`；downgrade 对应为
 `{error, {appdown, incompatible_frame}}`。要继承该 request，必须由 `sf_migrate.steps`
@@ -96,16 +82,18 @@ environment failure，runtime 不得在 reply path 临时猜测 migration。用�
 
 ## Declaration Syntax
 
-每个 historical block 使用完整 do block。derived historical block 使用单 template 参数：
+每个 historical block 使用完整 do block，StepName 以内联 atom marker 提供：
 
 ```erlang
 sf_migrate(
     [
         async_m
-     || Reply1 <- promise1(),
+     || request1_v1,
+        Reply1 <- promise1(),
         async_m:modify_state(
             fun(S) -> S#state{status = request2_v1} end
         ),
+        request2_v1,
         Reply2 <- promise2_v1(Reply1),
         promise3_v1(Reply2)
     ],
@@ -116,22 +104,17 @@ sf_migrate(
         current_versions => [v4],
         steps => [
             #{
-                old => {name, 'Reply1'},
-                new => {name, 'Reply1'},
+                old => {step, request1_v1},
+                new => {step, request1},
                 directions => #{up => #{}, down => #{}}
             },
             #{
-                old => {name, 'Reply2'},
-                new => {name, 'Reply2'},
+                old => {step, request2_v1},
+                new => {step, request2},
                 directions => #{
                     up => #{migrate_env => {?MODULE, migrate_reply2_env_up, 1}},
                     down => #{migrate_env => {?MODULE, migrate_reply2_env_down, 1}}
                 }
-            },
-            #{
-                old => {content, promise3_v1(Reply2)},
-                new => {content, promise3(Reply2)},
-                directions => #{up => #{}, down => #{}}
             }
         ],
         on_mismatch => {?MODULE, on_sf_mismatch, 3}
@@ -139,22 +122,10 @@ sf_migrate(
 ).
 ```
 
-若 historical block 已使用 named identity，则在 Monad 之前提供 StepNames：
-
-```erlang
-sf_migrate(
-    flow_v3_steps,
-    [async_m
-     || User <- fetch_user(UserId),
-        finish(User)],
-    Spec
-).
-```
-
-`flow_v3_steps` 可以是同 module 的 record 名，也可以写成
-`[load_user, finish]`。其 record/list 展开、atom literal、唯一性、async-only order 和 exact
-count 规则与三参数 `sf_do` 完全相同。historical runtime BlockName 仍由 `transition` 的
-historical endpoint 决定，不在 historical do template 中重复填写。
+inline marker 的 atom literal、唯一性、placement 和 unnamed warning 规则与 `sf_do` 完全相同。
+historical runtime BlockName 仍由 `transition` 的 historical endpoint 决定，不在 historical do
+template 中重复填写。unnamed historical boundary 不进入 StepName selector table，不能成为 mapping
+endpoint。
 
 字段：
 
@@ -210,61 +181,21 @@ current manifest 验证 source、用 v3 historical metadata 构造尚不执行�
 
 ## Step Selectors
 
-selector 支持 named StepName、直接 source index，以及 name/content anchor 加可选正向
-Offset：
+selector 只支持 source 显式声明的 StepName：
 
 ```erlang
 {step, StepName}
-{index, PositiveIndex}
-{name, NameAtom}
-{name, NameAtom, PositiveOffset}
-{content, StatementExpression}
-{content, StatementExpression, PositiveOffset}
 ```
 
-`{step, StepName}` 直接解析 named BlockPlan 中的 StepName，不依赖 action 的当前 source
-index/form，也不接受 Offset。它既可用于 historical named block，也可用于 current 三参数
-`sf_do`；对 derived block 使用时为 not-found。
-
-transform 必须为每个 historical/current block 建立只在编译期使用的 1-based source
-statement index。`PositiveIndex = 1` 表示第一个 `bind|then|let` statement；三类 statement
-均参与计数，其他不形成 do qualifier 的语法不进入该 index。每个 index entry 至少记录
-statement kind、canonical content、async-only index，以及该 statement 对应的 continuation
-AsyncId（若有）。
-
-`{name, NameAtom}` 保持现有语义：匹配 `<-` bind pattern 中唯一的 simple variable
-name。复杂 pattern 若没有唯一名称，必须使用 content selector。名称只是编译时定位
-方式，不进入 AsyncId。
-
-`{content, StatementExpression}` 由 transform 直接读取未求值 AST，并使用与 `sf_do`
-相同的 location stripping、alpha normalization 和 record/compile ABI 规则匹配 source
-statement content。bind 的 content 是 `<-` 右侧 action，then 的 content 是该 monadic
-action；let entry 也保留 canonical content，因此可以作为带 Offset selector 的 anchor。
-声明节点会在 lint 前被移除，因此 selector expression 中可以出现 historical block
-变量。
-
-name/content anchor 必须先在其 block 内唯一解析，之后才能应用 Offset：零匹配报
-`sf_step_not_found`，多匹配报 `sf_step_ambiguous`。Offset 不得用于从重复匹配中选择某
-一次出现。无 Offset 的 name/content selector 选择 anchor statement 本身；带 Offset 时：
-
-```text
-TargetIndex = AnchorIndex + PositiveOffset
-```
-
-Offset 必须是 `>= 1` 的整数，且 TargetIndex 不得超出该 block 的 source statement index。
-因此 Offset 明确表示 anchor 之后的第 N 个 statement，而不是 1-based occurrence selector。
-`{index, PositiveIndex}` 的 Index 同样必须是 `>= 1` 的整数且不得超出范围。
-
-最终 target statement 只有 `bind` 或 `then` 合法。两者都对应可保存在 pending callback
-中的后续 continuation：bind continuation 接收并匹配 reply，then continuation 丢弃 reply。
-let 是同步纯计算，不形成可独立挂起的 callback continuation；它可以参与计数或作为
-Offset anchor，但直接选中 let 必须在编译期报 `sf_step_not_migratable`。
+`{step, StepName}` 直接解析 historical/current BlockPlan 中的唯一 StepName，不依赖 Action AST、
+source index、bind variable name 或 qualifier kind，也不接受 Offset。零匹配报
+`sf_step_not_found`，重复名称在 block analysis 阶段报 duplicate StepName。
 
 old 与 new selector 分别在 historical block 和 current block 编译，其版本角色不会随
 runtime direction 反转。解析结果固定为 `{HistoricalBlockKey, OldAsyncId}` 与 current
 `NewAsyncId`：up plan 以 OldAsyncId 为 source、NewAsyncId 为 target；down plan 以 NewAsyncId
-为 source、OldAsyncId 为 target。runtime 不保存、不重新应用 source index、anchor、Offset
-或 selector AST。用户不得填写 generated function atom、AsyncId 或 CaptureAbi。
+为 source、OldAsyncId 为 target。runtime 不保存或重新解析 selector。用户不得填写 generated
+function atom、AsyncId 或 CaptureAbi。
 
 若 resolved old/new AsyncId 与 runtime BlockName 都相同，并且所有 enabled direction 都没有
 `migrate_env`，该 mapping 是冗余 automatic inheritance；compiler MUST 报
@@ -274,19 +205,17 @@ same-identity mapping 只为实际配置 `migrate_env` 的 direction 生成 plan
 的另一方向继续 automatic inheritance，不生成 no-op plan。
 显式 mapping 的其他用途是连接 old/new AsyncId 不同的 boundary。
 
-首次从 derived block 引入 StepNames 时，old side 使用既有 `{index,...}`、`{name,...}` 或
-`{content,...}` selector，new side 使用 `{step,StepName}`：
+StepName 重命名使用 old/new `{step,...}` 显式连接：
 
 ```erlang
 #{
-    old => {content, fetch_user(UserId)},
-    new => {step, load_user},
+    old => {step, load_user},
+    new => {step, fetch_user},
     directions => #{up => #{}, down => #{}}
 }
 ```
 
-该 mapping 只跨越一次 identity mode 变化；后续版本保持相同 BlockName/StepName 时走
-automatic inheritance。StepName 重命名同理使用 old/new `{step,...}` 显式连接。
+后续版本保持相同 BlockPath/StepName 时走 automatic inheritance。
 
 mapping schema 固定为 map：
 
@@ -340,8 +269,8 @@ declaration default 只在单个 `sf_migrate` declaration 内生效，不按 `ve
 ```text
 1. scan sf_do and build current BlockPlans
 2. scan sf_migrate declarations
-3. analyze each complete historical block with the same boundary frontend
-4. build 1-based bind/then/let source indexes and resolve old/current selectors
+3. analyze each complete historical block and inline markers with the same boundary frontend
+4. resolve old/current `{step,StepName}` selectors
 5. normalize declaration/step state defaults and directional allowlists
 6. record capture compatibility and optional per-direction migration MFAs
 7. generate current stable functions
@@ -384,8 +313,7 @@ runtime implementation 保持现有增量边界：`async_m:migrate_sf_callbacks/
                         endpoint => '-handle_call/3-fun-0-',
                         asyncs => #{
                             OldAsyncId1 => #{
-                                async_index => OldAsyncIndex1,
-                                async_form_digest => OldAsyncFormDigest1,
+                                step_name => request1_v1,
                                 mfa => {?MODULE, OldAsyncFunction1, 2},
                                 capture_abi => OldAbi1
                             }

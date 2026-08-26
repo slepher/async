@@ -45,7 +45,8 @@
                             monad_trans,
                             monad_fail,
                             monad_error,
-                            monad_cont
+                            monad_cont,
+                            monad_frame
                         ]
                 }
             ]
@@ -54,7 +55,7 @@
 
 -include_lib("erlando/include/erlando.hrl").
 -record(callback, {
-    cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:class(), A)),
+    cc :: fun((A) -> async_r_t:async_r_t(any(), any(), monad:class(), A)) | map(),
     acc_ref :: reference()
 }).
 
@@ -63,6 +64,7 @@
 -export([fmap/3, '<$'/3]).
 -export([pure/2, '<*>'/3, lift_a2/4, '*>'/3, '<*'/3]).
 -export(['>>='/3, '>>'/3, return/2]).
+-export([bind_frame/4, then_frame/4]).
 -export([lift/2]).
 -export([lift_mr/2]).
 -export([fail/2]).
@@ -117,6 +119,7 @@
     callback_to_cc/2
 ]).
 -export([state_callbacks_gs/1]).
+-export([run_sf_action/3, run_sf_action/4]).
 %% -export([update_callbacks/3]).
 
 -gen_fun(#{
@@ -230,6 +233,19 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
 
 '>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
     monad:'default_>>'(ATA, ATB, AT).
+
+bind_frame(Action, FrameMFA, Context, {?MODULE, _IM} = AT) ->
+    async_t(
+        fun(LegacyDownstream) ->
+            Downstream = current_sf_continuation(LegacyDownstream),
+            Frame = async_sf_runtime:new_frame(FrameMFA, Context),
+            Continuation = async_sf_runtime:new_next(Frame, Downstream),
+            run_sf_action(Action, Continuation, AT)
+        end
+    ).
+
+then_frame(Action, IgnoreInputMFA, Context, {?MODULE, _IM} = AT) ->
+    monad_frame:default_then_frame(Action, IgnoreInputMFA, Context, AT).
 
 -spec return(A, M) -> async_t(_S, _R, M, A).
 return(A, {?MODULE, IM} = AT) ->
@@ -400,13 +416,14 @@ promise(MRef, {?MODULE, _IM} = Monad) ->
 promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0) ->
     MR = async_r_t:new(IM),
     async_t(fun(K) ->
+        Continuation = stable_or_legacy_continuation(K),
         case Action() of
             MRef when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
                 do([
                     {async_r_t, IM}
                  || AccRef <- async_r_t:get_local_ref(MR),
                     begin
-                        NK = callback_with_timeout(K, MRef, Timeout, Monad),
+                        NK = callback_with_timeout(Continuation, MRef, Timeout, Monad),
                         async_r_t:put_ref(MRef, #callback{cc = NK, acc_ref = AccRef}, MR)
                     end
                 ]);
@@ -750,6 +767,28 @@ run_cc(X, CC, {?MODULE, _IM}) ->
     CTA = reply_t:run(async_to_real_t(X)),
     cont_t:run(CTA, CC).
 
+run_sf_action(Action, Continuation, Offset, State) ->
+    AT = new(identity),
+    Ref = make_ref(),
+    MonadMR = run_sf_action(Action, Continuation, AT),
+    async_r_t:run(MonadMR, state_callbacks_gs(Offset), Ref, State).
+
+run_sf_action(Action, Continuation, {?MODULE, _IM} = AT) ->
+    case async_sf_runtime:validate_continuation(Continuation) of
+        ok ->
+            Runner = sf_continuation_callback(Continuation, AT, resume),
+            with_sf_continuation(
+                Continuation,
+                Runner,
+                fun() ->
+                    CTA = reply_t:run(async_to_real_t(Action)),
+                    cont_t:run(CTA, Runner)
+                end
+            );
+        {error, Reason} ->
+            erlang:error({invalid_sf_continuation, Reason})
+    end.
+
 wait(ATA, {?MODULE, _IM} = AT) ->
     wait_t(ATA, #{}, AT).
 
@@ -859,7 +898,8 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
     case handle_reference(MRef, Callbacks, Opts) of
         {ok, Callback, AccRef, NCallbacks} ->
             NState = CallbacksS(NCallbacks, State),
-            ARTA = execute_callback_a(Callback, ReplyType, A),
+            Direction = maps:get(sf_direction, Opts, resume),
+            ARTA = execute_callback_a(Callback, ReplyType, A, {?MODULE, IM}, Direction),
             async_r_t:run(ARTA, {CallbacksG, CallbacksS}, AccRef, NState);
         error ->
             %% A is ok, state is unhandled
@@ -1018,16 +1058,31 @@ demonitor_ref(MRef, #{type := reply, ref := monitored_reference}) when is_refere
 demonitor_ref(_Ref, #{}) ->
     ok.
 
-execute_callback_a(Callback, message, A) ->
+execute_callback_a(Callback, message, A, _AT, _Direction) when is_function(Callback, 1) ->
     Callback({message, A});
-execute_callback_a(Callback, reply, A) ->
-    Callback(A).
+execute_callback_a(#{kind := Kind}, message, A, {?MODULE, IM}, _Direction) when
+    Kind =:= sf_next; Kind =:= sf_cc
+->
+    async_r_t:return({message, A}, async_r_t:new(IM));
+execute_callback_a(Callback, reply, A, {?MODULE, _IM}, _Direction) when is_function(Callback, 1) ->
+    Callback(A);
+execute_callback_a(#{kind := Kind} = Continuation, reply, A, {?MODULE, _IM} = AT, Direction) when
+    Kind =:= sf_next; Kind =:= sf_cc
+->
+    cancel_sf_timer(Continuation),
+    Runner = sf_continuation_callback(Continuation, AT, Direction),
+    Runner(A).
 
 callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(Timeout) ->
     Timer = erlang:send_after(Timeout, self(), {MRef, {error, timeout}}),
-    fun(A) ->
-        _ = erlang:cancel_timer(Timer),
-        Callback(A)
+    case Callback of
+        Fun when is_function(Fun, 1) ->
+            fun(A) ->
+                _ = erlang:cancel_timer(Timer),
+                Fun(A)
+            end;
+        #{kind := Kind} = Continuation when Kind =:= sf_next; Kind =:= sf_cc ->
+            Continuation#{timer => Timer}
     end;
 callback_with_timeout(Callback, _MRef, _Timeout, {?MODULE, _IM}) ->
     Callback.
@@ -1066,6 +1121,63 @@ remove_ref_after_cc(Ref, CC, {?MODULE, IM}) ->
                 end,
                 async_r_t:return(Val, MR)
             ])
+    end.
+
+stable_or_legacy_continuation(Legacy) ->
+    case erlang:get({?MODULE, sf_continuation}) of
+        undefined -> Legacy;
+        Continuation -> Continuation
+    end.
+
+current_sf_continuation(LegacyDownstream) ->
+    Continuation = erlang:get({?MODULE, sf_continuation}),
+    Runner = erlang:get({?MODULE, sf_runner}),
+    case {Continuation, Runner} of
+        {undefined, _} -> erlang:error(sf_frame_requires_stable_runner);
+        {_, undefined} -> erlang:error(sf_frame_requires_stable_runner);
+        {_, LegacyDownstream} -> Continuation;
+        _ -> preserve_ordinary_downstream(Continuation, LegacyDownstream)
+    end.
+
+preserve_ordinary_downstream(
+    #{kind := sf_next, downstream := Downstream} = Continuation, Ordinary
+) ->
+    Continuation#{downstream := preserve_ordinary_downstream(Downstream, Ordinary)};
+preserve_ordinary_downstream(#{kind := sf_cc} = Continuation, Ordinary) ->
+    Continuation#{async_t_ordinary_downstream => Ordinary}.
+
+sf_continuation_callback(
+    #{kind := sf_cc, async_t_ordinary_downstream := Ordinary}, _AT, _Direction
+) ->
+    Ordinary;
+sf_continuation_callback(Continuation, AT, Direction) ->
+    fun(Input) -> async_sf_runtime:continue(Continuation, Input, AT, Direction) end.
+
+with_sf_continuation(Continuation, Runner, Fun) ->
+    ContinuationKey = {?MODULE, sf_continuation},
+    RunnerKey = {?MODULE, sf_runner},
+    PreviousContinuation = erlang:get(ContinuationKey),
+    PreviousRunner = erlang:get(RunnerKey),
+    erlang:put(ContinuationKey, Continuation),
+    erlang:put(RunnerKey, Runner),
+    try Fun()
+    after
+        restore_process_value(ContinuationKey, PreviousContinuation),
+        restore_process_value(RunnerKey, PreviousRunner)
+    end.
+
+restore_process_value(Key, undefined) ->
+    erlang:erase(Key);
+restore_process_value(Key, Value) ->
+    erlang:put(Key, Value).
+
+cancel_sf_timer(Continuation) ->
+    case maps:find(timer, Continuation) of
+        {ok, Timer} ->
+            _ = erlang:cancel_timer(Timer),
+            ok;
+        error ->
+            ok
     end.
 
 map_real(F, ATA) ->
