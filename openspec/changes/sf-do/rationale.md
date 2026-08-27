@@ -57,14 +57,18 @@ purge 后失效。
 ## 边界
 
 `sf_do` 不负责阻止 code purge、清理 process State、让 ordinary local fun 自动跨版本可用，或把
-legacy fun callback 自动转换成 stable frame。它建立的边界仅是：由 transform 生成且可能跨
+ordinary fun callback 自动转换成 stable frame。它建立的边界仅是：由 transform 生成且可能跨
 suspension 保存的 continuation 使用 external data frame；业务主动保存的 local fun 由应用和显式
 migration 负责。
+
+该边界通过显式 `SfContext` 参数传播，不使用进程字典。ordinary bind 仍产生 anonymous continuation，
+只有 `bind_frame` 创建 frame。当 stable frame 的 downstream 是 ordinary fun 时，runtime 以独立 CcRef
+descriptor 保存该 fun，使 structured chain 仍以纯数据 CcRef terminal 结束。
 
 ## 最终完成不属于 frame 本身
 
 frame 只描述“收到 Input 后从哪个稳定边界继续执行”，不应同时拥有 promise 的最终 callback。
-完整 final callback 若嵌在 continuation chain 尾部，一旦 legacy continuation 或 frame shape 已损坏，
+完整 final callback 若嵌在 continuation chain 尾部，一旦 frame shape 已损坏，
 runtime 仍要解析恰好已经失效的数据才能找到 fallback；这与 fallback 存在的目的冲突。
 
 因此受 `sf-cc` 保护的 action callback 分别保存两条正交关系：`cc` 保存 ordinary fun 或 stable frame
@@ -73,14 +77,13 @@ continuation，`sf_cc_mref` 保存 promise 的一次性最终完成地址。sf-d
 frame validation failure、migration failure 和人工终止可以收敛到同一个 cleanup-before-invoke
 completion primitive，而不要求 sf-do 理解 callback `/2`、`/3` 或 State return contract。
 
-CcRef adoption 以 callback 创建时间为边界，而不是以 API 名称为边界。升级后 `wait`、ordinary
+CcRef adoption 不以 API 名称为边界。`wait`、ordinary
 anonymous callback runner 和 explicit sf-cc runner 都可以无感使用统一 CcRef lifecycle；它们的区别
 只在 final callback 的稳定性证明：只有显式 external fun 获得 compile-time source guarantee。
 
-升级前已经 pending 的旧三元 tuple 无法补造 CcRef。若其 anonymous continuation 已随旧代码 purge
-而不可调用，runtime 不能恢复业务调用栈，也不能伪造 final caller；但仍可清理该 request，并把原本
-要交给 continuation 的 action Outcome 连同 CleanState 作为 tagged `legacy_outcome` 返回给当前
-`async_m:handle_info` caller。这样 holder receive loop 不会因 async 升级而崩溃，处置策略仍由应用决定。
+ordinary action continuation 仍由普通 bind executor 直接调用。它因 code purge 产生的 `badfun` 以及
+callback 内部的 `undef`/其他 exception 原样传播；sf-do 和 sf-cc 不负责额外 unavailable-code cleanup、
+分类或合成 fallback Outcome，普通 reply lifecycle 的既有处理不变。
 
 ## 外部 owner module 的升级
 

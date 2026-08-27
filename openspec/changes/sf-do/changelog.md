@@ -15,6 +15,21 @@
 - empty comprehension 仅作为 earlier-transform malformed AST 的防御性 diagnostic；function 外
   application 不是合法 compiler form，删除不可达的领域 reason。
 
+## 2026-08-27 — 已实现合同修正
+
+- `async_t` 以显式 `(K, SfContext)` 传播 stable execution context，不使用进程字典。
+- ordinary bind 继续保存 anonymous continuation；只有 `bind_frame` 创建 `sf_next`。
+- Promise 只在实际 continuation 等于 stable runner 时保存 structured chain。frame 位于 ordinary bind
+  下方时，以独立 CcRef descriptor 承接 anonymous downstream，不引入 legacy frame node。
+- callback reader 只接受当前四元 record；删除旧三元 tuple、`legacy_outcome` 和 unavailable-code
+  compatibility classifier。
+- ordinary action continuation 的 `badfun`、`undef` 和内部异常原样传播，不由 sf-do/sf-cc 转换为
+  structural failure。stable-frame protocol/manifest/migration failure 仍通过 CcRef terminal completion。
+- ordinary runners/wait 继续使用统一 CcRef lifecycle，但 ordinary completion adapter 编码为普通 `sf_cc`
+  descriptor，不再存在 legacy mode/descriptor。
+- 2026-08-26 “未实现（合同已更新）”及其实现核实保留为当日历史快照；本条 supersede 其中与当前实现冲突的
+  compatibility 和状态描述。
+
 ## 2026-08-26 — 未实现（合同已更新）
 
 - `sf-do` 不再拥有或定义完整 `sf_cc` descriptor、public final runner、callback arity/return

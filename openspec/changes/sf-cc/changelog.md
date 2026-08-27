@@ -2,6 +2,23 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-27
+
+- continuation context 改为显式 `SfContext` 参数，不再通过进程字典传播 stable continuation/runner。
+- ordinary bind 继续使用 anonymous continuation；只有 `bind_frame/4` 创建并保存 `sf_next` frame。
+- Promise 仅在实际 continuation 等于 stable runner 时保存 structured continuation；`bind_frame` 位于
+  ordinary bind 下方时，由独立 CcRef descriptor 承接 anonymous downstream。
+- 删除 `legacy_cc`/legacy mode、`sf_legacy_next`、旧三元 callback tuple decoder 和
+  `{legacy_outcome, Outcome, CleanState}` compatibility path。当前 callback store 只接受四元 record。
+- ordinary runners 和 wait 仍使用统一 CcRef lifecycle，但 ordinary completion adapter 编码为普通
+  `sf_cc` descriptor，不再冻结独立 legacy descriptor 类型。
+- ordinary action continuation 的 `badfun` 属于 ordinary bind 执行错误，原样传播；sf-cc 不负责把它
+  转换为 terminal Outcome。final callback availability 仅在实际 apply 边界进行精确处理。
+- matcher exception 和 callback/effect 内部异常原样传播；不再包装 Class/Stacktrace。主动失败仅把预期的
+  unavailable callback 或 invalid return 汇总为无错误载荷的 `cc_failed` status。
+- 本条 supersede 2026-08-26 条目中的 old-tuple、legacy adapter/outcome 和宽异常汇总合同；旧条目仅作为
+  当日历史设计记录保留。
+
 ---
 
 ## 2026-08-26

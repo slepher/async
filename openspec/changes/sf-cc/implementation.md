@@ -31,7 +31,8 @@
 - action callback write/read lifecycle；
 - scope propagation；
 - reply/message/timeout/DOWN routing；
-- legacy/frame executor dispatch；
+- ordinary-fun/frame executor dispatch；
+- explicit `(K, SfContext)` propagation and ordinary/frame representation boundary；
 - 调用 `async_sf_cc:complete/3`。
 
 ### `async_m`
@@ -47,11 +48,9 @@ inspect_sf_callbacks/3
 fail_sf_callbacks/4
 ```
 
-`handle_info/3` 还负责把无法恢复的 pre-upgrade old tuple 返回为 tagged legacy outcome。
-
 ### `async_r_t`
 
-负责 reader-local `{AccRef, SfCcMRef}` scope compatibility，不拥有 completion policy。
+负责相互独立的 reader-local AccRef 与 optional CcRef，不拥有 completion policy。
 
 ### `async_util`
 
@@ -73,25 +72,16 @@ fail_sf_callbacks/4
 }).
 ```
 
-不要让 `async_t` 与 `async_util` 继续各自声明 record。reader 不能仅写：
+不要让 `async_t` 与 `async_util` 各自声明 record。所有 readers 通过 shared helper 统一 decode：
 
 ```erlang
-{ok, #callback{} = Callback}
-```
-
-而必须先统一 decode：
-
-```erlang
-decode_callback({callback, Cc, AccRef}) ->
-    {ok, #callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = undefined}};
-decode_callback(#callback{} = Callback) ->
-    {ok, Callback};
+decode_callback(#callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = CcRef}) ->
+    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => CcRef}};
 decode_callback(_) ->
     error.
 ```
 
-注意：用新 record 构造旧 tuple 会得到四元 tuple；old shape 必须用显式 tuple clause 读取。所有以下入口必须
-审计：
+旧三元 `{callback, Cc, AccRef}` 不属于当前合同，不得兼容解码。所有以下入口必须审计：
 
 - `handle_reference`；
 - callback executor；
@@ -99,7 +89,7 @@ decode_callback(_) ->
 - `callback_exists`；
 - migration callback enumeration；
 - inspect/fail enumeration；
-- test/version compatibility helpers。
+- tests。
 
 ## 3. Internal sf-cc Types
 
@@ -114,18 +104,10 @@ decode_callback(_) ->
     context := term()
 }.
 
--type legacy_cc() :: #{
-    kind := legacy_cc,
-    protocol := 1,
-    callback := fun()
-}.
-
--type final_cc() :: sf_cc() | legacy_cc().
-
 -type sf_cc_ref_entry() :: #{
     kind := sf_cc_ref,
     protocol := 1,
-    cc := final_cc()
+    cc := sf_cc()
 }.
 ```
 
@@ -167,8 +149,8 @@ formatter MUST 展示 source location 与 accepted form。
 
 ## 5. Runner Construction
 
-所有 post-upgrade public runner MUST 委托一个 common runner core。该 core 在 effect 真正执行时 allocate/register
-CcRef、安装 scope、执行 Promise，并把 immediate/suspended completion 都交给同一 completion primitive。
+所有 public runner MUST 委托一个 common runner core。该 core 在 effect 真正执行时 allocate/register
+CcRef、安装 reader-local CcRef、执行 Promise，并把 immediate/suspended completion 都交给同一 completion primitive。
 各 facade 只负责构造 final descriptor 和保留自己的 observable normalization/result projection。
 
 ### `run_sf_cc/3`
@@ -178,7 +160,7 @@ CcRef、安装 scope、执行 Promise，并把 immediate/suspended completion �
 1. allocate CcRef；
 2. build `sf_cc(mode = async_r_t)`；
 3. write CcRef entry through current callbacks lens；
-4. install scope `{AccRef, CcRef}`；
+4. install CcRef reader local while preserving AccRef；
 5. run Promise with a final internal continuation that calls `async_sf_cc:complete/3`；
 6. immediate completion consumes CcRef in the same evaluation；suspension leaves entry and action callback。
 
@@ -197,50 +179,44 @@ also contain `sf_cc_mref = CcRef`。
 
 ### Existing ordinary runners and wait
 
-- `run_cc/2`、`run_with_cc/4`、`exec_cc/4`、`run/4` 使用 `legacy_cc` descriptor 保存现有 final
-  adapter，保持原 callback arity、normalization 和正常返回合同；
+- `run_cc/2`、`run_with_cc/4`、`exec_cc/4`、`run/4` 使用 ordinary adapter 构造普通
+  `sf_cc(mode = async_r_t)` descriptor，保持原 callback arity、normalization 和正常返回合同；
 - `wait/1`、`wait_t/2` 使用 library-owned exported completion，保持原阻塞/超时和返回合同；
 - 这些 facade 不做 external-fun source validation；
 - 它们创建的每个 suspended callback 与 sf-prefixed runner 一样写入 CcRef；
-- anonymous legacy final adapter 自身仍可能因 purge 不可调用，不获得 sf-prefixed external-fun guarantee。
+- anonymous ordinary final callback 不获得 sf-prefixed external-fun guarantee；其内部错误原样传播。
 
 ## 6. Reader-Local Scope
 
-Represent internal reader local as:
+AccRef 与 CcRef MUST 使用两个独立 reader layers：
 
-```erlang
--type async_scope() :: #{
-    acc_ref := reference(),
-    sf_cc_mref := reference() | undefined
-}.
-```
-
-compatibility helpers：
-
-```erlang
-decode_scope(Ref) when is_reference(Ref) ->
-    #{acc_ref => Ref, sf_cc_mref => undefined};
-decode_scope(#{acc_ref := Ref, sf_cc_mref := SfCcMRef} = Scope)
-        when is_reference(Ref),
-             (is_reference(SfCcMRef) orelse SfCcMRef =:= undefined) ->
-    Scope.
-```
-
-`get_local_ref/1` MUST ask then extract `acc_ref`。新增 internal `get_sf_cc_mref/1` extracts second field。
-`local_ref/3` MUST map only `acc_ref`。`async_r_t:run` old callers may continue passing raw Ref；sf runners pass Scope。
+- `get_local_ref/1` 读取 AccRef；
+- `get_sf_cc_ref/1` 读取 `reference() | undefined`；
+- `local_ref/3` 只局部替换 AccRef；
+- `local_sf_cc_ref/3` 只局部替换 CcRef；
+- `run/5` 默认以 `undefined` CcRef 执行；`run_scope/6` 显式接受 AccRef 与 CcRef。
 
 When executing a decoded action callback：
 
 ```erlang
-Scope = #{
-    acc_ref => Callback#callback.acc_ref,
-    sf_cc_mref => Callback#callback.sf_cc_mref
-},
-async_r_t:run(CallbackAction, CallbacksGS, Scope, CleanedState).
+async_r_t:run_scope(CallbackAction, CallbacksGS,
+    Callback#callback.acc_ref, Callback#callback.sf_cc_mref, CleanedState, MR).
 ```
 
-promise suspension writer calls `get_sf_cc_mref` and copies it into record。所有新 runner scope 都携带 CcRef；
-只有解码升级前旧三元 tuple 后恢复的 scope yields `undefined`。
+promise suspension writer calls `get_sf_cc_ref` and copies it into record。所有 public runner execution 都携带
+顶层 CcRef；只在显式没有 sf-cc scope 的内部执行中产生 `sf_cc_mref = undefined`。
+
+### Explicit `SfContext`
+
+`async_t` internal representation MUST 是接收 `(K, SfContext)` 的 function。`SfContext` 是
+`undefined | #{continuation := term(), runner := fun()}`，通过参数和 Monad composition 显式传递，不得写入
+进程字典。
+
+- ordinary `>>=` 创建 anonymous continuation 并透传同一个 `SfContext`；
+- `bind_frame/4` 是唯一创建 `sf_next` 的入口；
+- Promise 仅在 `K =:= SfContext.runner` 时保存 structured continuation，否则保存实际 anonymous `K`；
+- `bind_frame` 收到 ordinary anonymous downstream 时，注册独立 CcRef descriptor 保存该 downstream，
+  并构造以该 CcRef 终止的 frame chain。
 
 ## 7. Callback Dictionary Classification
 
@@ -325,9 +301,9 @@ invoke(#{mode := direct_state, callback := Callback, context := Context},
     end.
 ```
 
-`invoke_and_normalize/3` 还 MUST dispatch `legacy_cc`，调用其中现有 `CC/1` adapter，并复用原 ordinary
-runner 的 result normalization/projection。该分支不重新解释为 sf `/2|3` contract，也不做 external-fun
-source 检查。wait 的 library-owned completion 由库控制，可安全以 stable descriptor 或专用等价 tag 分派。
+ordinary runner 通过 `sf_cc(mode = async_r_t)` adapter 复用相同 invocation path。adapter callback 接收
+`(Outcome, OriginalCc)` 并执行 `OriginalCc(Outcome)`；该 library-generated callback 不做 external-fun source
+检查。wait 复用 ordinary runner normalization。
 
 `run_completion_effect` MUST execute without reusing the consumed CcRef。Its produced value follows the existing
 `run_sf_cc/3` async_r_t result contract。若 completion effect 显式调用任一 public runner，该新 invocation
@@ -355,21 +331,15 @@ SHOULD use callback field directly；terminal traversal is for normal chain exec
 
 Frame summary MUST preserve each frame's owner module and optional module Vsn。Vsn is literal term or `undefined`。
 
-### Pre-upgrade old tuple unavailable path
+### Ordinary action continuation failure
 
-Decoded `{callback, Cc, AccRef}` has `sf_cc_mref = undefined` and MUST NOT enter `complete/3`。If a narrow
-pre-invocation classifier confirms its anonymous `Cc` targets purged old code, the action executor MUST remove only the
-request lifecycle it can identify and own, producing `CleanState` without fabricating a final result。The facade contract is：
+ordinary action callback is invoked directly as `Callback(Input)`。`badfun`、`undef` and callback-internal exceptions
+MUST propagate unchanged。action executor MUST NOT classify them as sf runtime failure, synthesize an Outcome, invoke
+CcRef completion or return a compatibility wrapper。
 
-```erlang
-async_m:handle_info(Message, Offset, State0) ->
-    {legacy_outcome, Outcome, CleanState} | ExistingHandleInfoResult.
-```
-
-`Outcome` is the exact action input that would have been supplied to `Cc` for reply、timeout、DOWN or message。
-Do not create an orphan error, retry `Cc`, allocate a retroactive CcRef or invoke a final callback。The classifier MUST
-distinguish failure to enter purged code from an exception after callback entry；ordinary callback exceptions and nested
-`undef` keep existing behavior。
+This boundary differs from final descriptor invocation：external final callbacks can be checked with
+`code:ensure_loaded/1` and `erlang:function_exported/3` immediately before apply；the apply boundary MAY catch only
+`error:{badfun, Callback}` for the exact callback being invoked。It MUST NOT catch nested `badfun` or `undef`。
 
 ## 11. Inspection
 
@@ -385,7 +355,7 @@ Algorithm：
 4. build sanitized summary；
 5. call Matcher once per summary；
 6. collect summaries for which result is exactly `true`；
-7. exception/non-boolean returns error；State is never written。
+7. matcher exception propagates unchanged；non-boolean raises `{invalid_matcher_return, Value}`；State is never written。
 
 Frame flattening MUST be total over valid stable continuation and return `continuation_kind = unknown` plus empty/safely parsed
 frames for damaged shapes；inspection itself must not invoke continuation or final CC。
@@ -410,18 +380,26 @@ Outcome = {error, {sf_aborted, Reason}},
 complete(CcRef, Outcome, Lens, CurrentState).
 ```
 
-Catch callback exception per CcRef after consumption：
+Result shapes：
 
 ```erlang
+% protected CcRef
 #{
     sf_cc_mref => CcRef,
-    request_mrefs => [MRef],
-    status => completed | cc_failed | already_consumed | unprotected,
-    error => undefined | {Class, Reason, Stacktrace}
-}.
+    status => completed | cc_failed | unhandled
+}
+
+% unprotected callback
+#{
+    request_mref => MRef,
+    sf_cc_mref => undefined,
+    status => unprotected
+}
 ```
 
-Continue subsequent CcRefs。Return final threaded State。Do not attempt rollback。
+`cc_failed` classifies invalid descriptor before consumption, or expected unavailable callback/invalid return after
+consumption；it carries no exception payload。callback/effect internal exceptions propagate unchanged and stop commit。
+Already-consumed CcRefs remain consumed；do not attempt rollback。
 
 ## 13. Metadata and Vsn
 
@@ -458,16 +436,17 @@ Runtime structural：
 ```erlang
 {sf_runtime, Reason}
 {invalid_sf_cc, Value}
-{invalid_sf_cc_return, Mode, Value}
-{invalid_sf_cc_state, Value}
+{invalid_sf_cc_return, Value}
 ```
 
 Matcher：
 
 ```erlang
-{sf_cc_matcher_failed, RequestMRef, Class, Reason, Stacktrace}
-{sf_cc_matcher_non_boolean, RequestMRef, Value}
+{invalid_matcher, Matcher}
+{invalid_matcher_return, Value}
 ```
+
+Matcher execution exceptions are not converted to matcher-specific tuples。
 
 Manual final Outcome：
 
@@ -482,7 +461,7 @@ Compiler tests：external `/2|3` acceptance matrix；local/anonymous/variable/wr
 Runtime tests：
 
 - `wait/1`、`wait_t/2`、ordinary runners 和 sf-prefixed runners 均创建/传播 CcRef，同时保持各自正常结果；
-- immediate/suspended legacy Promise；
+- immediate/suspended ordinary Promise；
 - immediate/suspended/nested frame Promise；
 - sequential ActionMRef CcRef inheritance；
 - AccRef rebinding while CcRef remains；
@@ -494,10 +473,10 @@ Runtime tests：
 - late reply and duplicate fail；
 - same-CcRef internal callbacks cleaned once；
 - unrelated callbacks preserved；
-- old three-tuple resume and unprotected inspection；
-- purged old three-tuple cleanup and exact `{legacy_outcome, Outcome, CleanState}` receive-loop return；
-- ordinary callback exception/nested `undef` is not misclassified as unavailable old code；
-- matcher metadata, privacy, exception atomicity, dedupe and per-CcRef continuation；
+- current four-tuple decoding and unprotected inspection；
+- ordinary action callback `badfun`/`undef` propagates without sf-cc reclassification；
+- exact final-callback availability handling does not catch nested `badfun`/`undef`；
+- matcher metadata, privacy, propagation atomicity, dedupe and per-CcRef results without exception payload；
 - map/list/dict callbacks backends；
 - `callback_exists` ignores standalone CcRef entries。
 

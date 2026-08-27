@@ -6,10 +6,10 @@
 
 系统 MUST 提供 `run_sf_cc/3`、`run_with_sf_cc/5` 和 `exec_sf_cc/5`，且 MUST NOT 改变现有 ordinary runner 合同。
 现有 `run_cc/2`、`run_with_cc/4`、`exec_cc/4`、`run/4` 与 `callback_to_cc/1` MUST 保持 ordinary callback
-语义。`sf_cc` runners MUST 可运行内部使用 legacy anonymous continuation 或 stable frame continuation
+语义。`sf_cc` runners MUST 可运行内部使用 ordinary anonymous continuation 或 stable frame continuation
 的 Promise；用户不得为两种 Promise 提供不同 final completion API。
 
-#### Scenario: Legacy promise uses stable final completion
+#### Scenario: Ordinary promise uses stable final completion
 
 - **给定**一个内部 bind continuation 是 anonymous fun 的 ordinary Promise
 - **并且**用户通过 `run_with_sf_cc/5` 提供 external final callback
@@ -21,7 +21,7 @@
 
 - **给定**一个内部 continuation 是 `sf_frame` data 的 Promise
 - **当**用户以相同 `run_with_sf_cc/5` API 运行它
-- **那么**最终 completion 使用与 legacy Promise 相同的 CcRef store 和 completion primitive
+- **那么**最终 completion 使用与 ordinary Promise 相同的 CcRef store 和 completion primitive
 - **并且**runner 不要求用户判断内部 continuation kind
 
 #### Scenario: Ordinary runner keeps its contract and adopts CcRef
@@ -32,13 +32,13 @@
 - **并且**该次运行创建 CcRef，挂起的 action callback 受同一 completion lifecycle 保护
 - **并且**旧 API 不增加 external-fun source constraint，也不宣称 anonymous final callback 本身可跨 purge 稳定调用
 
-### Requirement: Every post-upgrade runner invocation creates a CcRef
+### Requirement: Every runner invocation creates a CcRef
 
-升级后发起的每次 public runner invocation MUST 进入统一 CcRef lifecycle。该规则 MUST 覆盖
+每次 public runner invocation MUST 进入统一 CcRef lifecycle。该规则 MUST 覆盖
 `wait/1`、`wait_t/2`、`run_cc/2`、`run_with_cc/4`、`exec_cc/4`、`run/4` 及新的 sf-prefixed
-runners。ordinary runners MUST 通过 legacy final adapter 保留原 callback normalization 和正常返回合同；
-wait runners MUST 使用 library-owned completion。只有升级前已经挂起、以旧三元 callback tuple 保存的
-action 没有 CcRef。runtime MUST NOT 要求 ordinary API 的 callback 满足 sf-cc macro 的 external-fun
+runners。ordinary runners MUST 通过 ordinary completion descriptor 保留原 callback normalization 和正常
+返回合同；wait runners MUST 使用 library-owned completion。runtime MUST NOT 要求 ordinary API 的 callback
+满足 sf-cc macro 的 external-fun
 source constraint。
 
 #### Scenario: Wait preserves its observable result
@@ -48,11 +48,11 @@ source constraint。
 - **那么**调用方观察到与旧 wait 合同相同的正常结果
 - **并且**挂起 action 在内部携带该次 wait 创建的 CcRef
 
-#### Scenario: Legacy callback facade uses the common lifecycle
+#### Scenario: Ordinary callback facade uses the common lifecycle
 
 - **给定**ordinary runner 的 final callback 是 anonymous adapter fun
 - **当**该 runner 在升级后创建 pending action
-- **那么**CcRef entry 持有 legacy final descriptor，action callback 持有相同 CcRef
+- **那么**CcRef entry 持有 ordinary `sf_cc` completion descriptor，action callback 持有相同 CcRef
 - **并且**normal completion 仍按旧 adapter 的 normalization 执行
 
 ### Requirement: Macro accepts only explicit external callback source forms
@@ -111,8 +111,8 @@ runtime MUST 将 macro 传入的 external-fun term 原样保存在唯一 tagged 
 ```
 
 Context MUST 是用户在 runner 调用时预存的 opaque term。Context MUST NOT 被解释为 `sf_do` Env，
-不得自动捕获、迁移或暴露给 matcher。runtime MUST NOT 用 `fun_info` 判断 external/local source origin；
-只可用 fun arity 进行 mode dispatch。
+不得自动捕获、迁移或暴露给 matcher。runtime MUST NOT 用 `fun_info` 重新执行 external/local source-origin
+validation；它 MUST 用 fun arity 分派 mode，并 MAY 在 apply 前读取 external MFA 做 availability check。
 
 #### Scenario: Context survives suspension
 
@@ -163,17 +163,17 @@ return。invalid return MUST 在 CcRef 已消费后失败。
 - **那么**runtime 报 invalid sf-cc return
 - **并且**不得恢复已消费的 CcRef
 
-### Requirement: Every post-upgrade action callback carries one sf_cc_mref
+### Requirement: Every runner-owned action callback carries one sf_cc_mref
 
-`#callback{}` MUST 在尾部增加 `sf_cc_mref = undefined`，且升级后由任意 runner 创建的每个挂起 action
+`#callback{}` MUST 包含 `sf_cc_mref = undefined`，且由任意 public runner 创建的每个挂起 action
 callback MUST 保存当前 CcRef。
-`cc` MUST 继续保存原 legacy fun 或 stable continuation data，`acc_ref` MUST 保持现有语义。
+`cc` MUST 继续保存原 ordinary fun 或 stable continuation data，`acc_ref` MUST 保持现有语义。
 runtime MUST NOT 用 callback envelope 或 sidecar
 mapping 替代该字段。
 
-#### Scenario: Legacy continuation representation is unchanged
+#### Scenario: Ordinary continuation representation is unchanged
 
-- **给定**legacy Promise 挂起并保存 anonymous continuation `Fun`
+- **给定**ordinary Promise 挂起并保存 anonymous continuation `Fun`
 - **当**它在 sf-cc scope 下写入 callback
 - **那么**`#callback.cc` 仍精确为 `Fun`
 - **并且**新增字段 `sf_cc_mref` 等于顶层 CcRef
@@ -191,7 +191,7 @@ runtime MUST 独立传播 `AccRef` 与 optional CcRef，并在 AccRef 重绑定�
 `get_local_ref` MUST 继续返回 AccRef；sf-cc runtime MUST 可读取当前 CcRef。
 `local_ref/3` 或内部 parallel/aggregation 重绑定 AccRef 时 MUST 保持 CcRef。
 reply executor MUST 从 decoded callback 的 `acc_ref` 与 `sf_cc_mref` 重建两个 scope values，使 resumed
-legacy/frame continuation 创建的下一 ActionMRef 继承同一 CcRef。
+ordinary/frame continuation 创建的下一 ActionMRef 继承同一 CcRef。
 
 #### Scenario: Sequential suspension inherits CcRef
 
@@ -207,17 +207,38 @@ legacy/frame continuation 创建的下一 ActionMRef 继承同一 CcRef。
 - **那么**callback.acc_ref 为 RefB
 - **并且**callback.sf_cc_mref 仍为原 CcRef
 
+### Requirement: Async continuation context is explicit
+
+`async_t` internal action MUST 显式接收 `(K, SfContext)`，且 MUST NOT 通过进程字典传播 continuation 或
+runner。ordinary bind MUST 继续构造 anonymous continuation，只透传 `SfContext`；只有 `bind_frame/4`
+MAY 创建 `sf_next`。Promise MUST 仅在实际 `K` 与 `SfContext.runner` 相同时保存 structured continuation，
+否则保存实际 `K`。
+
+#### Scenario: Ordinary bind remains anonymous
+
+- **给定**stable execution context 内存在 ordinary bind
+- **当**该 bind 的 Action 挂起
+- **那么**callback.cc 保存 ordinary anonymous continuation
+- **并且**ordinary bind 不创建 frame
+
+#### Scenario: Frame bridges an ordinary downstream
+
+- **给定**`bind_frame` 的 downstream 是 ordinary anonymous continuation
+- **当**frame Action 挂起
+- **那么**runtime 为 anonymous downstream 注册独立 CcRef descriptor
+- **并且**callback.cc 保存以该 CcRef 终止的 `sf_next` chain，而不把 fun 嵌入 chain
+
 ### Requirement: CcRef entry is the sole final callback owner
 
-每个 runner MUST 创建唯一 CcRef entry：
+每个 runner core MUST 创建唯一顶层 CcRef entry；ordinary/frame representation bridge MAY 创建额外内部
+CcRef entry 承接 anonymous downstream：
 
 ```erlang
 CcRef => #{kind := sf_cc_ref, protocol := 1, cc := FinalCc}
 ```
 
-`FinalCc` MUST 是显式 sf-cc descriptor、保持旧 callback normalization 的 legacy final descriptor，
-或 wait 使用的 library-owned completion descriptor。只有显式 sf-prefixed API 的 descriptor 受
-external-fun macro contract 约束。
+`FinalCc` MUST 使用统一 `sf_cc` descriptor encoding。它可以保存显式 sf-prefixed callback、ordinary
+library adapter 或 wait completion；只有显式 sf-prefixed API 的 callback 受 external-fun macro contract 约束。
 CcRef entry MUST 与 action callbacks 共用现有 callbacks dictionary。entry presence 表示 pending，absence
 表示 consumed；不得保留 done tombstone。`callback_exists/1` MUST 只统计 action callback tuple，不能仅因
 存在 CcRef entry 返回 true。reply router MUST 把命中 `sf_cc_ref`、accumulator 或其他非-callback value
@@ -263,8 +284,8 @@ callback `/3` MUST 接收所得 CleanState。CcRef 已缺失时 MUST 返回 unha
 
 runtime MUST 在调用用户 final callback 前消费 CcRef，且任何调用后失败 MUST NOT 恢复或重试该 CcRef。
 final callback crash、invalid return、外部副作用、重复 fail 或迟到 reply MUST NOT 恢复 CcRef 或自动 retry。
-ordinary single completion path MAY 传播 callback
-exception；batch fail path MUST 捕获并报告 per-CcRef exception，同时继续处理已 preflight 的其他 CcRefs。
+callback/effect 内部 exception MUST 原样传播。batch fail path MUST NOT 捕获任意业务异常；它只可将
+预期的 unavailable final callback、invalid return 或 invalid descriptor 汇总为 `cc_failed`。
 
 #### Scenario: Callback replies then crashes
 
@@ -293,20 +314,20 @@ continuation MUST 按现有 message semantics 执行。reply、timeout 和 DOWN 
 - **那么**ActionMRef 与 CcRef 都保持 pending
 - **并且**后续 reply 仍可正常恢复并最终调用 sf_cc 一次
 
-### Requirement: Structural failure bypasses unusable continuation
+### Requirement: Stable-frame structural failure bypasses unusable continuation
 
-runtime MUST 在 continuation 发生结构性不可用时绕过该 continuation，并通过 `#callback.sf_cc_mref` 执行最终 completion。
-结构性不可用包括 legacy fun 已不可调用、frame protocol/shape 损坏、manifest/MFA validation failure
-或 migration 明确 terminal failure。
+runtime MUST 在 stable-frame continuation 发生结构性不可用时绕过该 continuation，并通过
+`#callback.sf_cc_mref` 执行最终 completion。结构性不可用包括 frame protocol/shape 损坏、manifest/MFA
+validation failure 或 migration 明确 terminal failure。
 runtime structural Outcome MUST 是 `{error, {sf_runtime, Reason}}`。ordinary business error、timeout 和 DOWN
 不得仅凭 Outcome shape 自动进入该路径。
 
-#### Scenario: Purged legacy fun fails through CcRef
+#### Scenario: Ordinary anonymous continuation failure propagates
 
-- **给定**protected legacy callback 的 anonymous continuation 因 purge 不可调用
+- **给定**ordinary action callback 的 anonymous continuation 因 purge 不可调用
 - **当**Action reply 到达
-- **那么**runtime 跳过该 fun
-- **并且**以 `{error, {sf_runtime, Reason}}` 消费 CcRef
+- **那么**runtime 直接调用该 fun，并让 `badfun` 原样传播
+- **并且**sf-cc 不生成 terminal Outcome、不调用 CcRef completion
 
 #### Scenario: Corrupt frame does not need terminal traversal
 
@@ -328,57 +349,40 @@ terminal mref 与保存该 continuation 的 callback.sf_cc_mref MUST
 - **那么**chain 尾部只包含 CcRef terminal
 - **并且**完整 external callback/Context 只存在于 CcRef entry
 
-### Requirement: Old callback tuples remain readable
+### Requirement: Callback readers accept only the current encoding
 
-runtime MUST 显式接受升级前 `{callback, Cc, AccRef}` 与新 `{callback, Cc, AccRef, SfCcMRef}`。
-三元 tuple MUST decode 为 `sf_cc_mref = undefined`；runtime MUST NOT 从 Cc fun/map 推断 CcRef。
-只要旧 continuation 仍可调用，它 MUST 继续旧 resume/cleanup behavior。所有 callback readers、router、
-inspection 和 `callback_exists/1` MUST 使用一致 decode semantics。
+runtime MUST 只把当前 `{callback, Cc, AccRef, SfCcMRef}` record encoding 解码为 action callback。
+`{callback, Cc, AccRef}` 等其他 tuple shape MUST NOT 获得兼容执行、CcRef 推断或 fallback Outcome。
+所有 callback readers、router、inspection 和 `callback_exists/1` MUST 使用一致 decode semantics。
 
-#### Scenario: Pending old callback resumes after upgrade
+#### Scenario: Old tuple is not decoded
 
-- **给定**State 在升级前保存三元 callback tuple
-- **当**新 runtime 收到其 reply
-- **那么**callback 按旧路径恢复
-- **并且**不会因新 record arity pattern mismatch crash
+- **给定**callbacks store 中存在 `{callback, Cc, AccRef}`
+- **当**router 或 inspection 读取该 value
+- **那么**它不被分类为 action callback
+- **并且**runtime 不调用 Cc、不推断 CcRef
 
-#### Scenario: Old callback has no fabricated fallback
+### Requirement: Final callback availability handling is exact
 
-- **给定**三元 legacy callback 无 CcRef
-- **当**inspection 读取它
-- **那么**summary 表示 `protected = false` 和 `sf_cc_mref = undefined`
-- **并且**runtime 不宣称可调用 stable final callback
+external final callback 在 apply 前 MUST 使用 `code:ensure_loaded/1` 与
+`erlang:function_exported/3` 检查可用性。`nofile` 或目标 MFA 不再导出 MUST 被分类为
+`{sf_runtime, unavailable_continuation}`；其他 module load error MUST 原样报错。实际 apply MAY 只捕获
+`error:{badfun, Callback}`，其中 term MUST 与正在调用的 Callback 完全相同。callback 内部或 downstream
+产生的 `badfun`、`undef` 和其他 exception MUST 原样传播。
 
-### Requirement: Unavailable old continuation is surfaced as a legacy outcome
+#### Scenario: Nested callback error is not reclassified
 
-当升级前旧三元 tuple 的 anonymous continuation 因 old-code purge 而确认不可调用时，runtime MUST 清理
-仍可识别且属于该 request 的 lifecycle resources，MUST NOT crash、retry、伪造 CcRef 或调用 final CC。
-`async_m:handle_info/3` MUST 返回 `{legacy_outcome, Outcome, CleanState}`，其中 `Outcome` MUST 是本次
-reply、timeout、DOWN 或 message 原本要交给旧 continuation 的 action input；不得合成 orphan 或 final
-failure Outcome。调用方负责决定如何处理该 tagged return。代码失效判定 MUST 足够窄，不得吞掉已经成功
-进入 callback 后发生的普通 exception 或 nested `undef`。
-
-#### Scenario: Purged old reply is returned to the receive loop
-
-- **给定**升级前旧三元 callback 的 anonymous continuation 已因 code purge 不可调用
-- **当**对应 reply 进入 `async_m:handle_info/3`
-- **那么**runtime 清理该 request 可识别的 lifecycle resources
-- **并且**返回 `{legacy_outcome, ReplyOutcome, CleanState}`
-- **并且**不调用 final CC
-
-#### Scenario: Old callback business exception is not reclassified
-
-- **给定**旧 continuation 本身仍可进入，但其执行路径抛出普通 exception 或 nested `undef`
-- **当**runtime 处理该异常
-- **那么**runtime 按原异常合同传播或处理
-- **并且**不得把它误报为 `{legacy_outcome, _, _}`
+- **给定**final callback 已成功进入，但内部调用另一个失效 fun 或缺失 MFA
+- **当**内部调用抛出 `badfun` 或 `undef`
+- **那么**异常原样传播
+- **并且**runtime 不把它改写为 unavailable final callback
 
 ### Requirement: Matcher inspection exposes safe callback metadata
 
 `inspect_sf_callbacks/3` MUST 对每个 action callback 同步调用一次 `Matcher/1`，并且只向 matcher 暴露 sanitized summary。
 summary MUST 包含 request MRef、optional sf_cc_mref、protected、continuation kind 和 current-to-downstream frame summaries。
 每个 frame summary MUST 公开 Module、Vsn、protocol、BlockPath、StepName 和 AsyncId。Vsn MUST 是 frame
-producer 保存的 module `-vsn` literal term或 `undefined`，不得限制为 atom。legacy fun 的 frames MUST
+producer 保存的 module `-vsn` literal term或 `undefined`，不得限制为 atom。ordinary fun 的 frames MUST
 为空；不得从 closure 推断 source metadata。summary MUST NOT 包含 Env、State、timer、monitor、accumulator、
 continuation value、final callback 或 Context。
 
@@ -398,7 +402,7 @@ continuation value、final callback 或 Context。
 ### Requirement: Matcher failures are preflight-atomic
 
 inspection/failure MUST 在 mutation 前按 RequestMRef term order 完成 matcher preflight，并在 matcher 失败时保持 State 不变。
-Matcher exception 或非-boolean return MUST 返回 matcher error。
+Matcher exception MUST 原样传播；non-boolean return MUST 抛出 `{invalid_matcher_return, Value}`。
 `fail_sf_callbacks/4` MUST 在任意 State mutation 前运行完所有 matcher；
 任一 matcher 失败时 State bit-for-bit 不变，且不调用 final callback。
 
@@ -406,15 +410,17 @@ Matcher exception 或非-boolean return MUST 返回 matcher error。
 
 - **给定**Matcher 对第一个 callback 返回 true，对第二个 callback crash
 - **当**调用 `fail_sf_callbacks/4`
-- **那么**API 返回 matcher error 和原 State
+- **那么**matcher exception 原样传播且 State 保持原值
 - **并且**第一个 callback/CcRef 仍存在且 final callback 未调用
 
 ### Requirement: Active failure deduplicates by CcRef
 
 `fail_sf_callbacks/4` MUST 以 `{error, {sf_aborted, Reason}}` 完成选中的受保护 callbacks，并按 CcRef 去重。
 preflight 后 MUST 以 CcRef term order commit；一个 CcRef 只调用一次。selected unprotected callback MUST 返回
-`unprotected` 且不删除。per-CcRef result status MUST 是 `completed | cc_failed | already_consumed |
-unprotected`。一个 CC failure MUST 保持该 CcRef consumed，并继续其他已 preflight CcRefs。
+`unprotected` 且不删除。protected per-CcRef result status MUST 是 `completed | cc_failed | unhandled`。
+`cc_failed` MUST 不携带 Class、Reason 或 Stacktrace。invalid descriptor 在消费前产生该 status；预期的
+unavailable callback 或 invalid return 在消费后产生该 status。callback/effect 内部 exception MUST 原样
+传播并停止 commit；已经消费的 CcRef 不回滚。
 
 #### Scenario: Two selected callbacks share CcRef
 
@@ -423,12 +429,12 @@ unprotected`。一个 CC failure MUST 保持该 CcRef consumed，并继续其他
 - **那么**runtime 调用 final callback 一次
 - **并且**结果按一个 CcRef 报告
 
-#### Scenario: Selected old tuple is unprotected
+#### Scenario: Selected current callback without CcRef is unprotected
 
-- **给定**Matcher 选中一个升级前旧 callback tuple
+- **给定**Matcher 选中一个当前四元 callback，且 `sf_cc_mref = undefined`
 - **当**主动失败
 - **那么**result status 是 unprotected
-- **并且**old callback 保持不变
+- **并且**callback 保持不变
 
 ### Requirement: Module version metadata uses literal module vsn terms
 

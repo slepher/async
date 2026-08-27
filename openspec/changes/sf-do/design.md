@@ -24,10 +24,10 @@ hot-code upgrade、purge 与 local fun 延迟失效带来的设计动机见 [Why
 
 ## Non-Goals
 
-- 不从 legacy fun 反向提取 frame。
+- 不从 ordinary fun 反向提取 frame。
 - 不保存或解释整个 block 的 instruction list。
 - 不自动重放 pending boundary 之前的 action 来重建缺失变量。
-- 不让 ordinary `do`、ordinary bind 或 legacy callback 自动获得 migration 保证。
+- 不让 ordinary `do`、ordinary bind 或 ordinary callback 自动获得 migration 保证。
 - 不在 `sf_do` 中猜测 future Env schema；变量改名或同名变量含义变化由 `sf-migrate` Env migrator
   在恢复前显式转换 Env。
 - 不递归检查或拒绝 Action、Env、capture value、frame context 或用户 final Context 中的任意 runtime
@@ -231,6 +231,10 @@ reply
 Downstream 可以是 outer generated/composite continuation，最外层终止于 `sf_cc_ref`。callback 必须
 保存上述 `sf_next` chain，不得仅保存 NextFrame 后丢失外层 continuation，也不得退回 fun CC。
 
+`async_t` 通过显式 `(K, SfContext)` 传递 structured continuation context，不得使用进程字典。ordinary
+bind 继续创建 anonymous `K`，只有 `bind_frame` 创建 `sf_next`。当 `bind_frame` 收到 ordinary anonymous
+downstream 时，runtime MUST 注册独立 CcRef descriptor 保存该 fun，并让 frame chain 终止于该 CcRef。
+
 用户 final callback 不属于 do block transform：
 
 - 不进入 AsyncId；
@@ -240,36 +244,18 @@ Downstream 可以是 outer generated/composite continuation，最外层终止于
 - 完整 callback descriptor 只存在于 sf-cc CcRef entry；
 - 用户要迁移 completion 逻辑时，应把逻辑放进 `sf_do`，最后接 sf-cc external callback。
 
-### Universal post-upgrade CcRef adoption
+### Universal CcRef adoption
 
-CcRef 是升级后 runner engine 的统一 lifecycle primitive，不是只有显式 sf-cc API 才创建的 opt-in。
-创建时间决定 protection：
-
-```text
-post-upgrade wait/ordinary/sf-cc runner invocation -> creates CcRef
-pre-upgrade already-pending three-tuple callback  -> sf_cc_mref = undefined
-```
+CcRef 是 runner engine 的统一 lifecycle primitive，不是只有显式 sf-cc API 才创建的 opt-in。
 
 `wait/1` 和 `wait_t/2` MUST 保持 public API、阻塞行为和正常 Outcome，由库内固定 exported external
 completion 把 Outcome 返回既有 wait driver。旧 `run_cc`/`run_with_cc`/`exec_cc`/`run` 和 ordinary
-anonymous Callback forms MUST 保持 source、argument 和 return normalization，通过 legacy final descriptor
-接入同一 CcRef take/cleanup infrastructure。legacy final fun 自身若已失效，不获得 external-fun 的强
+anonymous Callback forms MUST 保持 source、argument 和 return normalization，通过 ordinary `sf_cc`
+completion descriptor 接入同一 CcRef take/cleanup infrastructure。ordinary final fun 自身不获得 external-fun 的强
 upgrade guarantee；需要该保证的用户仍使用显式 sf-cc runner。
 
-升级前已挂起的旧三元 tuple 既没有 CcRef，也没有可重建的 final caller。reader 只把它 decode 为
-`sf_cc_mref = undefined`。当旧 anonymous continuation 仍可调用时继续旧路径；若 runtime 能确认它因
-旧代码 purge 而不可调用，则清理可定位的 request lifecycle，不构造 CcRef、不调用 final CC、不 retry，
-并让 `async_m:handle_info` 返回：
-
-```erlang
-{legacy_outcome, Outcome, CleanState}.
-```
-
-Outcome 是原本要交给旧 continuation 的 reply/timeout/DOWN/message action Outcome，不是新构造的
-Promise final error。调用方拥有该 Outcome policy；它可以继续 loop、停止进程、记录或转换。
-CleanState 必须包含 callback
-删除结果，否则调用方继续使用旧 State 会反复触发同一失效 continuation。普通业务 exception 不得被
-错误归类成 unavailable-code legacy outcome。
+callback reader 只接受当前四元 encoding。ordinary action continuation 由 executor 直接调用；`badfun`、
+`undef` 和 callback-internal exception 原样传播，不由 sf-do/sf-cc 转换为 terminal Outcome。
 
 ## Nested sf_do
 
@@ -642,8 +628,7 @@ manifest 不保存 full source AST、runtime Env、user sf-cc descriptor、migra
 
 ## Callback and Runtime Ownership
 
-所有升级后新建的 protected action callback 与升级前 legacy callback 共用 callbacks map。protected
-entry 保存：
+所有 protected action callback 与 CcRef entries 共用 callbacks map。protected entry 保存：
 
 - `cc` 中一个以 `sf_cc_ref` 结尾的 `SfContinuation` data chain；
 - 独立 `sf_cc_mref` 中与 terminal 相同的 CcRef；
@@ -655,10 +640,6 @@ request correlation key 和 monitor 仍由 existing request/reference router 拥
 migration 不得重发 request、重建 monitor 或重新开始 timeout。final reply/timeout/DOWN 的
 existing routing path 负责决定 action lifecycle；final CcRef 的 take、关联 callbacks/timer/monitor/
 accumulator 清理和用户 callback invocation 由 sf-cc 完成。
-
-旧三元 tuple 没有 final CcRef。其 continuation unavailable cleanup 只能清理 runtime 仍能定位且确认归属
-该 request 的资源，并通过 tagged `legacy_outcome` 把 Outcome 与 CleanState 交还 `handle_info` caller；
-它不是 Promise completion，也不得进入 sf-cc exactly-once callback invocation。
 
 一个 Promise 的 nested/parallel implementation 可以物化多个携带同一 CcRef 的 internal callbacks；
 每个 entry 仍由自己的 RequestMRef 路由。共享 CcRef 只表示它们最终收敛到该 Promise 的一个 Outcome，

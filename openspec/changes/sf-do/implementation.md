@@ -3,12 +3,11 @@
 ## 1. Compatibility Baseline
 
 - ordinary `do` 继续由 ErLando transform 处理；
-- ordinary callback semantics、callbacks field 和 router behavior 保持兼容；`sf-cc` MAY 在 private
-  `#callback{}` 尾部追加 `sf_cc_mref`，新 reader MUST 接受旧三元和新四元 callback tuple；
-- protection 以 callback 创建时间区分：升级后 wait/ordinary/sf-cc runners 新建的 action callback
-  MUST 填充 CcRef；只有升级前已经 pending 的旧三元 tuple decode 为 `sf_cc_mref = undefined`；
+- ordinary callback semantics、callbacks field 和 router behavior 保持兼容；`sf-cc` 在 shared internal
+  `#callback{}` 中定义 `sf_cc_mref`，reader 只接受当前四元 callback encoding；
+- wait/ordinary/sf-cc runners 新建的 action callback MUST 填充当前 CcRef；
 - `async_r_t:get_state/put_state` 继续隐藏 callbacks store；
-- stable path additive，不把 legacy closure 转成 frame。
+- stable path additive，不把 ordinary closure 转成 frame。
 
 ## 2. Source and Result Type
 
@@ -237,10 +236,10 @@ child identity。
 
 ## 9. Runtime Execution
 
-所有升级后 public runners MUST 委托同一个 CcRef execution core。`sf-cc` 定义
+所有 public runners MUST 委托同一个 CcRef execution core。`sf-cc` 定义
 `run_sf_cc/3`、`run_with_sf_cc/5` 和 `exec_sf_cc/5` 的 explicit external-fun contract；现有
 `wait/1`、`wait_t/2`、`run_cc/2`、`run_with_cc/4`、`exec_cc/4` 和 `run/4` 保持 public contract，
-但作为 compatibility facades 创建 CcRef 并使用 library wait completion或 legacy final adapter。
+但作为 compatibility facades 创建 CcRef 并使用 library wait completion或 ordinary completion descriptor。
 `sf-do` MUST NOT 另行冻结接受完整 SfCc descriptor 的 public runner；现有 `run_sf_frame/4` 若在过渡
 实现中保留，只能是待移除/适配的 internal compatibility path。
 
@@ -264,6 +263,10 @@ terminal sf_cc_ref -> complete_sf_cc(CcRef, Outcome)
 callback entry MUST 保存一个 `sf_continuation()` chain；每个 `sf_next` 保存 generated frame 和
 downstream，chain 以 `sf_cc_ref` 终止。不得保存完整 sf_cc 的第二 owner，也不得由 transform 生成
 local bind continuation fun。该约束不授权 `sf_do` 检查 Env/Action 中任意 runtime value。
+
+`async_t` internal action MUST 显式接收 `(K, SfContext)`，且不得通过进程字典传播 context。ordinary bind
+继续创建 anonymous `K`，只有 `bind_frame` 创建 `sf_next`。Promise 仅在 `K` 与 stable runner 相同时保存
+structured continuation；frame 遇到 ordinary downstream 时，通过独立 CcRef descriptor 保存该 fun。
 
 reply executor MUST 从 decoded callback 的 `acc_ref` 和 `sf_cc_mref` 重建独立 scopes。resumed frame
 产生新的 action callback 时 MUST 继承同一 CcRef，即使 parallel/local accumulator 改变了 AccRef。
@@ -289,31 +292,12 @@ cleanup ordering、CcRef take、关联 action callbacks/timer/monitor/accumulato
 CleanState callback invocation 完全由 sf-cc contract 定义。sf-do 不得在调用 completion 前自行调用
 用户 final callback，也不得在 completion failure 后恢复 CcRef。
 
-### Pre-upgrade unprotected callback
+### Ordinary callback boundary
 
-shared callback decoder MUST 把 `{callback, Cc, AccRef}` 读为 `sf_cc_mref = undefined`。router MUST
-尝试保持旧 continuation behavior；但当 invocation classifier 能确认 anonymous fun 因所属旧代码已
-purge 而不可调用时，MUST：
-
-1. 删除该 RequestMRef callback；
-2. 清理仍可定位且确认归属该 request 的 monitor/timer/accumulator lifecycle；
-3. 不构造 CcRef、不调用 final CC、不 retry；
-4. 返回 `{legacy_outcome, Outcome, CleanState}`，其中 Outcome 是原本将传给旧 continuation 的
-   reply/timeout/DOWN/message action Outcome。
-
-`async_m:handle_info/3` return contract 因此是：
-
-```erlang
-unhandled
-| State
-| {legacy_outcome, Outcome, CleanState}.
-```
-
-该 tagged return 不是 Promise final completion，只把无法继续解释的原 action Outcome 交给当前 receive-loop
-caller。classifier MUST NOT 把已经成功进入 legacy callback 后抛出的普通 user exception、business
-failure 或任意 nested `undef` 一律吞掉；unavailable-code detection MUST 结合 fun identity/stack target，
-并在 supported OTP versions 上验证。message path 一旦确认 continuation unavailable，也 MUST 删除它，
-防止后续 message/reply 重复触发。
+shared callback decoder MUST 只接受当前四元 record encoding。ordinary action continuation MUST 由 ordinary
+executor 直接调用；`badfun`、`undef` 和 callback-internal exception MUST 原样传播。sf-do MUST NOT 对它们
+执行额外 unavailable-code cleanup、classification、CcRef completion 或 tagged return wrapping；普通 reply
+lifecycle 在调用 continuation 前的既有处理保持不变。
 
 ## 11. Identity and Manifest
 
@@ -413,7 +397,7 @@ duplicate StepName/BlockPath diagnostic 产生后，MUST 跳过该 invalid plan 
   transform-generated anonymous bind closure or full sf_cc descriptor；
 - suspended stable callback keeps continuation in `cc` and the same terminal CcRef in `sf_cc_mref`；
 - structural failure reaches sf-cc completion through the callback field even when the frame chain is corrupt；
-- stable completion path uses sf-cc runners/primitive and does not call `callback_to_cc`/legacy `run_cc`；
+- stable completion path uses sf-cc runners/primitive and does not route frame completion through ordinary `run_cc`；
 - current-liveness capture excludes unused bindings and generator pattern variables，and includes the
   lexical Monad value needed for generated dispatch；
 - pending Action、continuation、source index 或 binder rename changes preserve named AsyncId/MFA；
@@ -435,7 +419,7 @@ duplicate StepName/BlockPath diagnostic 产生后，MUST 跳过该 invalid plan 
 - upgrade resolution can use the actual stored frame without historical source block metadata；
 - optional Env/Input conversion and downgrade policy are integration-tested with sf-migrate rather than
   redefined by sf-do；
-- wait/ordinary/sf-cc runners created after upgrade all allocate CcRef without changing ordinary normal results；
-- old three-tuple callback remains readable as unprotected；unavailable old fun returns tagged legacy outcome
-  plus CleanState without crashing, retrying or fabricating final completion；
-- ordinary do and legacy callback suites remain unchanged。
+- wait/ordinary/sf-cc runners all allocate CcRef without changing ordinary normal results；
+- current callback encoding is decoded consistently and old three-tuple values are not treated as action callbacks；
+- ordinary action continuation `badfun`/`undef` propagates without sf-do/sf-cc reclassification；
+- ordinary do and ordinary callback suites remain unchanged。

@@ -106,6 +106,19 @@ ignore-input frame 丢弃。这与 `classic_do` 用 `>>=` 和 `_` continuation l
 - **并且**default `then_frame` 以相同参数调用 `monad_frame:bind_frame`
 - **并且**frame 接收但忽略 Reply，再直接返回 remainder Monad
 
+### Requirement: Frame context propagation is explicit
+
+`async_t` internal action MUST 显式接收 `(K, SfContext)`，并且 MUST NOT 使用进程字典传播 structured
+continuation 或 runner。ordinary bind MUST 继续创建 anonymous continuation；只有 `bind_frame` MAY 创建
+`sf_next`。Promise MUST 仅在实际 `K` 等于 stable runner 时保存 structured continuation。
+
+#### Scenario: Frame has an ordinary downstream
+
+- **给定**`bind_frame` 外层是 ordinary bind
+- **当**frame Action 挂起
+- **那么**runtime 以独立 CcRef descriptor 保存 ordinary anonymous downstream
+- **并且**frame callback 仍保存只由 `sf_next` 和 `sf_cc_ref` 构成的数据 chain
+
 ### Requirement: Stable frame data has one encoding
 
 `NextMFA` MUST 是 `{Module, Function, 2}`，且 tagged `sf_frame` MUST 保存 owner Module 和 module Vsn。
@@ -529,7 +542,7 @@ diagnostic 保留；它不是普通 Erlang source 可输入形式。function 外
 protected/unprotected action callbacks 和 sf-cc CcRef entries MUST 共用现有 callbacks dictionary。
 frame path MUST 保持 request key、monitor、timer、accumulator reference 和 issued request；
 `#callback.cc` MUST 保存 frame continuation；protected callback 的 `#callback.sf_cc_mref` MUST 保存当前
-CcRef，unprotected old tuple 的逻辑值 MUST 是 `undefined`。sf-do MUST
+CcRef，current unprotected callback 的 `sf_cc_mref` MUST 是 `undefined`。sf-do MUST
 NOT 把 CcRef entry 作为 reply target或第二个 callbacks store。final completion cleanup ordering 由
 sf-cc 定义。
 
@@ -539,21 +552,20 @@ sf-cc 定义。
 - **当**frame metadata 更新
 - **那么**request 不重发、monitor 不重建、timeout 不重启
 
-#### Scenario: Old callback tuple is readable
+#### Scenario: Old callback tuple is not decoded
 
-- **给定**升级前 State 中存在 `{callback, Cc, AccRef}`
-- **当**新 runtime 读取该 entry
-- **那么**它按 `sf_cc_mref = undefined` 恢复 ordinary behavior
-- **并且**sf-do 不从 legacy Cc 推断或伪造 final CcRef
+- **给定**callbacks store 中存在 `{callback, Cc, AccRef}`
+- **当**runtime 读取该 entry
+- **那么**它不被分类为 action callback
+- **并且**sf-do 不调用 Cc、不推断 CcRef
 
-#### Scenario: Purged old anonymous continuation is surfaced to handle_info
+#### Scenario: Ordinary anonymous continuation error propagates
 
-- **给定**升级前旧三元 callback 的 anonymous continuation 因旧代码 purge 已不可调用
-- **当**`async_m:handle_info/3` 路由该 request 的 Input Outcome
-- **那么**runtime 清理仍可定位且归属该 request 的 lifecycle，并返回
-  `{legacy_outcome, Outcome, CleanState}`
-- **并且**Outcome 是原本要交给旧 continuation 的 action Outcome，不是伪造的 final completion
-- **并且**runtime 不 crash、不 retry、不构造 CcRef且不调用 final CC
+- **给定**当前 callback 中的 ordinary anonymous continuation 因旧代码 purge 已不可调用
+- **当**reply executor 调用该 continuation
+- **那么**`badfun` 原样传播
+- **并且**除普通 reply lifecycle 已做的处理外，sf-do/sf-cc 不执行 unavailable-code cleanup、分类或
+  terminal Outcome 构造
 
 #### Scenario: Internal suspension shares one final address
 
@@ -562,13 +574,13 @@ sf-cc 定义。
 - **那么**它们继承同一 CcRef，但各自保持独立 RequestMRef 和 action lifecycle
 - **并且**sf-do 不把共享 CcRef 解释为多个业务 Promise 的 operation group 或 per-entry completion
 
-### Requirement: All post-upgrade runners create protected callbacks
+### Requirement: All runners create protected callbacks
 
-升级后 wait、ordinary callback 和 sf-cc runners 新启动的 Promise MUST 统一创建 CcRef，且 MUST 保持旧 public API 的正常可观察合同。
-`wait/1`、`wait_t/2` MUST 由 library-owned external completion 无感接入。旧 anonymous callback API
-MUST 继续接受原 source forms、参数和 return normalization，并通过 legacy adapter 接入同一 CcRef
-lifecycle；只有 explicit external callback 获得 final callback 自身的跨升级保证。已经 pending 的旧
-三元 tuple MUST NOT 被追溯补造 CcRef。
+wait、ordinary callback 和 sf-cc runners 新启动的 Promise MUST 统一创建 CcRef，且 MUST 保持 ordinary
+public API 的正常可观察合同。`wait/1`、`wait_t/2` MUST 由 library-owned completion 接入。ordinary
+anonymous callback API MUST 继续接受原 source forms、参数和 return normalization，并通过 ordinary
+`sf_cc` descriptor 接入同一 CcRef lifecycle；只有 explicit external callback 获得 final callback 自身的
+跨升级保证。
 
 #### Scenario: Existing wait call becomes protected
 
@@ -587,12 +599,12 @@ lifecycle；只有 explicit external callback 获得 final callback 自身的跨
 ### Requirement: Additive compatibility
 
 未使用 `sf_do` 的现有应用 MUST 保持 source、ordinary callback 和 runtime 可观察行为兼容。
-private callback record MAY 由 sf-cc 在尾部最小扩展，但 new reader MUST 兼容旧 tuple；已经 pending 的
-old callback 不自动获得 stable fallback。
+private callback record MUST 使用 sf-cc 定义的当前四元 encoding；本 capability 不提供旧三元 tuple
+compatibility。ordinary callback 不自动获得 stable-frame migration guarantee。
 
-#### Scenario: Legacy callback
+#### Scenario: Ordinary callback
 
 - **给定**ordinary async action 使用 fun CC
 - **当**升级包含 sf-do capability 的 async library
-- **那么**legacy path 仍保存和调用原 CC
-- **并且**升级后新建 callback 使用 CcRef lifecycle，但不把 anonymous CC 宣称为可迁移 external callback
+- **那么**ordinary path 仍保存和调用原 CC
+- **并且**callback 使用 CcRef lifecycle，但不把 anonymous CC 宣称为可迁移 external callback
