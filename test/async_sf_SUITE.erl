@@ -72,18 +72,33 @@ source_api_diagnostics(_Config) ->
         "sf_do(block, [step], [async_m || async_m:pure_return(Name)])",
         [{error, {5, 12}, {invalid_sf_do, {arity, 3}}}]),
     assert_diagnostics(
+        "sf_do(Name, [async_m || async_m:pure_return(Name)])",
+        [{error, {5, 18}, {invalid_sf_do, {non_literal, block_name}}}]),
+    assert_diagnostics(
+        "sf_do(Name)",
+        [{error, {5, 18}, {invalid_sf_do, expected_list_comprehension}}]),
+    assert_diagnostics(
+        "sf_do([async_m:new() || async_m:pure_return(Name)])",
+        [{error, {5, 19}, {invalid_sf_do, invalid_monad_head}}]),
+    assert_diagnostics(
         "sf_do(duplicate, [async_m || one, A <- async_m:pure_return(Name), "
         "one, B <- async_m:pure_return(A), async_m:pure_return(B)])",
-        [{error, {5, 78}, {invalid_sf_do, {duplicate_step_name, one}}},
-         {error, {5, 85}, generated_function_conflict}]),
+        [{error, {5, 78}, {invalid_sf_do, {duplicate_step_name, one}}}]),
+    assert_diagnostics(
+        "begin sf_do(flow, [async_m || one, A <- async_m:pure_return(Name), "
+        "async_m:pure_return(A)]), sf_do(flow, [async_m || one, "
+        "B <- async_m:pure_return(Name), async_m:pure_return(B)]) end",
+        [{error, {5, 105}, {duplicate_block_path, [flow]}}]),
     assert_diagnostics(
         "sf_do(consecutive, [async_m || one, two, A <- async_m:pure_return(Name), "
         "async_m:pure_return(A)])",
         [{error, {5, 48}, {invalid_sf_do, consecutive_step_marker}}]),
     assert_diagnostics(
         "sf_do(dangling, [async_m || A <- async_m:pure_return(Name), tail])",
-        [{error, {5, 42}, {invalid_sf_do, invalid_last_qualifier}},
-         {error, {5, 72}, {invalid_sf_do, dangling_step_marker}}]),
+        [{error, {5, 72}, {invalid_sf_do, dangling_step_marker}}]),
+    assert_diagnostics(
+        "sf_do([async_m || A <- async_m:pure_return(Name)])",
+        [{error, {5, 32}, {invalid_sf_do, invalid_last_qualifier}}]),
     assert_diagnostics(
         "sf_do(pure_let, [async_m || one, A = Name, async_m:pure_return(A)])",
         [{error, {5, 40}, {invalid_sf_do, step_marker_on_pure_let}}]),
@@ -113,7 +128,8 @@ source_api_diagnostics(_Config) ->
     ?assertEqual(false, code:is_loaded(MultiModule)),
     ?assertEqual(non_existing, code:which(MultiModule)),
     ?assertEqual(false, filelib:is_file(filename:join(temp_dir(),
-        atom_to_list(MultiModule) ++ ".beam"))).
+        atom_to_list(MultiModule) ++ ".beam"))),
+    assert_generated_function_conflict().
 
 %% Objective 2: bind/then lowering and final-action treatment.
 same_monad_lowering(_Config) ->
@@ -531,13 +547,45 @@ contains_any_tag(Term, Tags) ->
 assert_diagnostics(Expression, Expected) ->
     Module = fresh_module("sf_do_bad_"),
     {error, Errors, Warnings} = compile_expression(Module, Expression),
+    assert_transform_diagnostics_formatted(Errors, Warnings),
     ?assertEqual(Expected, normalized_diagnostics(Errors, Warnings)).
 
 assert_warning_compile(Expression, Expected) ->
     Module = fresh_module("sf_do_warning_"),
     {ok, Module, Binary, Warnings} = compile_expression(Module, Expression),
+    assert_transform_diagnostics_formatted([], Warnings),
     ?assertEqual(Expected, normalized_diagnostics([], Warnings)),
     {Module, Binary}.
+
+assert_generated_function_conflict() ->
+    Module = fresh_module("sf_do_function_conflict_"),
+    Function = named_frame_function([flow], step),
+    Source = io_lib:format(
+        "-module(~p).~n-define(ASYNC_DO,true).~n"
+        "-include_lib(\"async/include/async.hrl\").~n"
+        "-export([f/1]).~n"
+        "f(Name) -> sf_do(flow, [async_m || step, "
+        "A <- async_m:pure_return(Name), async_m:pure_return(A)]).~n"
+        "~p(A, B) -> {A, B}.~n",
+        [Module, Function]
+    ),
+    {error, Errors, Warnings} = compile_text(Module, Source),
+    assert_transform_diagnostics_formatted(Errors, Warnings),
+    [{_File, [{{5, 44}, astranaut_lib,
+        {async_sf_transform, {generated_function_conflict, Function}}}]}] = Errors,
+    ?assertEqual(
+        [{error, {5, 44}, generated_function_conflict}],
+        normalized_diagnostics(Errors, Warnings)
+    ).
+
+named_frame_function(Path, StepName) ->
+    AsyncId = crypto:hash(
+        sha256, term_to_binary({sf_named_async, 1, Path, StepName})
+    ),
+    Hex = lists:flatten([
+        io_lib:format("~2.16.0b", [Byte]) || <<Byte>> <= AsyncId
+    ]),
+    list_to_atom("$sf_" ++ Hex).
 
 compile_expression(Module, Expression) ->
     Source = io_lib:format(
@@ -552,6 +600,21 @@ fresh_module(Prefix) ->
 normalized_diagnostics(Errors, Warnings) ->
     normalize_diagnostic_files(error, Errors) ++
         normalize_diagnostic_files(warning, Warnings).
+
+assert_transform_diagnostics_formatted(Errors, Warnings) ->
+    lists:foreach(
+        fun({_File, Diagnostics}) ->
+            lists:foreach(fun assert_transform_diagnostic_formatted/1, Diagnostics)
+        end,
+        Errors ++ Warnings
+    ).
+
+assert_transform_diagnostic_formatted(
+    {_Position, astranaut_lib, {Formatter, Reason}}
+) ->
+    Message = Formatter:format_error(Reason),
+    ?assert(io_lib:deep_char_list(Message)),
+    ?assertNotEqual([], lists:flatten(Message)).
 
 normalize_diagnostic_files(Severity, Files) ->
     [{Severity, Position, normalize_diagnostic(Module, Reason)}

@@ -2,6 +2,19 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-27 — transform diagnostic ownership 收敛
+
+- compiler 统一负责 file、line、column、source excerpt 和位置标记；`async_sf_transform` reason/message
+  只携带规则、允许形式及必要动态身份，不复制 AST/source 或完整内部 state。
+- 领域 `format_error/1` 收敛为严格精确 clauses，不再自带 catch-all；正常 compiler 未匹配兜底归
+  `astranaut_lib`，测试直接调用领域 formatter 以暴露 reason 拼写或 clause 遗漏。
+- duplicate StepName/BlockPath 不再级联 generated-function conflict；trailing marker 不再同时派生
+  invalid-last qualifier。不同 source occurrence 的独立 diagnostics 仍按 source order 累计。
+- ordering mismatch 只报告 occurrence identity 或有界 rewrite 摘要；missing target capture 明确归属
+  sf-migrate/runtime resolver，AsyncId 与 generated-function collision 不重复报告。
+- empty comprehension 仅作为 earlier-transform malformed AST 的防御性 diagnostic；function 外
+  application 不是合法 compiler form，删除不可达的领域 reason。
+
 ## 2026-08-26 — 未实现（合同已更新）
 
 - `sf-do` 不再拥有或定义完整 `sf_cc` descriptor、public final runner、callback arity/return

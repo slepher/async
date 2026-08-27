@@ -482,6 +482,48 @@ expected source diagnostics MUST 由 Pass 1 的 Astranaut return value 记录和
 - **那么**Pass 2 正常生成 executable frame 和 manifest
 - **并且**compiler result 同时包含 warning
 
+### Requirement: Transform diagnostics have strict ownership
+
+OTP compiler MUST 根据 diagnostic position 展示 file、line、column、source excerpt 和 marker。
+`async_sf_transform` reason 与 message MUST 只表达规则 identity、允许形式和必要动态身份，不得重复
+source text、offending AST、position 或完整 collect/rewrite state。
+
+`async_sf_transform:format_error/1` MUST 只定义 transform-owned reasons 的精确 clauses，不得包含
+generic catch-all 或调用 shared dispatcher。直接传入未知 reason MUST 保持普通 Erlang
+`function_clause`；经 `astranaut_return:to_compiler/1` 进入 compiler 的未知 reason MUST 由
+`astranaut_lib` 使用原始 reason 的默认 term formatting 安全兜底。
+
+Pass 1 MUST 累计不同 source occurrence 的独立 violations，但 MUST NOT 为同一根因产生派生噪音：
+duplicate StepName 或 BlockPath 后不得再报告由它派生的 generated-function collision；trailing marker
+已报告 dangling marker 后不得再因它让前一个 generator/match 成为最后 executable qualifier而报告
+invalid-last。真正与用户已有 `Function/2` 的 generated-function conflict 仍 MUST 报告。
+
+empty comprehension MAY 作为 earlier-transform 在合法 function form 内产生 malformed AST 的防御性
+diagnostic 保留；它不是普通 Erlang source 可输入形式。function 外 application 不是合法 compiler form，
+不得为它保留不可达的领域 reason。ordering mismatch MUST 是 internal diagnostic，且 payload MUST
+限于 occurrence identity 或有界 state summary。
+
+#### Scenario: Domain formatter detects a misspelled reason
+
+- **给定**transform 产生一个自己拥有的 Reason
+- **当**测试直接调用 `async_sf_transform:format_error(Reason)`
+- **那么**对应精确 clause 返回非空的精确领域消息
+- **并且**producer/formatter 的 reason 拼写不一致时测试以 `function_clause` 失败
+
+#### Scenario: Compiler fallback remains safe
+
+- **给定**未知 Reason 经 Astranaut compiler adapter 格式化
+- **当**领域 formatter 没有匹配 clause
+- **那么**`astranaut_lib` 返回原始 Reason 的默认 term formatting
+- **并且**领域 formatter 本身不增加 catch-all
+
+#### Scenario: One source cause has one primary diagnostic
+
+- **给定**一个 block 内 duplicate StepName，或第二个 block 重复同一 BlockPath
+- **当**Pass 1 分析 generated identities
+- **那么**只报告 duplicate StepName 或 duplicate BlockPath primary diagnostic
+- **并且**不再报告由该重复派生的 generated-function conflict
+
 ### Requirement: Shared callback store and lifecycle
 
 protected/unprotected action callbacks 和 sf-cc CcRef entries MUST 共用现有 callbacks dictionary。

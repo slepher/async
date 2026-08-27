@@ -537,6 +537,46 @@ mismatch，必须报错，不能 silent fallback。未包含 `sf_do` 的 functio
 error，入口直接调用 `astranaut_return:to_compiler/1`，不得初始化或运行 Pass 2。unexpected internal
 fault 可以按 compiler internal error 单独报告，但不得伪装成普通 source diagnostic。
 
+### Diagnostic ownership and formatting
+
+`sf_do` diagnostic 分为三个所有者：
+
+```text
+async_sf_transform reason/format_error  -> rule identity and domain message
+Astranaut return/compiler adapter       -> formatter dispatch and safe fallback
+OTP compiler                            -> file, line, column, source excerpt and marker
+```
+
+transform reason 不得复制 offending AST、source text、line/column 或完整 analysis/rewrite state；compiler
+已经根据 diagnostic position 展示原代码。领域消息只解释违反的规则、允许的 source form，以及确有
+区分价值的动态身份（例如 duplicate StepName、BlockPath 或直接冲突的 generated function）。
+
+`async_sf_transform:format_error/1` 必须是严格的领域 formatter：每个 transform-owned reason 使用精确
+clause，未知 reason 保持普通 Erlang `function_clause`，不得定义 generic catch-all，也不得在 callback
+内部调用 shared dispatcher。正常 compiler 路径由 `astranaut_return:to_compiler/1` 把 formatter 包装为
+`astranaut_lib`；Astranaut 在 formatter 没有匹配 clause 或其 helper 发生 `error:function_clause` 时才对
+原始 reason 使用默认 term formatting。其他异常保持原 class/reason/stacktrace。
+
+测试必须分开证明两层语义：实际 compiler diagnostics 中的每个 transform-owned reason 都直接调用
+领域 `format_error/1`，从而让拼写错误或遗漏 clause 以 `function_clause` 失败；未知 reason 的生产兜底
+则单独通过 `astranaut_lib:format_error/2` 验证。领域消息测试断言精确文本，compiler integration 测试
+断言 reason 与 `{Line, Column}`，不复制 OTP source excerpt 的版本相关渲染。
+
+纯 `format_error/1`、Astranaut fallback 和 handcrafted AST 的 `parse_transform/2` 防御性检查属于
+EUnit。需要调用真实 OTP compiler、观察 source-position diagnostics、验证多错误累计或执行生成代码的
+场景属于 Common Test；不得为了共享 assertion macro 把模块级单元测试放进 CT suite。
+
+错误累计只针对独立 source violations。同一 invalid block 已报告 duplicate StepName 或 duplicate
+BlockPath 后，不得再为其派生同一个 AsyncId/generated function conflict；trailing StepName marker 已足以
+说明缺少后继 non-final action 时，也不得同时为前一个 generator/match 产生派生的 invalid-last 错误。
+真正与用户已定义 `Function/2` 冲突的 generated function 仍是独立错误。
+
+`empty` comprehension 对普通 Erlang source parser 不可达，但作为较早 transform 在合法 function form
+内提供 malformed AST 时的防御性 validation 保留。function 外 application 不是合法 compiler form，
+不会进入 AST traversal，因此不保留不可达的领域 reason。Pass 2 ordering mismatch 是 internal
+diagnostic：payload 只能包含有界摘要或 occurrence identity，不能包含 frozen plans、generated AST 或
+完整 rewrite state。
+
 ### Nested rewrite order
 
 Pass 2 在进入 `sf_do` 时按 occurrence id 取得 plan，并把当前 Monad/plan 压入 lexical stack；

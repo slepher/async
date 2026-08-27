@@ -101,18 +101,63 @@ finish_rewrite(RewrittenForms, Rewrite, Collect) ->
             )
     end.
 
-format_error({invalid_sf_do, Reason}) ->
-    io_lib:format("invalid sf_do: ~p", [Reason]);
+format_error({invalid_sf_do, {arity, Arity}}) ->
+    io_lib:format("sf_do expects one or two arguments; received ~B", [Arity]);
+format_error({invalid_sf_do, {non_literal, block_name}}) ->
+    "sf_do block name must be a literal atom";
+format_error({invalid_sf_do, expected_list_comprehension}) ->
+    "sf_do expects a list comprehension: [Monad || Qualifiers]";
+format_error({invalid_sf_do, invalid_monad_head}) ->
+    "sf_do Monad must be an atom, variable, or {Transformer, Inner}";
+format_error({invalid_sf_do, empty}) ->
+    "sf_do requires at least one qualifier";
+format_error({invalid_sf_do, consecutive_step_marker}) ->
+    "sf_do step markers cannot be consecutive";
+format_error({invalid_sf_do, invalid_last_qualifier}) ->
+    "sf_do must end with a monadic action, not a generator or pure match";
+format_error({invalid_sf_do, dangling_step_marker}) ->
+    "sf_do step marker must be followed by a non-final action; the block must still end with a monadic action";
+format_error({invalid_sf_do, step_marker_on_pure_let}) ->
+    "sf_do step marker cannot annotate a pure match";
+format_error({invalid_sf_do, step_marker_on_final_action}) ->
+    "sf_do step marker cannot annotate the final action";
+format_error({invalid_sf_do, {duplicate_step_name, StepName}}) ->
+    io_lib:format("duplicate sf_do step name: ~p", [StepName]);
 format_error({duplicate_block_path, Path}) ->
     io_lib:format("duplicate sf_do block path: ~p", [Path]);
 format_error({generated_function_conflict, Function}) ->
     io_lib:format("sf_do generated function conflicts with ~p/2", [Function]);
-format_error({ordering_mismatch, Id}) ->
-    io_lib:format("sf_do traversal ordering mismatch at ~p", [Id]);
+format_error({ordering_mismatch, {source_digest, Id}}) ->
+    io_lib:format("internal sf_do traversal digest mismatch at occurrence ~p", [Id]);
+format_error({ordering_mismatch, {unexpected_occurrence, Occurrence}}) ->
+    io_lib:format("internal sf_do traversal found an unplanned occurrence ~p", [Occurrence]);
+format_error({ordering_mismatch, missing_occurrence}) ->
+    "internal sf_do traversal did not rewrite every planned occurrence";
+format_error(
+    {ordering_mismatch,
+        {incomplete_rewrite,
+            #{
+                owner := Owner,
+                occurrence := Occurrence,
+                block_depth := BlockDepth,
+                plan_count := PlanCount,
+                consumed_count := ConsumedCount,
+                unconsumed_count := UnconsumedCount
+            }}}
+) ->
+    io_lib:format(
+        "internal sf_do traversal ended incomplete: owner=~p occurrence=~p block_depth=~B plans=~B consumed=~B unconsumed=~B",
+        [
+            Owner,
+            Occurrence,
+            BlockDepth,
+            PlanCount,
+            ConsumedCount,
+            UnconsumedCount
+        ]
+    );
 format_error(unnamed_sf_action) ->
-    "unnamed sf_do action is non-migratable";
-format_error(Reason) ->
-    io_lib:format("sf_do transform error: ~p", [Reason]).
+    "unnamed non-final sf_do action is non-migratable; add a literal atom step marker immediately before it".
 
 collect(Node, State, #{step := pre} = Attr) ->
     case astranaut_syntax:type(Node) of
@@ -190,13 +235,8 @@ collect_sf(Node, Call, State) ->
     astranaut_return:bind(
         validate_sf_call(Call),
         fun
-            ({ok, Info}) when Owner =/= undefined ->
+            ({ok, Info}) ->
                 collect_valid_sf(Node, Info, Owner, Occurrence, State);
-            ({ok, _Info}) ->
-                astranaut_return:error_ok(
-                    {invalid_sf_do, outside_function},
-                    collect_invalid_sf(Occurrence, State)
-                );
             (invalid) ->
                 astranaut_return:return(collect_invalid_sf(Occurrence, State))
         end
@@ -205,10 +245,10 @@ collect_sf(Node, Call, State) ->
 collect_valid_sf(Node, Info, Owner, Occurrence, State) ->
     do([
         return
-     || {Path, State1} <- allocate_block_path(Info, State),
+     || {Path, State1, PathUnique} <- allocate_block_path(Info, State),
         Id = {Owner, Path, Occurrence},
         Plan <- analyze_call(Node, Info, Id, State1),
-        State2 <- allocate_boundary_names(Plan, State1),
+        State2 <- allocate_boundary_names(Plan, PathUnique, State1),
         Plans = maps:put(Id, Plan, maps:get(plans, State2)),
         OccurrencePlans = maps:put(
             {Owner, Occurrence}, Id, maps:get(occurrence_plans, State2)
@@ -347,7 +387,7 @@ rewrite_sf_pre(Node, State) ->
                             astranaut:walk_return(#{
                                 return => Node,
                                 state => State1,
-                                error => {ordering_mismatch, Id}
+                                error => {ordering_mismatch, {source_digest, Id}}
                             })
                     end;
                 error ->
@@ -358,7 +398,8 @@ rewrite_sf_pre(Node, State) ->
                     astranaut:walk_return(#{
                         return => Node,
                         state => State1,
-                        error => {ordering_mismatch, OccurrenceKey}
+                        error => {ordering_mismatch,
+                            {unexpected_occurrence, OccurrenceKey}}
                     })
             end
     end.
@@ -388,7 +429,7 @@ analyze_call(Node, Info, {_Owner, Path, _Occurrence} = Id, State) ->
     do([
         return
      || QualifierPlan <- pair_step_markers(Qualifiers),
-        validate_unique_step_names(QualifierPlan),
+        StepNamesUnique <- validate_unique_step_names(QualifierPlan),
         Boundaries0 = analyze_boundaries(QualifierPlan, Monad, BoundBefore),
         Boundaries = assign_identities(Boundaries0, Id, maps:get(module, State),
             maps:get(vsn, State)),
@@ -399,6 +440,7 @@ analyze_call(Node, Info, {_Owner, Path, _Occurrence} = Id, State) ->
             executable_indexes => [
                 maps:get(source_index, Entry) || Entry <- QualifierPlan
             ],
+            step_names_unique => StepNamesUnique,
             original_digest => node_digest(Node)
         })
     ]).
@@ -483,7 +525,8 @@ pair_step_markers([Qualifier | Tail], Index, Pending, Entries) ->
                 pair_boundary_marker(Type, IsFinal, Pending, Qualifier),
                 fun({StepName, MarkerNode}) ->
                     LastQualifierValidation =
-                        case IsFinal andalso (Type =:= bind orelse Type =:= match) of
+                        case Tail =:= [] andalso IsFinal andalso
+                                (Type =:= bind orelse Type =:= match) of
                             true ->
                                 source_error(
                                     Qualifier, {invalid_sf_do, invalid_last_qualifier}
@@ -558,28 +601,28 @@ pair_boundary_marker(_Type, false, {StepName, MarkerNode}, _Qualifier) ->
 
 validate_unique_step_names(Entries) ->
     astranaut_return:lift_m(
-        fun(_Seen) -> ok end,
+        fun({_Seen, Unique}) -> Unique end,
         astranaut_return:foldl_m(
-            fun(Entry, Seen) ->
+            fun(Entry, {Seen, Unique}) ->
                 case maps:get(step_name, Entry) of
                     undefined ->
-                        astranaut_return:return(Seen);
+                        astranaut_return:return({Seen, Unique});
                     StepName ->
                         case maps:is_key(StepName, Seen) of
                             true ->
                                 source_error(
                                     maps:get(marker_node, Entry),
                                     {invalid_sf_do, {duplicate_step_name, StepName}},
-                                    Seen
+                                    {Seen, false}
                                 );
                             false ->
                                 astranaut_return:return(
-                                    maps:put(StepName, true, Seen)
+                                    {maps:put(StepName, true, Seen), Unique}
                                 )
                         end
                 end
             end,
-            #{},
+            {#{}, true},
             Entries
         )
     ).
@@ -692,6 +735,14 @@ complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path) ->
         path => Path
     }.
 
+allocate_boundary_names(Plan, true, State) ->
+    case maps:get(step_names_unique, Plan) of
+        true -> allocate_boundary_names(Plan, State);
+        false -> astranaut_return:return(State)
+    end;
+allocate_boundary_names(_Plan, false, State) ->
+    astranaut_return:return(State).
+
 allocate_boundary_names(Plan, State) ->
     astranaut_return:foldl_m(
         fun(Boundary, StateAcc) ->
@@ -740,10 +791,10 @@ register_block_path(Path, State) ->
     case maps:is_key(Path, Paths) of
         true ->
             astranaut_return:error_ok(
-                {duplicate_block_path, Path}, {Path, State1}
+                {duplicate_block_path, Path}, {Path, State1, false}
             );
         false ->
-            astranaut_return:return({Path, State1})
+            astranaut_return:return({Path, State1, true})
     end.
 
 current_path([]) -> [];
@@ -987,7 +1038,22 @@ rewrite_complete(#{
         true -> ok;
         false -> {error, {ordering_mismatch, missing_occurrence}}
     end;
-rewrite_complete(State) -> {error, {ordering_mismatch, State}}.
+rewrite_complete(State) ->
+    {error, {ordering_mismatch,
+        {incomplete_rewrite, rewrite_state_summary(State)}}}.
+
+rewrite_state_summary(State) ->
+    Plans = maps:get(plans, State, #{}),
+    Consumed = maps:get(consumed, State, #{}),
+    Unconsumed = [Id || Id <- maps:keys(Plans), not maps:is_key(Id, Consumed)],
+    #{
+        owner => maps:get(owner, State, undefined),
+        occurrence => maps:get(occurrence, State, 0),
+        block_depth => length(maps:get(block_stack, State, [])),
+        plan_count => map_size(Plans),
+        consumed_count => map_size(Consumed),
+        unconsumed_count => length(Unconsumed)
+    }.
 
 sf_call(Node) ->
     case local_call_name(Node) of

@@ -370,18 +370,32 @@ owner module 独立 resolve，尚未执行的其他-module nodes MUST bit-for-bi
 
 ## 13. Required Diagnostics
 
-- invalid `sf_do` arity/head/block/name-marker placement 和 duplicate StepName；
+- reachable source errors：invalid arity、non-literal BlockName、non-comprehension argument、invalid Monad
+  head、invalid marker placement、duplicate StepName、invalid last qualifier、duplicate BlockPath，以及与
+  用户已有 `Function/2` 的 generated-function conflict；
 - 每个 unnamed non-final action 的 source-position warning；
-- empty block / invalid last qualifier；
-- invalid Monad head source form；
-- duplicate block path/step name/AsyncId/generated function；
-- anonymous block outside source function；
-- missing target capture；
-- transform ordering/source occurrence mismatch。
+- defensive AST error：empty comprehension；它保护 earlier-transform 在合法 function form 内提供的
+  malformed AST，不宣称是普通 Erlang source 可输入形式。function 外 application 不是合法 compiler
+  form，不定义不可达的领域 reason；
+- internal errors：transform ordering/source occurrence mismatch，只携带 occurrence identity 或有界
+  `{owner, occurrence, block_depth, plan_count, consumed_count, unconsumed_count}` 摘要；
+- missing target capture 属于 sf-migrate/runtime resolver，不是 sf-do source-transform diagnostic；
+  AsyncId collision 与其一一派生的 generated-function collision 是同一检查，不重复报告。
 
 Pass 1 MUST 累积可独立报告的 source errors/warnings；存在任一 error 时 MUST 通过
 `astranaut_return:to_compiler/1` 返回并证明 Pass 2 未运行。只有 warnings 时 MUST 继续 Pass 2，
 并把 warnings 与 transformed forms 一起返回 compiler。
+
+`async_sf_transform:format_error/1` MUST 只包含 transform-owned reason 的精确 clauses，不得包含
+generic catch-all 或调用 Astranaut shared dispatcher。领域消息 MUST 说明规则和允许形式，但 MUST NOT
+重复 compiler 已展示的 file、line、column、source excerpt 或 offending AST。正常 compiler 路径的
+未知 reason fallback MUST 由 `astranaut_lib` 统一拥有；直接调用领域 formatter 的未知 reason MUST
+保持 `function_clause`。
+
+duplicate StepName/BlockPath diagnostic 产生后，MUST 跳过该 invalid plan 的下游 generated-name collision
+报告。同一个 trailing marker 已报告 dangling marker 时，MUST NOT 再为它使前一个 generator/match 成为
+最后 executable qualifier 而报告第二个 invalid-last diagnostic。不同 occurrence 的独立 source errors
+仍 MUST 按 source order 累计。
 
 ## 14. Required Verification
 
@@ -408,6 +422,12 @@ Pass 1 MUST 累积可独立报告的 source errors/warnings；存在任一 error
 - `case`/`receive`/`try` outer-variable equality patterns capture the outer binding，while
   `fun`/named-fun parameters remain fresh shadowing bindings；
 - multiple invalid `sf_do` occurrences are accumulated in Pass 1，and Pass 2 is not entered；
+- every emitted transform reason directly matches a strict domain formatter clause；unknown reasons only
+  fallback through the Astranaut adapter；
+- formatter exact text、unknown-reason behavior、adapter fallback 与 handcrafted AST validation 由 EUnit
+  验证；真实 compiler diagnostics、错误累计和生成代码行为由 Common Test 验证；
+- compiler diagnostics retain exact line/column ownership while domain messages do not duplicate source text；
+- duplicate StepName/BlockPath and trailing-marker errors do not emit derived generated-name/invalid-last noise；
 - missing future capture prevents target invocation and terminal-completes through CcRef；
 - frame and manifest expose owner Module and literal module Vsn/`undefined` without adding Vsn to AsyncId；
 - a frame owned by an independently upgraded module is lazy-resolved before MFA invocation；

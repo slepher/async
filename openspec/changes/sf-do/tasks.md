@@ -12,14 +12,18 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
   digest 检测 traversal/order mismatch。
 - [x] 第二遍只消费冻结 plan；generated functions 在 traversal 后追加且不再进入 source analysis。
 - [x] 收集 lexical nested block path、source function owner 和 anonymous occurrence。
-- [ ] public source 使用 `sf_do(Comprehension)` 与 `sf_do(BlockName, Comprehension)`；删除额外
+- [x] public source 使用 `sf_do(Comprehension)` 与 `sf_do(BlockName, Comprehension)`；删除额外
   StepNames list/record 参数。
-- [ ] 实现 inline literal atom StepName marker pairing/removal；duplicate、dangling、consecutive、
+- [x] 实现 inline literal atom StepName marker pairing/removal；duplicate、dangling、consecutive、
   pure-let/final-action marker 等非法 placement 在 Pass 1 产生 source-position error。
-- [ ] unnamed non-final boundary 在 Pass 1 产生 warning；只有 warning 时继续 Pass 2 和普通执行。
-- [ ] expected diagnostics 使用 Astranaut return channel 累计；Pass 1 有 error 时调用
+- [x] unnamed non-final boundary 在 Pass 1 产生 warning；只有 warning 时继续 Pass 2 和普通执行。
+- [x] expected diagnostics 使用 Astranaut return channel 累计；Pass 1 有 error 时调用
   `astranaut_return:to_compiler/1` 并证明 Pass 2 未运行。
-- [ ] 删除 Pass 2 的 source-form/name-marker/identity/capture 重复校验，只消费冻结 plan 与改写后 AST。
+- [x] 删除 Pass 2 的 source-form/name-marker/identity/capture 重复校验，只消费冻结 plan 与改写后 AST。
+- [x] 将 transform-owned reason 收敛为严格 `format_error/1` 精确 clauses，删除领域 catch-all；由
+  Astranaut adapter 独占 compiler fallback，并让测试直接调用领域 formatter 暴露 `function_clause`。
+- [x] 去除 duplicate StepName/BlockPath 与 trailing marker 的派生 diagnostics，同时保持不同 occurrence
+  的独立错误累计；ordering mismatch 只报告有界摘要，不打印完整 rewrite state。
 
 ## 2. Same-Monad frame lowering
 
@@ -111,9 +115,12 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] 证明 stable completion 不调用 legacy CC adapter/runner。
 - [x] continuation-only change 保持 AsyncId/MFA；Env subset、缺失 capture、extra key、变量改名导致
   missing key，以及跨版本同名 key 默认直接复用分别验证；显式转换由 sf-migrate 测试负责。
-- [ ] 增加 inline marker API/grammar、marker 不执行、unnamed warning/普通运行/migration failure、
+- [x] 增加 inline marker API/grammar、marker 不执行、unnamed warning/普通运行/migration failure、
   Action/index/binder changes 不影响 named identity，以及 BlockPath/StepName rename 改变 identity 的测试。
-- [ ] 增加多错误 Pass 1 累计、`to_compiler/1` 输出和 Pass 2 未运行的回归测试。
+- [x] 增加多错误 Pass 1 累计、`to_compiler/1` 输出和 Pass 2 未运行的回归测试。
+- [x] CT 增加 non-literal block、non-comprehension、invalid Monad、duplicate BlockPath 和直接
+  generated-function conflict 的真实 compiler 回归；EUnit 增加 defensive AST、严格 formatter 精确文本
+  和 Astranaut fallback 单元测试。
 - [ ] 增加 `case`/`receive`/`try` outer equality capture 与 fun/named-fun fresh shadowing 回归测试。
 - [ ] `rebar3 compile`、EUnit、Common Test、xref、dialyzer 和 supported OTP matrix。
 

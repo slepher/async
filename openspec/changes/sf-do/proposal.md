@@ -92,6 +92,11 @@ comprehension head。standalone literal atom qualifier 只能作为紧随其后�
 action 的 StepName marker；marker 不执行。literal atom qualifier 出现在其他位置必须报 error。
 未被 marker 修饰的非最终 action 产生 warning；pure let 和 final action 不需要 name。
 
+transform diagnostic 使用严格的领域 `format_error/1` clauses；compiler 负责 file、line、column、原代码
+摘录和位置标记，领域消息只说明规则与允许形式。正常 compiler 路径的未知 reason 由 Astranaut adapter
+兜底，测试则直接调用领域 formatter，使 reason 拼写错误或遗漏 clause 以 `function_clause` 暴露。同一
+duplicate StepName/BlockPath 或 trailing marker 根因不得再产生派生 collision/invalid-last 噪音。
+
 ## Compatibility Boundary
 
 - ordinary `do`、legacy callbacks 和 ordinary bind 保持原行为。
