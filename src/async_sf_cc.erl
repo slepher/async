@@ -287,20 +287,20 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
     ]).
 
 dispatch_pending_parent(Ref, Node, Outcome, Mode, State, Get, MR) ->
-    case maps:get(mode, Node, async_r_t) of
-        direct_state ->
-            async_r_t:return(unhandled, MR);
-        async_r_t ->
-            case preflight_node_in_store(Ref, Node, Get(State)) of
-                ok ->
+    case preflight_node_in_store(Ref, Node, Get(State)) of
+        ok ->
+            case maps:get(mode, Node, async_r_t) of
+                direct_state ->
+                    async_r_t:return(Outcome, MR);
+                async_r_t ->
                     case execute_node(Node, Outcome, Mode, MR) of
                         {ok, Action} -> Action;
                         {error, Reason} ->
                             erlang:error({invalid_continuation, Reason})
-                    end;
-                {error, Reason} ->
-                    erlang:error({invalid_continuation, Reason})
-            end
+                    end
+            end;
+        {error, Reason} ->
+            erlang:error({invalid_continuation, Reason})
     end.
 
 dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
