@@ -52,16 +52,16 @@ target；未显式迁移时默认失败。
   更新 State 中的旧 fun，source body 未变化也不是兼容依据。该 regeneration support 是可选后续
   能力，不作为当前 sf-migrate initiative 的强制验收。
 - 扩展 `async_sf_transform`，在分析当前 `sf_do` 后分析历史 block 并交叉校验。
-- 在 `code_change/3` 显式调用 migration API；runtime 只替换共享 callbacks field 中
-  `#sf_callback.frame`。
+- 在 `code_change/3` 显式调用 migration API；runtime 扫描共享 callbacks field 中所有 stable
+  `#sf_callback{}` nodes，并只替换各 node 的 current `frame`。
 - downgrade 必须先把业务 State 转成目标旧版 layout，再使用目标 callbacks offset 迁移
   current frames；全部 pending stable entries 可处理后，OTP 才能加载旧 module。
 - 匿名与命名 endpoint 间迁移只要求用户填写 `{Function, Arity, N}`，不得要求 generated
   atom、AsyncId 或 hash。
-- 保留 request key、monitor、timer、accumulator reference 和 completion target；不重放
+- 保留 node key、direct `next_ref`、request key、monitor、timer 和 accumulator reference；不重放
   workflow 或重新发送 request。
-- terminal mismatch callback 只允许 abort，不允许用自定义 replacement frame 绕过
-  编译期 step allowlist。
+- mismatch callback 只允许产生 failure/abort Outcome，不允许用自定义 replacement frame 绕过
+  编译期 step allowlist；Outcome 必须交给该 node 的 direct `next_ref`，不得定位 root/final Ref。
 - migration result 显式区分 `source_block/source_async` 与 `target_block/target_async`；API
   infrastructure error 使用结构化 stage/reason context，并返回未修改的入口 TargetState。
 - 当前功能尚未发布，directional manifest 直接替换旧草案并继续使用
@@ -70,7 +70,7 @@ target；未显式迁移时默认失败。
   未配置 Env migrator 时不得编译失败。新版无法访问真正运行中的
   旧 frame Env；compiler 只记录 metadata，runtime 根据实际 source frame 进入 mismatch。
 - 保持 `async_m:migrate_sf_callbacks/4` 为薄 facade，migration orchestration 位于独立
-  `async_sf_migration` 模块，并复用已有 State/callback、stable-term 和 completion 能力。
+  `async_sf_migration` 模块，并复用已有 State/callback、stable-term 和 ContinuationRef dispatch 能力。
 - legacy `#callback{}`、普通 do 和未声明迁移的 stable block 不受影响。
 
 ## Capabilities
@@ -78,11 +78,11 @@ target；未显式迁移时默认失败。
 ### New Capabilities
 
 - `sf-migrate`: 完整历史 block、版本 anchor、显式 boundary/Env-only mapping、capture migration 和
-  terminal mismatch policy。
+  linked-node mismatch policy。
 
 ## Dependencies
 
-- 依赖 `sf-do` 的 `sf_frame()`、`#sf_callback{}`、shared callbacks router、current
+- 依赖 `sf-do` 的 `sf_frame()`、`#sf_callback{frame,next_ref,...}`、shared ContinuationRef router、current
   manifest 和 `async_sf_transform` orchestrator。
 - 必须在 `sf-do` 完成并验证后实现。
 

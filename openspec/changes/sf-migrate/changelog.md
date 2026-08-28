@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-08-28 — linked continuation migration contract（机制同步，未实现）
+
+- migration 的持久化对象从 callback 内递归 continuation chain 收敛为单个 stable node：
+  `#sf_callback{frame = CurrentFrame, next_ref = ParentRef, ...}`。
+- eager migration 扫描 callbacks store 中所有 stable nodes，并逐 entry 迁移其当前 frame；不得递归改写
+  某个 callback 内的 outer chain，也不得依赖每层携带 final/root CcRef。
+- reply-time lazy migration 只解析当前节点。成功后按 `next_ref` 继续；failure/abort 作为 Outcome 只转发
+  给直接外层节点，由外层继续传播或处理，不再直接 terminal-complete root CcRef。
+- downgrade preflight 必须覆盖本次将提交的全部 stable nodes 和引用边；commit 只替换对应 node.frame，
+  保留 entry key、`next_ref`、request/timer/monitor/accumulator lifecycle 数据。
+- legacy `#callback{}` 继续保持隔离；统一的是 continuation reference，不是把 ordinary legacy callback
+  误分类为可迁移 frame。
+- 本条 supersede 旧文档中所有“通过 callback root CcRef terminal-abort”以及“递归 chain migration”含义；
+  StepName/BlockPath identity、directional Env/Input conversion 和 OTP downgrade ordering 不变。
+
 ## 2026-08-24
 
 - 收敛 `sf-do` dependency 为 inline StepName marker：使用 `sf_do(Comprehension)` 与

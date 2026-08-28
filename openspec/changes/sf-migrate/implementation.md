@@ -251,7 +251,7 @@ entry processing result 至少包含：
             | #{
                   mismatch => mismatch_reason(),
                   policy => explicit | forced,
-                  notification => delivered | {failed, term()}
+                  dispatch => forwarded | handled | unhandled | {failed, term()}
               }
 }.
 ```
@@ -307,16 +307,19 @@ callback upgrade 在较新 module 加载后执行，downgrade 在旧 module 加�
 
 ## 6. Runtime Algorithm
 
+enumeration MUST include every stable `#sf_callback{}` value regardless of whether its key is an external ActionMRef
+or internal ContinuationRef。legacy `#callback{}`、ordinary/outer nodes和accumulator data保持不变。
+
 开始写 State 前必须验证：
 
 - offset getter/setter 可用；
 - module 导出的两个 manifest 格式、protocol 和 module 一致；
 - up plan 的 current target 存在且 MFA/ABI 符合 schema；
-- down plan 的 current source 存在，且每个 pending frame 有完整 historical target
-  Block/AsyncId/MFA/ABI schema 或可用的显式 terminal policy；
+- down plan 的 current source 存在，且每个 pending stable node 有完整 historical target
+  Block/AsyncId/MFA/ABI schema 或可用的显式 failure policy；
 - API 第四参数已采用 target State layout，TargetOffset 可读写其中的 callbacks map。
 
-upgrade 每个 `#sf_callback{frame = SourceFrame}`：
+upgrade deterministic enumeration 中的每个 `#sf_callback{frame = SourceFrame, next_ref = NextRef}` node：
 
 1. 首先用 current manifest 检查 source BlockName/AsyncId。若目标仍有相同 AsyncId/MFA，且
    resolved source version 存在该方向的 same-identity Env-only plan，则调用其 `migrate_env`，只以
@@ -332,9 +335,9 @@ upgrade 每个 `#sf_callback{frame = SourceFrame}`：
 8. ABI 相同且无 up migrator 时复用 Env，否则按 effective up_state 构造 context 并调用
    migrator；
 9. 从 current manifest 读取 target AsyncId/MFA/ABI，构造并验证 NewFrame；
-10. 只更新 callback record 的 `frame` field。
+10. 只更新 node 的 `frame` field；`NextRef` bit-for-bit 保留。
 
-downgrade 每个 `#sf_callback{frame = SourceFrame}`：
+downgrade deterministic enumeration 中的每个 `#sf_callback{frame = SourceFrame, next_ref = NextRef}` node：
 
 1. `{down, TargetVsn}` exact lookup historical target anchor；未锚定时 preflight error；
 2. 从 SourceFrame 读取 current BlockName、NewAsyncId、NewAbi，并对 current manifest 验证；
@@ -346,10 +349,11 @@ downgrade 每个 `#sf_callback{frame = SourceFrame}`：
 5. ABI 相同且无 down migrator 时复用 Env，否则按 effective down_state 构造 context 并调用；
 6. 从 historical metadata 读取 OldBlockName、OldAsyncId、OldMFA、OldAbi；
 7. 构造 old/historical frame，但不调用 OldMFA；
-8. 只更新 callback record 的 `frame` field。
+8. 只更新 node 的 `frame` field；`NextRef` bit-for-bit 保留。
 
-以下 field 必须 bit-for-bit 保留：`acc_ref`、未到期 `timer_ref`、completion target 和
-protocol-compatible request metadata。map key、monitor 和已发 request 不变。
+以下 field 必须 bit-for-bit 保留：`next_ref`、`acc_ref`、未到期 `timer_ref` 和 protocol-compatible
+request metadata。map key、monitor 和已发 request 不变。runtime 不得递归改写 callback value中的父链；
+outer stable frame作为独立 node由同一次 enumeration处理。
 
 ## 7. Env Migrator
 
@@ -401,7 +405,7 @@ ABI 不同且当前方向 `migrate_env => undefined` 时同样进入 runtime
 ## 8. Mismatch Callback and Forced Abort
 
 ```erlang
-M:F(Info, LogicalState, CompletionTarget) ->
+M:F(Info, LogicalState, NextRef) ->
     {abort, NewLogicalState}.
 ```
 
@@ -445,9 +449,10 @@ forced abort：
 - 从 working map 删除 entry；
 - cancel explicit timer；
 - demonitor reference when applicable；
-- 通过 original completion target 发送
+- 通过 original direct `next_ref` dispatch
   `{error, {async_aborted, {sf_migration, Info}}}`；
-- 不调用 OldFrame、NewFrame、legacy CC、Monad error handler 或 retry。
+- 不调用 OldFrame、NewFrame或legacy ordinary CC；linked chain中的显式 failure handler MAY 消费 Outcome，
+  普通 success frame MUST 跳过。
 
 ## 9. State Commit
 
@@ -460,12 +465,12 @@ per-entry mismatch 是业务配置处理结果，不回滚其他成功 entry。m
 NewLogicalState 按 deterministic callbacks key order 串行传递。文档和测试必须固定该
 排序，避免 map iteration order 影响 State。
 
-terminal notification 在对应 entry 已从 working map 移除后执行。notification 结果记录在
-aborted result 的 `reason.notification`，失败不得把 stale frame 放回 callbacks。
+failure dispatch 在对应 entry 已从 working map 移除后执行。dispatch 结果记录在 aborted result 的
+`reason.dispatch`，失败不得把 stale frame 放回 callbacks。
 
 如果 Env migrator/policy 的 runtime failure 升级为 API-level error，必须丢弃全部 working
 State 和 results，返回入口 TargetState 与 `[]`；timer/monitor cancellation、completion
-notification 和 frame commit 必须延迟到确认整个调用可提交之后。用户 migrator/policy
+failure dispatch 和 frame commit 必须延迟到确认整个调用可提交之后。用户 migrator/policy
 自己的外部副作用不在 rollback 保证内，文档应要求它们保持 side-effect-free。
 
 downgrade 成功返回后，callback map 中不得残留属于 current/new module 的 stable frame；
@@ -493,7 +498,7 @@ downgrade“先 code_change、后加载旧 module”的顺序阻止代码回退�
 - 未声明方向 state 时 context 不暴露 source_state/current_state，也不按 capture name 自动识别；
 - runtime 不自动升级/降级 State 或把 current_state 写入 TargetEnv；
 - migrator failure 进入 mismatch；base policy 可将 local-fun result 归为 `unstable_capture`；
-- successful migration only changes frame；
+- successful migration only changes each stable node frame and preserves direct next_ref；
 - current anchor refreshes frame from current manifest；
 - current anchor 在 `steps => []` 时仍独立 refresh，不查询 historical mapping；
 - mismatch abort、非法返回和 callback crash；

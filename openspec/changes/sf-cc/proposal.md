@@ -11,9 +11,9 @@ async callback store 可以持有两种 continuation：
 completion。frame 无法 migration、用户主动终止或 continuation data 损坏时，runtime 不能依赖
 frame chain 中嵌入完整 callback 来完成 Promise。
 
-`sf-cc` 把最终 completion 从 structured continuation 中抽离为独立、一次性 CcRef。每个 pending
-action callback 另存当前 CcRef；正常完成和 stable-frame structural failure 通过同一条路径消费它。
-ordinary anonymous continuation 仍按普通 bind 语义执行，其失效不是 sf-cc 的恢复责任。
+`sf-cc` 把 continuation 表示为 callbacks store 中的一次性单向 node chain。stable callback 只保存
+current frame 与 direct `next_ref`；outer frame 和最终 callback 各自是独立 node。outer/final reference
+使用同一种 `ContinuationRef`，不在每个 pending callback 中复制 root address。
 
 ## What Changes
 
@@ -32,38 +32,37 @@ ordinary anonymous continuation 仍按普通 bind 语义执行，其失效不是
   MUST 接收 CleanState 并返回 NewState。
 - 新 runner 名称使用 `sf_` 边界。旧 `run_cc/2`、`run_with_cc/4`、`exec_cc/4`、
   `run/4` 和 `callback_to_cc/1` 保持 ordinary callback 参数、normalization 与正常返回合同，但在
-  升级后内部委托统一 CcRef lifecycle。
+  升级后内部委托统一 ContinuationRef lifecycle。
 - `run_sf_cc`/`run_with_sf_cc`/`exec_sf_cc` 是 Astranaut macros。macro MUST 检查第二个
   source argument 是 external fun，并拒绝 local fun、anonymous fun、runtime fun variable 和错误 arity。
 - macro MUST 将原 external-fun expression 传给普通 runtime function，不拆成 MFA tuple。
 - runtime MUST 持久化 `sf_cc` descriptor：external fun、预存 Context 和 runner mode。
-- `#callback{}` MUST 包含 `sf_cc_mref`。ordinary fun 和 frame data 继续原样保存在
-  `#callback.cc`。
-- callbacks store MUST 以 CcRef 保存一次性 final entry。升级后由任意 public runner 创建的每个新
-  action callback MUST 继承当前 `sf_cc_mref`。
-- final completion MUST 先 take CcRef、清理 ActionMRef/timer/monitor/accumulator 等失效资源，
-  然后调用 final callback。`/3` MUST 看到 CleanState。
-- CcRef MUST exactly-once。CC crash、迟到 reply、重复 fail 不得恢复或再次调用。
+- stable path MUST 使用 `#sf_callback{frame, next_ref, ...}`；legacy `#callback{}` 保持 ordinary encoding。
+- callbacks store MUST 以同一种 `ContinuationRef` 保存 frame、ordinary continuation 或 outer completion
+  node。任何 node 都不得重复保存 root/final Ref。
+- node dispatch MUST 先 take 当前 node、清理它直接拥有的 ActionMRef/timer/monitor/accumulator 等资源，
+  然后执行或转发该 node；只有 outer sf_cc node调用 final callback，`/3` MUST 看到 CleanState。
+- 每个 ContinuationRef MUST exactly-once。node crash、迟到 reply、重复 fail 不得恢复或再次调用。
 - 新增 inspect 和 immediate-fail API，核心 selector 为用户 matcher fun。matcher 可按
   Module、module `-vsn`、BlockPath、StepName、protocol、AsyncId、continuation kind 和 request
   MRef 筛选，但不可见 Env、State、timer 或 CC Context。
-- frame continuation 最终终点 MUST 只持有 CcRef，不再嵌入另一份完整 final CC
-  descriptor。structural failure MUST 优先使用 `#callback.sf_cc_mref`。
+- structural failure MUST 跳过当前 ordinary success frame并向 direct `next_ref` 转发；不得跳到 root。
+  `next_ref = none` 的 outer callback node 才执行最终 completion。
 
 ## Compatibility
 
-- callback store 只接受当前 `#callback{cc, acc_ref, sf_cc_mref}` encoding；本 change 不提供旧三元
-  callback tuple 的 runtime compatibility。
-- 所有 public runners 都创建 CcRef：`wait/1`、`wait_t/2` 使用 library-owned completion；
+- callback store 明确区分 stable `#sf_callback{}` 与 legacy `#callback{}`；legacy ordinary callback
+  不被猜测为 stable frame。
+- 所有 public runners 都注册 outer continuation node：`wait/1`、`wait_t/2` 使用 library-owned completion；
   ordinary callback APIs 使用 ordinary completion descriptor；sf-prefixed APIs 使用用户 external-fun descriptor。
 - ordinary API 不受新 macro/external-fun source 约束，且其 normal callback/result contract 不变；
   anonymous final callback 本身不获得 external fun 的跨 purge 稳定保证。
-- CcRef 只增加 final ownership，不把 ordinary anonymous continuation 转换为 frame。ordinary continuation
-  失效时错误原样传播，不转换为 sf runtime Outcome。
+- ContinuationRef 不把 ordinary anonymous continuation 转换为 frame。仅当 `badfun`/`undef` 可归属到当前
+  node availability 时才转成 failure并向外一层；callback-internal exception 保持原合同。
 
 ## Non-Goals
 
-- 不将 CcRef 定义为多个业务 promises 的 operation-group identity。
+- 不将 ContinuationRef 定义为多个业务 promises 的 operation-group identity。
 - 不从 ordinary anonymous fun 推断 Module/Vsn/BlockPath/StepName。
 - 不定义 Env/Input migration DSL、version transition catalog 或 appup/appdown ordering；这些属于
   `sf-migrate`。
@@ -74,22 +73,22 @@ ordinary anonymous continuation 仍按普通 bind 语义执行，其失效不是
 
 ### New Capabilities
 
-- `sf-cc`: stable final completion registration、所有 runners 的 CcRef lifecycle、frame terminal routing、
+- `sf-cc`: unified continuation-node registration、逐节点 routing、所有 runners 的 outer-node lifecycle、
   exactly-once invocation 和 active inspection/failure。
 
 ## Dependencies
 
 - 使用 Astranaut macro provider 和项目公共 include。
 - 依赖 `async_t`/`async_r_t` callbacks store、State offset lens、timer/monitor/accumulator lifecycle。
-- `sf-do` MUST 改用 `sf-cc` 作为 final completion owner；`sf-migrate` 后续使用同一
-  CcRef 进入 terminal failure。
+- `sf-do` MUST 改用 `sf-cc` 作为 ContinuationRef store/dispatcher；`sf-migrate` 使用同一逐节点
+  dispatcher 传播 migration failure。
 
 ## Impact
 
 - `async_m`：新 macro facade/runtime functions、现有 runner/wait facade 和 inspect/fail facade。
-- `async_t`：`#callback.sf_cc_mref`、scope propagation、CcRef entry routing、completion primitive。
-- `async_r_t`：传播与 accumulator ref 独立的 optional sf-cc scope。
-- `async_sf_runtime`：frame terminal 改为 CcRef，structural failure 改走统一 completion primitive。
+- `async_t`：`#sf_callback.frame/next_ref`、scope propagation、ContinuationRef node routing。
+- `async_r_t`：传播与 accumulator ref 独立的 current continuation context。
+- `async_sf_runtime`：逐节点 frame execution 与 failure forwarding。
 - `async_util`：current callback decoding、callback existence 与 callbacks dictionary 分类。
 - tests：macro diagnostics、ordinary/frame composition、immediate/suspended completion、active fail、late reply
   和 CC failure boundaries。

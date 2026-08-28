@@ -2,6 +2,25 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-28 — linked continuation contract（未实现）
+
+- stable continuation 从 callback 内递归 `sf_next(..., Downstream)` 值改为 callbacks store 中的单向
+  `ContinuationRef` 链。每个 stable node 只保存当前 `sf_frame` 和直接 `next_ref`，不得复制 outer
+  frame、完整 downstream chain 或最终/root reference。
+- `ContinuationRef` 不区分 outer 与 final 引用类型；同一种 reference 可以指向 frame node、ordinary
+  callback node 或最外层 completion descriptor，节点内容和 `next_ref = none` 决定行为。
+- `bind_frame` 在 nested composition 时自动物化直接父层节点，并让 inner suspension 只保存
+  `InnerFrame + OuterRef`。`run_cc`/sf-cc runner 只把外层 callback 作为同一链上的节点，不创建
+  `sf_cc_ref` terminal map。
+- normal Outcome 每次恢复一层；frame invocation、resolution、migration 或可归属的 `badfun` 失败时，
+  普通 success frame 不执行，failure 被转发给直接 `next_ref`。可处理 failure 的显式 handler 可以消费它；
+  无 handler 时逐层到达最外层 callback。
+- 删除 stable callback 对 `sf_cc_mref` root/final address 的重复保存。主动取消和 parallel cleanup 所需
+  的反向关系属于 sf-cc 的独立索引/生命周期设计，不得重新塞入每个 continuation node。
+- 本条 supersede 2026-08-27/26 中关于递归 `sf_next`、`sf_cc_ref` terminal、root `sf_cc_mref` 和
+  structural failure 直接 terminal-complete 的合同；transform、frame identity、Env、generated Monad
+  remainder 与逐 frame lazy resolution 保持不变。
+
 ## 2026-08-27 — transform diagnostic ownership 收敛
 
 - compiler 统一负责 file、line、column、source excerpt 和位置标记；`async_sf_transform` reason/message

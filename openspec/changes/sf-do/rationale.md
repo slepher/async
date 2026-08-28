@@ -62,28 +62,22 @@ suspension 保存的 continuation 使用 external data frame；业务主动保�
 migration 负责。
 
 该边界通过显式 `SfContext` 参数传播，不使用进程字典。ordinary bind 仍产生 anonymous continuation，
-只有 `bind_frame` 创建 frame。当 stable frame 的 downstream 是 ordinary fun 时，runtime 以独立 CcRef
-descriptor 保存该 fun，使 structured chain 仍以纯数据 CcRef terminal 结束。
+只有 `bind_frame` 创建 frame。当 stable frame 的 downstream 是 ordinary fun 时，runtime 把该 fun
+物化为同一 callbacks store 中的 continuation node；stable callback 只保存指向该 node 的 `next_ref`。
 
 ## 最终完成不属于 frame 本身
 
-frame 只描述“收到 Input 后从哪个稳定边界继续执行”，不应同时拥有 promise 的最终 callback。
-完整 final callback 若嵌在 continuation chain 尾部，一旦 frame shape 已损坏，
-runtime 仍要解析恰好已经失效的数据才能找到 fallback；这与 fallback 存在的目的冲突。
+frame 只描述“收到 Input 后从哪个稳定边界继续执行”，不拥有完整父层或最终 callback。父层同样是
+callbacks store 中的一个 node；当前 stable callback 只保存直接 `next_ref`。最外层 callback 只是
+`next_ref = none` 的叶节点，不使用另一种 FinalCcRef 类型。
 
-因此受 `sf-cc` 保护的 action callback 分别保存两条正交关系：`cc` 保存 ordinary fun 或 stable frame
-continuation，`sf_cc_mref` 保存 promise 的一次性最终完成地址。sf-do chain 只保存指向同一 CcRef 的
-`sf_cc_ref` terminal；完整 callback/Context 由 sf-cc 的 CcRef entry 独占。这样 frame 正常完成、
-frame validation failure、migration failure 和人工终止可以收敛到同一个 cleanup-before-invoke
-completion primitive，而不要求 sf-do 理解 callback `/2`、`/3` 或 State return contract。
+这种表示让 normal completion 和 failure 都遵循同一条逐节点路径。success 执行当前 frame；frame
+resolution、migration 或 invocation failure 跳过普通 success frame并交给直接外层。若外层仍不能处理，
+继续沿 `next_ref` 传播；显式 failure handler 可以在任意层消费。系统不需要在每层复制 root reference。
 
-CcRef adoption 不以 API 名称为边界。`wait`、ordinary
-anonymous callback runner 和 explicit sf-cc runner 都可以无感使用统一 CcRef lifecycle；它们的区别
-只在 final callback 的稳定性证明：只有显式 external fun 获得 compile-time source guarantee。
-
-ordinary action continuation 仍由普通 bind executor 直接调用。它因 code purge 产生的 `badfun` 以及
-callback 内部的 `undef`/其他 exception 原样传播；sf-do 和 sf-cc 不负责额外 unavailable-code cleanup、
-分类或合成 fallback Outcome，普通 reply lifecycle 的既有处理不变。
+`wait`、ordinary anonymous callback runner 和 explicit sf-cc runner 可以把自己的 completion 作为同一种
+continuation node 注册；只有显式 external fun 获得 compile-time source guarantee。调用已经成功进入
+用户 callback 后产生的业务 exception 不得被误分类为 continuation availability failure。
 
 ## 外部 owner module 的升级
 
@@ -94,4 +88,4 @@ MFA 前逐节点 resolve。nested chain 中来自其他 modules 的 frame 保持
 
 sf-do 负责产生这类 self-describing frame 和 current target manifest；是否映射 endpoint、转换 Env/Input、
 使用 optional historical metadata 或在 downgrade 时 fail closed，属于 sf-migrate。无法 resolve 时不猜测
-旧调用栈或重放前置 action，而是通过 `sf_cc_mref` 终止整个 promise。
+旧调用栈或重放前置 action，而是把 failure 交给当前 node 的直接 `next_ref`。

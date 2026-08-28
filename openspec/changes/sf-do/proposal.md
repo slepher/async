@@ -43,15 +43,15 @@ frame 携带 stable identity、external MFA 和显式 Env。挂起时 callback �
   remainder 返回，不生成 terminal frame。
 - stable async 的最终 completion 由独立 `sf-cc` capability 提供。用户通过 sf-cc runner 显式传递
   external fun/Context；`sf_do` 不定义 callback arity/return contract，也不生成 CC MFA。
-  frame chain 只以 `sf_cc_ref` CcRef terminal 结束；完整 `sf_cc` 不属于 `sf_do` block identity、
-  manifest 或 migration。
+  frame continuation 通过统一 `ContinuationRef` 单向链接到直接外层 node；最外层 node 持有完整
+  `sf_cc`。`sf_do` block identity、manifest 或 migration 都不包含完整 `sf_cc`。
 - timeout、DOWN 和普通 reply 都作为 action outcome 传给当前 frame。pattern/后续 Monad
   决定如何处理；它们不是 stable runtime 的特殊 terminal failure。
 - `sf_do` 仍是普通 Monad，因此 nested `sf_do` 可直接作为外层 `bind_frame` 的 Action。
   nested block 使用 lexical block path 防止名称冲突，但无需 `sf_subprogram` 或 frame VM。
 - Env 只保存当前 continuation 实际需要的 lexical bindings，不预测未来版本需求。未来目标
   continuation 缺少数据且 `sf-migrate` Env migrator 没有先行补齐时，按 code-change direction
-  fail closed 并通过当前 CcRef terminal-complete；具体 Outcome 由 `sf-migrate` 定义。变量改名或同名
+  fail closed，并把 failure 交给当前 node 的直接 `next_ref`；具体 Outcome 由 `sf-migrate` 定义。变量改名或同名
   变量含义变化的显式 Env 转换属于 `sf-migrate`，`sf_do` 本身不定义 migration DSL 或重建策略。
 - Env 原则上不应包含 anonymous/local fun。`sf_do` 不递归检查 capture runtime values；若业务仍
   捕获 local fun，升级不会自动清除或替换该 term，旧 code purge 后它可能不可调用。应用应通过
@@ -65,20 +65,21 @@ frame 携带 stable identity、external MFA 和显式 Env。挂起时 callback �
   直接通过 `astranaut_return:to_compiler/1` 返回 compiler errors，不运行第二遍。第二遍只消费冻结
   plan，不得重新执行 source validation、identity 或 capture analysis。
 - callbacks 继续使用现有 callbacks field、request correlation key、monitor、timer、accumulator
-  reference 和 `async_r_t` State/store 机制。受 sf-cc 保护的新 action callback 在尾字段
-  `sf_cc_mref` 保存 CcRef；`cc` 仍保存原 frame continuation。
-- 所有 public runners 新启动的 Promise 都进入同一 CcRef infrastructure。`wait/1`、`wait_t/2`
-  保持原调用和正常结果；ordinary callback runner 继续接受原 callback source/return contract，并通过
-  ordinary `sf_cc` completion descriptor 接入同一 lifecycle。
+  reference 和 `async_r_t` State/store 机制。stable action callback 保存一个 current frame 和直接
+  `next_ref`；不得保存递归 downstream 或重复的 root/final Ref。
+- public runners 把最终 callback 注册为同一种 `ContinuationRef` node。`wait/1`、`wait_t/2`
+  保持原调用和正常结果；ordinary callback runner 继续接受原 callback source/return contract。
 - `async_t` 通过显式 `(K, SfContext)` 传播 structured continuation context，不使用进程字典。ordinary bind
-  继续创建 anonymous continuation；只有 `bind_frame` 创建 `sf_next`。当 frame downstream 是 ordinary
-  fun 时，runtime 以独立 CcRef descriptor 桥接，不把 fun 嵌入 frame chain。
-- callback reader 只接受当前四元 record encoding，不提供旧三元 tuple 或 tagged outcome compatibility。
+  继续创建 anonymous continuation；`bind_frame` 负责把当前直接父层物化为 node，并运行 Action 于
+  `{CurrentFrame, NextRef}` context。当 frame downstream 是 ordinary fun 时，runtime 将该 fun 注册为
+  ordinary continuation node，不把 fun 或完整父链嵌入 stable callback。
+- stable callback 使用独立 `#sf_callback{}` encoding；legacy `#callback{}` 保持既有 ordinary 行为，
+  不被猜测或提升为 stable frame。
 - 每个 persisted frame 保存 owner Module 和 module `-vsn` literal term或 `undefined`。Vsn 不进入
   AsyncId；它只用于 inspection 和 migration endpoint selection。
 - 每个 frame 执行前都有 owner-module resolution 边界，使外部 owner module 独立升级时可以在
-  reply-time lazy resolve。resolution/migration 失败时，runtime 通过 callback 的 `sf_cc_mref`
-  terminal-complete，不递归遍历 continuation 寻找 final callback。
+  reply-time lazy resolve。resolution/migration 失败时，runtime 把 failure 转发给直接 `next_ref`；
+  ordinary success frame 被跳过，直到显式 failure handler 或最外层 callback 处理。
 
 ## Source Forms
 
@@ -101,9 +102,10 @@ duplicate StepName/BlockPath 或 trailing marker 根因不得再产生派生 col
 
 - ordinary `do`、ordinary callbacks 和 ordinary bind 保持原行为。
 - stable frame path 显式启用；不得把 ordinary closure callback 自动宣称为可迁移 frame。
-- callback record 由 `sf-cc` 统一定义为当前四元 encoding；不提供旧三元 tuple compatibility。
-- ordinary runner 也创建 CcRef，但 ordinary action continuation 的 `badfun` 或内部异常原样传播；
-  sf-do/sf-cc 不把它转换为 structural terminal Outcome。
+- stable callback 与 legacy ordinary callback 使用不同 encoding；legacy `#callback{}` 不获得 stable
+  migration guarantee。
+- 可归属到当前 continuation invocation 的 `badfun`/`undef` 被转换为 failure 并只转发一层；用户
+  callback 已进入后的内部异常仍按其 callback contract 传播，不被误分类为 unavailable continuation。
 - named frame identity 相同只表示相同 BlockPath/StepName，不保证 source Env 满足未来 continuation。
 - runtime 不按 AST、index、action 内容、capture 名称或值猜测 migration target，也不重放 boundary
   之前的 action。没有 StepName 的 frame 在普通执行中可用，但在 migration 中默认不兼容。
@@ -115,12 +117,12 @@ duplicate StepName/BlockPath 或 trailing marker 根因不得再产生派生 col
 
 ### New Capabilities
 
-- `sf-do`: frame-aware do transform、per-boundary stable functions、lexical Env、CcRef terminal、
+- `sf-do`: frame-aware do transform、per-boundary stable functions、lexical Env、linked ContinuationRef、
   owner/version metadata、逐 frame resolution boundary、nested Monad composition 和 current manifest。
 
 ### Dependencies
 
-- `sf-cc` owns the CcRef engine, stable final runners, ordinary runner adapters, current callback encoding,
+- `sf-cc` owns the ContinuationRef store/dispatcher, stable final runners, ordinary runner adapters, callback encodings,
   exactly-once completion and active inspection/failure.
 - `sf-migrate` owns endpoint mappings, optional Env/Input conversion, historical metadata and downgrade
   policy. `sf-do` supplies the self-describing frames and target manifest consumed by that capability.
@@ -129,13 +131,13 @@ duplicate StepName/BlockPath 或 trailing marker 根因不得再产生派生 col
 
 - `async_sf_transform` 改为 Astranaut-based analyzer/rewrite pipeline。
 - `monad_frame` 明确为保留 Monad 类型的 `bind_frame`/`then_frame` sequencing capability。
-- `async_t` 增加 frame-aware bind/run 路径，在 suspended callback 的 `cc` 中保存 data continuation，
-  并继承 sf-cc scope 提供的 `sf_cc_mref`。
-- callback entry 增加 generated next frame 与 downstream `sf_cc_ref` data；CcRef owner entry 与 action
-  callback 共用同一个 callbacks dictionary，不增加第二个 callbacks store。
-- `async_sf_runtime` 在调用 stored frame MFA 前进入 owner-module resolver，并把 normal terminal 或
-  structural failure 交给 `sf-cc` completion primitive。
+- `async_t` 增加 frame-aware bind/run 路径，在 suspended `#sf_callback{}` 中保存 current frame 与
+  `next_ref`。
+- stable callback、intermediate frame node 与 outer callback node 共用同一个 callbacks dictionary，
+  不增加第二个 callbacks store，也不复制 root Ref。
+- `async_sf_runtime` 在调用 stored frame MFA 前进入 owner-module resolver，并把 normal completion 或
+  structural failure 交给 `sf-cc` 的逐节点 dispatcher。
 - `async_m` 的 public final runner facade 由 `sf-cc` 定义；`run_sf_frame/4` 不再是 sf-do 对外冻结的
   final completion API。
-- existing `wait`/ordinary runner facades 保持 source/result contract，并使用同一 CcRef engine；ordinary
+- existing `wait`/ordinary runner facades 保持 source/result contract，并使用同一 ContinuationRef engine；ordinary
   continuation invocation errors 保持原异常语义。

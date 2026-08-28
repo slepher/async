@@ -1,5 +1,9 @@
 # Tasks
 
+> 2026-08-28：第 1–5 节中四元 callback/root `sf_cc_mref`、recursive `sf_next`、`sf_cc_ref`
+> terminal、按 root CcRef cleanup/dedupe 和 structural failure 直达 final 的已完成项，已被第 7 节
+> unified ContinuationRef contract supersede；check 状态仅保留历史实现事实。
+
 ## 1. Callback representation and CcRef store
 
 - [x] Keep the current four-tuple callback record encoding in one internal shared header.
@@ -51,3 +55,22 @@
 - [x] `rebar3 xref`.
 - [ ] Resolve the existing project-wide Dialyzer warnings before claiming a clean Dialyzer pass.
 - [x] Validate both OpenSpec changes after the documentation update.
+
+## 7. Unified ContinuationRef rewrite（2026-08-28，未实现）
+
+- [ ] 在 shared header 定义 stable `#sf_callback{frame,next_ref,...}`，恢复 legacy `#callback{cc,acc_ref}`
+  isolation，并统一所有 store readers/classifiers。
+- [ ] 用统一 ContinuationRef node替换 `sf_cc_ref` entry/terminal；Ref value支持 stable frame、ordinary
+  continuation和outer sf_cc descriptor。
+- [ ] 实现 `bind_frame` direct-parent materialization和single-frame suspension writer。
+- [ ] 实现 take-before-dispatch逐节点 executor；success运行当前 continuation，failure跳过普通 success
+  frame并只dispatch direct `next_ref`。
+- [ ] 删除 root `sf_cc_mref` reader local、per-callback propagation、root scan cleanup和per-CcRef fail dedupe。
+- [ ] 建立仅供 active cancellation/parallel cleanup使用的reverse index/ownership metadata，并验证registration、
+  take、shared parent和orphan cleanup一致性。
+- [ ] 更新 exception boundary，只转换精确归属于current continuation availability的 `badfun`/`undef`。
+- [ ] 更新 inspection/failure API为current-node summary、可选安全Ref traversal和
+  `forwarded | handled | failed | unhandled | legacy` results。
+- [ ] 更新 runner、message/timeout/DOWN、late reply和所有 callback-store backend tests。
+- [ ] 运行 compile、EUnit、Common Test、xref、Dialyzer和三组 OpenSpec validation；不得以旧测试通过标记
+  本节完成。

@@ -428,10 +428,11 @@ support 可在后续 change 中定义，不属于本 requirement 的强制验收
 - **那么**runtime 只使用该 TargetEnv
 - **并且**不得自动把 current_state 添加或覆盖到 TargetEnv
 
-### Requirement: Replace only the pending frame
+### Requirement: Replace only each stable node's current frame
 
-成功迁移 MUST 只替换 `#sf_callback.frame`。request key、acc_ref、timer、monitor、
-completion target 和已发出的 request MUST 保持不变。
+成功迁移 MUST deterministic enumeration callbacks store 中所有 `#sf_callback{}` nodes，并只替换各
+node 的 `frame`。node key、direct `next_ref`、request key、acc_ref、timer、monitor 和已发出的 request
+MUST 保持不变。runtime MUST NOT 递归改写 callback 内父链；outer frame作为独立 node处理。
 
 #### Scenario: Resume from current breakpoint
 
@@ -439,6 +440,7 @@ completion target 和已发出的 request MUST 保持不变。
 - **当**其 frame 成功迁移
 - **那么**Ref2 不重建，之前 step 不重跑
 - **并且**Ref2 reply 到达后调用 current target stable function
+- **并且**其 direct `next_ref` bit-for-bit 不变
 
 ### Requirement: OTP-ordered downgrade migration
 
@@ -451,7 +453,7 @@ Block/AsyncId/MFA/CaptureAbi metadata 和 target offset。
 
 runtime MUST 只根据 historical metadata 构造 target frame，不得执行尚未加载的 historical
 MFA。成功返回时，每个 pending current/new frame MUST 已迁移为 historical target frame，
-或已由显式 mismatch policy terminal-abort。任何无法安全处理的 pending frame MUST 使
+或已由显式 mismatch policy 形成可提交的 failure dispatch。任何无法安全处理的 pending frame MUST 使
 code change 返回 error，从而阻止 OTP 加载旧 module。
 
 #### Scenario: Downgrade uses the newer module before old code is loaded
@@ -479,9 +481,9 @@ code change 返回 error，从而阻止 OTP 加载旧 module。
 #### Scenario: Missing downgrade plan blocks code rollback
 
 - **给定**pending current/new frame 没有 down plan
-- **并且**没有显式 mismatch policy 可 terminal-abort 该 entry
+- **并且**没有显式 mismatch policy 可处理该 entry
 - **当**downgrade preflight
-- **那么**migration 返回 error且 State、timer、monitor 和 completion target 均未改变
+- **那么**migration 返回 error且 State、timer、monitor 和 next_ref 均未改变
 - **并且**OTP 不得继续加载 old module
 
 ### Requirement: Current anchor refresh
@@ -527,7 +529,7 @@ current async 的判断。downgrade TargetVsn MUST
             | #{
                   mismatch => mismatch_reason(),
                   policy => explicit | forced,
-                  notification => delivered | {failed, term()}
+                  dispatch => forwarded | handled | unhandled | {failed, term()}
               }
 }
 ```
@@ -535,7 +537,7 @@ current async 的判断。downgrade TargetVsn MUST
 source fields MUST 始终描述 API 入口 frame，target fields MUST 始终描述 committed/intended
 frame；无法解析 target 时 MUST 使用 `undefined`。runtime MUST NOT 使用语义随路径变化的
 单一 `block` field。`mapped`、`current_anchor`、`no_declaration`、
-`unanchored_upgrade_source` 和包含 mismatch/policy/notification 的 abort reason MUST 使用
+`unanchored_upgrade_source` 和包含 mismatch/policy/dispatch 的 abort reason MUST 使用
 design/implementation contract 固定的 shape。
 
 API-level error MUST 返回 `{error, ErrorInfo, TargetState, []}`。ErrorInfo MUST 使用：
@@ -586,10 +588,11 @@ State、Env 或 callback map。多个错误 MUST 按 callbacks key 的 Erlang te
 - **那么**State 精确等于入口 TargetState且 Results 为 `[]`
 - **并且**ErrorInfo 标明 stage、reason 和第一个失败 entry context
 
-### Requirement: Terminal mismatch callback
+### Requirement: Mismatch failure follows the linked continuation
 
-系统 MUST 支持 external `on_mismatch/3`，其返回仅允许 `{abort, NewState}`。
-mismatch MUST NOT 进入 ordinary workflow error、catch 或 retry。
+系统 MUST 支持 external `on_mismatch/3`，其返回仅允许 `{abort, NewState}`。abort MUST 产生规定
+failure Outcome并从 current node 的 direct `next_ref` dispatch。普通 success frame MUST 跳过；linked
+chain中的显式 failure handler MAY 消费 Outcome。runtime MUST NOT 定位 root/final Ref。
 
 Info MUST 使用与 result 相同的 source/target endpoint fields，并包含 module、direction、
 version、anchor、source_capture_abi、callback_ref 与 mismatch reason。downgrade callback
@@ -610,7 +613,7 @@ MUST 使用 forced-abort fallback，但 MUST NOT 构造 replacement frame。
 - **并且**mismatch callback 返回 `{abort, NewState}`
 - **当**migration 执行
 - **那么**entry 被删除，timer/monitor 被清理
-- **并且**completion target 收到
+- **并且**direct `next_ref` 收到
   `{error, {async_aborted, {sf_migration, Info}}}`
 
 #### Scenario: Invalid mismatch callback result
@@ -630,8 +633,8 @@ MUST 使用 forced-abort fallback，但 MUST NOT 构造 replacement frame。
 
 ### Requirement: Shared callbacks field and legacy isolation
 
-migration MUST 只处理现有 callbacks field 中的 `#sf_callback{}`。legacy
-`#callback{}` 和 accumulator values MUST bit-for-bit 保持不变。
+migration MUST 处理现有 callbacks field 中所有 `#sf_callback{}` values，无论 key 是 ActionMRef 还是
+internal ContinuationRef。legacy `#callback{}`、ordinary/outer nodes和accumulator values MUST bit-for-bit保持不变。
 
 #### Scenario: Mixed callbacks during code change
 
@@ -659,7 +662,7 @@ migration plan/Env migrator MUST 仅在用户调用 `async_m:migrate_sf_callback
 runtime MUST 在 manifest/target-offset preflight 后按确定顺序处理 stable entries，并通过
 target callbacks setter 一次提交 working map。单项可处理 mismatch MUST NOT 回滚其他成功
 entry。downgrade MUST 在 mutation 前预检所有 source frame、down plan 与 historical target；
-基础设施或不可处理的 down mismatch MUST 保持 State、timer、monitor 和 notification 不变。
+基础设施或不可处理的 down mismatch MUST 保持 State、timer、monitor 和 failure dispatch state不变。
 
 #### Scenario: Multiple pending stable callbacks
 
@@ -672,7 +675,7 @@ entry。downgrade MUST 在 mutation 前预检所有 source frame、down plan 与
 - **给定**多个 pending current frame 中最后一个缺少合法 historical target
 - **当**downgrade preflight 扫描全部 entries
 - **那么**migration 在处理第一个 entry 前返回 error
-- **并且**不得提交部分 frame、取消 timer 或发送 terminal notification
+- **并且**不得提交部分 frame、取消 timer 或 dispatch failure
 
 #### Scenario: Runtime migration failure is not partially committed
 
@@ -680,7 +683,7 @@ entry。downgrade MUST 在 mutation 前预检所有 source frame、down plan 与
 - **并且**后续 Env migrator failure 无显式 policy 可处理
 - **当**runtime 将其升级为 API-level error
 - **那么**丢弃全部 working State/results并返回入口 TargetState与空 Results
-- **并且**不得取消 timer/monitor、发送 completion 或提交任何 frame
+- **并且**不得取消 timer/monitor、dispatch failure 或提交任何 frame
 
 ### Requirement: Additive compatibility
 

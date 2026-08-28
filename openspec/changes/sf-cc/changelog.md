@@ -2,6 +2,21 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-28 — unified ContinuationRef chain（未实现）
+
+- 移除 `FinalCcRef`/`OuterRef` 的类型和生命周期区分。callbacks store 中所有 continuation references
+  使用同一种 Ref；Ref 指向 frame、ordinary callback 或 completion descriptor node。
+- stable node 只保存当前 continuation 和直接 `next_ref`。不再用 `#callback.sf_cc_mref` 在所有 pending
+  entries 中复制 root，也不再以 `sf_cc_ref` map 作为 structured chain terminal。
+- dispatch 改为 take/validate/execute 一个节点：success 执行当前 continuation；failure 跳过普通 bind
+  success frame并转发给 `next_ref`；节点调用产生的可归属 failure 同样只向外跳一层。
+- final completion 是 `next_ref = none` 的最外层 callback node 行为，不是另一种 reference。exactly-once
+  从“按 root CcRef 批量消费”改为“每个 node 在调用/转发前一次性消费”。
+- inspection、主动 failure、timer/monitor cleanup 和 parallel cancellation 改以节点链及独立反向索引工作；
+  不允许靠每层重复 root Ref 恢复旧的 ownership 模型。
+- 本条 supersede 2026-08-27/26 中关于四元 `#callback.sf_cc_mref`、`sf_cc_ref` terminal、按 CcRef
+  deduplicate/cleanup 和 structural failure 直达 final completion 的合同。
+
 ## 2026-08-27
 
 - continuation context 改为显式 `SfContext` 参数，不再通过进程字典传播 stable continuation/runner。

@@ -2,7 +2,7 @@
 
 ## Context
 
-pending `#sf_callback{}` 保存的是当前等待点之后的 frame。升级时不能重新执行已经完成
+pending `#sf_callback{}` node 保存当前等待点之后的 frame 和 direct `next_ref`。升级时不能重新执行已经完成
 的 step，也不能重新发起当前 pending request。迁移只需要把旧 frame 替换为指向当前
 stable function 的新 frame：原 reply 到达后，从新的 continuation 继续。
 
@@ -27,8 +27,8 @@ block 已由 current `sf_do` 定义，可直接引用，不应再复制一份 cu
 - automatic AsyncId match 默认不要求 declaration、version anchor 或 migration API；只有用户显式
   调用 migration API 且存在 directional same-identity Env plan 时，才在 resume 前转换 Env。
 - runtime 用 descriptor 中的 block、step 和 capture ABI 验证历史数据。
-- 成功迁移只替换 `#sf_callback.frame`，保留其余 callback 生命周期数据。
-- mismatch 绕过普通 workflow error/retry。
+- 成功迁移只替换每个 stable node 的 `#sf_callback.frame`，并保留 `next_ref` 及其余生命周期数据。
+- mismatch 形成 failure Outcome并向 direct `next_ref` 转发；普通 success frame跳过，显式 failure handler可处理。
 - migration 只在业务进程 `code_change/3` 显式调用时生效。
 - downgrade 服从 OTP dynamic callback advanced update 的 suspend → current-code
   `code_change({down, TargetVsn}, ...)` → load old code → resume 时序。
@@ -141,7 +141,7 @@ endpoint。
   name；declaration-level 值作为所有 step 的默认值；
 - declaration/step-level `state`：shorthand，等价于同时声明同名 `up_state` 和
   `down_state`；
-- `on_mismatch`：可选 terminal external MFA。
+- `on_mismatch`：可选 failure-policy external MFA。
 
 第一版 historical do block 必须语法完整。用户“省略部分内容”的方式是省略不需要
 迁移的 `steps` mapping；不得提交 partial do block，因为那会破坏 boundary、tail 和
@@ -432,7 +432,7 @@ current/new frame，target version 未锚定、没有 down plan 或无法构造 
             | #{
                   mismatch => mismatch_reason(),
                   policy => explicit | forced,
-                  notification => delivered | {failed, term()}
+                  dispatch => forwarded | handled | unhandled | {failed, term()}
               }
 }.
 ```
@@ -481,8 +481,8 @@ callbacks key 的 Erlang term order 选择第一个 error，保证诊断确定�
 
 ## Per-Entry Migration
 
-runtime 只遍历共享 callbacks map 中的 `#sf_callback{}`，legacy `#callback{}` 和 local
-accumulator values 保持不变。
+runtime 遍历共享 callbacks map 中所有 stable `#sf_callback{}` nodes，包括 ActionMRef 下的 current
+node与 internal ContinuationRef 下的 outer nodes。legacy `#callback{}` 和 local accumulator values保持不变。
 
 upgrade：
 
@@ -510,15 +510,16 @@ current/new source frame
   -> build old/historical frame without executing its MFA
 ```
 
-两种方向都只替换 `sf_callback.frame`。
+两种方向都只替换 `sf_callback.frame`。runtime MUST NOT 递归进入某个 callback value寻找 outer frame；
+outer frame若存在，必定作为独立 node由同一次 deterministic enumeration处理。
 
 成功时保留：
 
 - callbacks map key/request correlation key；
+- direct `next_ref`；
 - `acc_ref`；
 - `timer_ref` 及剩余 timer；
 - monitor；
-- completion target；
 -已经发出的 request。
 
 不调用 source frame，不执行 target frame，不重新计时。downgrade target MFA 只有在 OTP
@@ -617,10 +618,10 @@ mapping 编译并在 plan 中保存 `migrate_env => undefined`；真正运行中
 
 ## Mismatch Policy
 
-可配置 terminal callback：
+可配置 failure-policy callback：
 
 ```erlang
-on_sf_mismatch(Info, State, CompletionTarget) ->
+on_sf_mismatch(Info, State, NextRef) ->
     {abort, NewState}.
 ```
 
@@ -655,20 +656,19 @@ mismatch_reason() ::
   | invalid_historical_target.
 ```
 
-callback 是 migration terminal policy，不是 ordinary async callback：
+callback 是 migration failure policy，不是 ordinary async callback：
 
-- `{abort, NewState}`：从 working callback map 删除 entry，取消 timer/monitor，并通过
-  completion target 返回精确 wire format
-  `{error, {async_aborted, {sf_migration, Info}}}`；
+- `{abort, NewState}`：在 working map 中消费 current node及其direct resources，并把精确 Outcome
+  `{error, {async_aborted, {sf_migration, Info}}}` dispatch 给 original direct `next_ref`；
 - callback 抛异常或返回其他值时转为 forced abort。
 
 mismatch callback 不允许返回 replacement frame。所有可继续执行的新 frame 都必须来自
-编译期 explicit step mapping 和 Env migration，不能由 terminal policy 绕过 allowlist。
+编译期 explicit step mapping 和 Env migration，不能由 failure policy 绕过 allowlist。
 
-upgrade 未配置 `on_mismatch` 时直接 forced abort。downgrade 未配置 callback 时，任何
+upgrade 未配置 `on_mismatch` 时产生 forced failure并向 direct `next_ref` 转发。downgrade 未配置 callback 时，任何
 无法映射的 pending current frame必须返回 error 并阻止加载旧 module；只有显式
-`on_mismatch` 返回 abort，才允许删除该 pending operation 后继续 downgrade。mismatch
-不得送入 old/new workflow frame、`catch_error`、retry 或 legacy final callback。
+`on_mismatch` 返回 abort，才允许消费该 pending node后继续 downgrade。mismatch MUST 跳过 ordinary
+success frame，但 MAY 被 linked chain中的显式 failure handler消费；不得直接定位 legacy/root final callback。
 
 upgrade source version 未锚定时 entry 可保持不变并返回 unhandled。downgrade target
 version 未锚定时不能保留 current/new frame，必须在任何修改前返回 error。
@@ -685,16 +685,16 @@ migration 在 `code_change/3` 调用期间同步执行：
    callbacks field 由
    migration runtime 管理；
 6. 最后通过 target offset setter 一次写回 working callbacks map；
-7. 对 abort entry 执行 terminal notification。
+7. 对 abort entry 从其 direct `next_ref` 执行 failure dispatch。
 
 单个 entry mismatch 不导致已成功迁移的其他 entry 回滚。基础设施错误（manifest
 格式错误、offset 无效等）在修改前返回 `{error, ...}`；这类错误不得部分写回 State。
 downgrade 中的未锚定 target、missing down plan 或无效 historical target 也属于 preflight
-failure；不得先取消 timer、发送 completion 或提交部分 frame 后再拒绝 downgrade。
+failure；不得先取消 timer、dispatch failure 或提交部分 frame 后再拒绝 downgrade。
 
 Env migrator 或 mismatch policy 的 runtime failure 也必须先在 working data 上完成；若其
 导致 API-level error，runtime 丢弃全部 working State/results，返回入口 TargetState 和空
-Results，并且不得取消 timer/monitor、发送 completion 或提交 frame。migrator/policy 是
+Results，并且不得取消 timer/monitor、dispatch failure 或提交 frame。migrator/policy 是
 用户代码，runtime 不承诺回滚其自行产生的外部副作用；使用方应保持这些 callback
 side-effect-free。
 

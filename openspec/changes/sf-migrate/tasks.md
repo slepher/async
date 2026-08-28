@@ -4,6 +4,9 @@
 worktree/branch 的实现仅可作为历史证据，不得据此勾选本文件。每个 task 是可独立实现、
 测试、review 和 commit 的纵向公开行为切片，不按 parser/manifest/runtime 内部阶段拆分。
 
+2026-08-28 mechanism sync：本文早期任务中的 completion target、terminal notification 和只枚举 external
+pending callback 的措辞被“Linked ContinuationRef integration”取代；现有 unchecked 状态不表示新机制已实现。
+
 ## Dependency gate
 
 - [ ] `sf-do` 的 identity 协议已实现并冻结：`sf_do/1,2` 使用 inline atom marker，named identity
@@ -135,6 +138,20 @@ directive 时 Task 1/3 的 context 与行为 bit-for-bit 不变。
   purge 后不得调用旧 fun，以及每次相关 upgrade/downgrade 都重新生成 target-version fun。
 - [ ] 未实现该能力时，base runtime 可以 `unstable_capture` 拒绝 local-fun TargetEnv；用户文档应
   推荐 external MFA/data descriptor。
+
+## Linked ContinuationRef integration（2026-08-28，未实现）
+
+- [ ] migration enumeration覆盖 callbacks store中所有 `#sf_callback{frame,next_ref,...}` values，包括
+  ActionMRef current nodes和internal ContinuationRef outer nodes；legacy `#callback{}` 保持隔离。
+- [ ] up/down/current-refresh只替换每个 node.frame，bit-for-bit保留 key、next_ref、request、AccRef、
+  timer、monitor和protocol metadata；不得递归改写内嵌父链。
+- [ ] mismatch/forced-abort不定位root/final Ref；消费current node后把规定 failure Outcome dispatch给
+  direct next_ref，普通 success frame跳过，显式 failure handler可消费。
+- [ ] downgrade preflight覆盖所有stable nodes和引用边；API-level error不得提交部分 frame、取消资源或
+  dispatch failure。
+- [ ] result reason把`notification`改为`dispatch => forwarded | handled | unhandled | {failed,term()}`。
+- [ ] 添加deep nested/case、multi-module、internal outer node、legacy mixed store、next_ref preservation、
+  one-hop failure、handler consumption、atomic downgrade和orphan-index integration tests。
 
 ## Initiative final acceptance
 

@@ -107,6 +107,10 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 
 ## 8. sf-cc integration and self-describing resolution
 
+> 2026-08-28：本节中递归 `sf_next`、`sf_cc_ref` terminal、`callback.sf_cc_mref` root ownership 和
+> structural failure 直达 terminal 的已完成项，已被第 9 节 linked continuation contract supersede；
+> check 状态仅保留历史实现事实。
+
 - [x] Remove full sf_cc descriptor ownership from sf-do and terminate stable chains with `sf_cc_ref`.
 - [x] Route wait、ordinary runners and sf-prefixed runners through the common CcRef core without changing ordinary results.
 - [x] Keep the current four-tuple callback record encoding only; do not add old tuple or tagged outcome compatibility.
@@ -122,3 +126,19 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] Terminal-complete structural resolution failure through CcRef without invoking the invalid target MFA.
 - [x] Cover explicit context、ordinary/frame composition、CcRef consistency、literal Vsn、owner resolution and
   narrowed error ownership in integration tests.
+
+## 9. Linked continuation reference rewrite（2026-08-28，未实现）
+
+- [ ] 定义统一 `ContinuationRef` 和 stable `#sf_callback{current frame, next_ref, lifecycle metadata}`；
+  legacy `#callback{}` 保持 ordinary encoding。
+- [ ] 删除 recursive `sf_next.downstream`、`sf_cc_ref` terminal 和 stable callback 的 root `sf_cc_mref`。
+- [ ] 让 `bind_frame` 自动物化直接父层 node；nested suspension 只保存 `InnerFrame + OuterRef`。
+- [ ] 将 normal resume 改为逐节点 take/dispatch；returned Monad 运行于 direct `next_ref`。
+- [ ] 将 frame resolution/migration/invocation failure 改为跳过普通 success frame并只向外 dispatch 一层；
+  增加显式 failure-handler consumption tests。
+- [ ] 更新 callback writer/decoder、timeout/DOWN/message routing，证明 request、monitor、timer 和 accumulator
+  lifecycle 不因父层物化而重建。
+- [ ] 更新 inspection/matcher，使默认 summary 只暴露 current frame；需要父链时通过受控 Ref traversal，
+  不暴露 Env 或 callback payload。
+- [ ] 替换 nested structure tests：不得再断言 `[sf_next, sf_next, sf_cc_ref]`，改为断言独立 linked nodes、
+  no-root-duplication、multi-module lazy resolution 和 exactly-once consumption。
