@@ -1003,7 +1003,6 @@ context_ast(Boundary, Pos) ->
 manifest(Module, Vsn, Plans) ->
     Frames = lists:sort([
         #{identity => maps:get(identity, Boundary),
-            step_name => maps:get(step_name, Boundary),
             mfa => maps:get(mfa, Boundary),
             required_captures => lists:sort(maps:get(captures, Boundary))}
         || Plan <- Plans, Boundary <- maps:get(boundaries, Plan)

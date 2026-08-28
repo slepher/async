@@ -1,7 +1,7 @@
 %%% Current sf-do frame validation, resolution and invocation.
 -module(async_sf_runtime).
 
--export([new_frame/2, continue/5, validate_frame/2, validate_frame_shape/1]).
+-export([new_frame/2, continue/5]).
 
 new_frame({Module, Function, 2} = MFA,
         #{protocol := 1, block := Block, step_name := StepName,
@@ -11,7 +11,7 @@ new_frame({Module, Function, 2} = MFA,
     Frame = #{kind => sf_frame, protocol => 1, block => Block,
         step_name => StepName, identity => Identity, module => Module,
         vsn => Vsn, mfa => MFA, env => Env},
-    case validate_frame_shape(Frame) of
+    case frame_shape(Frame) of
         ok when map_size(Context) =:= 7 -> Frame;
         ok -> erlang:error({invalid_frame_context, MFA, Context});
         {error, Reason} -> erlang:error({invalid_frame_context, Reason})
@@ -36,7 +36,10 @@ run_remainder(Action, ParentRef, MR) ->
 
 parent_runner(none, MR) -> fun(Input) -> async_r_t:return(Input, MR) end;
 parent_runner(ParentRef, MR) ->
-    fun(Input) -> async_sf_cc:dispatch(ParentRef, Input, MR) end.
+    fun
+        ({message, _} = Input) -> async_sf_cc:dispatch_message(ParentRef, Input, MR);
+        (Input) -> async_sf_cc:dispatch(ParentRef, Input, MR)
+    end.
 
 structural_failure(Reason, none, MR) ->
     async_r_t:return({error, {sf_runtime, Reason}}, MR);
@@ -44,29 +47,12 @@ structural_failure(Reason, ParentRef, MR) ->
     async_sf_cc:dispatch_failure(ParentRef, {error, {sf_runtime, Reason}}, MR).
 
 invoke_frame(Module, Function, Input, Env) ->
-    try erlang:apply(Module, Function, [Input, Env]) of
-        Return -> {ok, Return}
-    catch
-        error:undef:Stacktrace ->
-            case current_mfa_undef(Module, Function, Input, Env, Stacktrace) of
-                true -> unavailable;
-                false -> erlang:raise(error, undef, Stacktrace)
-            end
+    case erlang:function_exported(Module, Function, 2) of
+        true -> {ok, erlang:apply(Module, Function, [Input, Env])};
+        false -> unavailable
     end.
 
-current_mfa_undef(Module, Function, Input, Env,
-        [{Module, Function, [Input, Env], _} | _]) -> true;
-current_mfa_undef(Module, Function, _Input, _Env,
-        [{Module, Function, 2, _} | _]) -> true;
-current_mfa_undef(_Module, _Function, _Input, _Env, _Stacktrace) -> false.
-
-validate_frame(Frame, Direction) ->
-    case resolve_frame(Frame, Direction) of
-        {ok, _} -> ok;
-        Error -> Error
-    end.
-
-validate_frame_shape(#{kind := sf_frame, protocol := 1, block := Block,
+frame_shape(#{kind := sf_frame, protocol := 1, block := Block,
         step_name := StepName, identity := Identity, module := Module,
         vsn := _Vsn, mfa := {Module, Function, 2}, env := Env})
         when is_atom(Block), (is_atom(StepName) orelse StepName =:= undefined),
@@ -76,17 +62,16 @@ validate_frame_shape(#{kind := sf_frame, protocol := 1, block := Block,
         true -> ok;
         false -> {error, invalid_frame_fields}
     end;
-validate_frame_shape(#{protocol := Protocol}) when Protocol =/= 1 ->
+frame_shape(#{protocol := Protocol}) when Protocol =/= 1 ->
     {error, {unsupported_protocol, Protocol}};
-validate_frame_shape(Other) -> {error, {invalid_frame, Other}}.
+frame_shape(Other) -> {error, {invalid_frame, Other}}.
 
-valid_identity(undefined, _Block, StepName)
-        when is_atom(StepName); StepName =:= undefined -> true;
+valid_identity(undefined, _Block, undefined) -> true;
 valid_identity({1, Block, StepName}, Block, StepName) when is_atom(StepName) -> true;
 valid_identity(_, _, _) -> false.
 
 resolve_frame(Frame, Direction) ->
-    case validate_frame_shape(Frame) of
+    case frame_shape(Frame) of
         ok -> resolve_current_manifest(Frame, Direction);
         Error -> Error
     end.
@@ -105,7 +90,7 @@ current_manifest(Module, MFA) ->
                 false -> {error, {missing_manifest, MFA}}
             end;
         {error, nofile} -> {error, {missing_manifest_or_mfa, MFA}};
-        {error, Reason} -> erlang:error({module_load_failed, Module, Reason})
+        {error, Reason} -> {error, Reason}
     end.
 
 resolve_manifest_frame(#{protocol := 1, block := Block, step_name := StepName,
