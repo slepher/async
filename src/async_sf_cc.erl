@@ -269,7 +269,7 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
         State <- async_r_t:do_get_state(MR),
         case async_util:find(Ref, Get(State)) of
             {ok, Node} ->
-                case preserve_outer_with_children(Ref, Node, Get(State)) of
+                case preserve_outer_with_children(Ref, Node, Mode, Get(State)) of
                     true -> dispatch_pending_parent(Ref, Node, Outcome, Mode,
                         State, Get, MR);
                     false ->
@@ -287,15 +287,20 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
     ]).
 
 dispatch_pending_parent(Ref, Node, Outcome, Mode, State, Get, MR) ->
-    case preflight_node_in_store(Ref, Node, Get(State)) of
-        ok ->
-            case execute_node(Node, Outcome, Mode, MR) of
-                {ok, Action} -> Action;
+    case maps:get(mode, Node, async_r_t) of
+        direct_state ->
+            async_r_t:return(unhandled, MR);
+        async_r_t ->
+            case preflight_node_in_store(Ref, Node, Get(State)) of
+                ok ->
+                    case execute_node(Node, Outcome, Mode, MR) of
+                        {ok, Action} -> Action;
+                        {error, Reason} ->
+                            erlang:error({invalid_continuation, Reason})
+                    end;
                 {error, Reason} ->
                     erlang:error({invalid_continuation, Reason})
-            end;
-        {error, Reason} ->
-            erlang:error({invalid_continuation, Reason})
+            end
     end.
 
 dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
@@ -309,7 +314,7 @@ dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
         end
     ]).
 
-preserve_outer_with_children(Ref, Node, Callbacks) ->
+preserve_outer_with_children(Ref, Node, success, Callbacks) ->
     case async_util:callback_value_kind(Node) of
         outer_node ->
             case async_util:find(?CHILDREN(Ref), Callbacks) of
@@ -318,7 +323,9 @@ preserve_outer_with_children(Ref, Node, Callbacks) ->
                 _ -> false
             end;
         _ -> false
-    end.
+    end;
+preserve_outer_with_children(_Ref, _Node, _Mode, _Callbacks) ->
+    false.
 
 dispatch_continuation(Ref, Outcome, Offset, State) ->
     dispatch_state(Ref, Outcome, success, Offset, State).
