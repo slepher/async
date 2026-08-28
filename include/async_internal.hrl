@@ -1,7 +1,13 @@
-%% Shared callback-store encoding.  The three-tuple clause in
-%% async_util:decode_callback/1 is the on-upgrade compatibility boundary.
+%% Shared callback-store encoding.
 -record(callback, {
     cc,
     acc_ref,
-    sf_cc_mref = undefined
+    parent_ref
+}).
+
+-record(sf_callback, {
+    frame,
+    acc_ref,
+    parent_ref,
+    timer_ref = undefined
 }).
