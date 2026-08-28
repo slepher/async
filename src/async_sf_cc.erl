@@ -267,21 +267,58 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
         MR
      || {Get, Set} <- async_r_t:ask(MR),
         State <- async_r_t:do_get_state(MR),
-        case take_node(Ref, State, Get, Set) of
-            {unhandled, _} -> async_r_t:return(unhandled, MR);
-            {error, Reason, _} -> erlang:error({invalid_continuation, Reason});
-            {ok, Node, CleanState} ->
-                do([
-                    MR
-                 || async_r_t:do_put_state(CleanState, MR),
-                    case execute_node(Node, Outcome, Mode, MR) of
-                        {ok, Action} -> Action;
-                        {error, Reason} ->
-                            erlang:error({invalid_continuation, Reason})
-                    end
-                ])
+        case async_util:find(Ref, Get(State)) of
+            {ok, Node} ->
+                case preserve_outer_with_children(Ref, Node, Get(State)) of
+                    true -> dispatch_pending_parent(Ref, Node, Outcome, Mode,
+                        State, Get, MR);
+                    false ->
+                        case take_node(Ref, State, Get, Set) of
+                            {unhandled, _} -> async_r_t:return(unhandled, MR);
+                            {error, Reason, _} ->
+                                erlang:error({invalid_continuation, Reason});
+                            {ok, TakenNode, CleanState} ->
+                                dispatch_taken_node(TakenNode, Outcome, Mode,
+                                    CleanState, MR)
+                        end
+                end;
+            error -> async_r_t:return(unhandled, MR)
         end
     ]).
+
+dispatch_pending_parent(Ref, Node, Outcome, Mode, State, Get, MR) ->
+    case preflight_node_in_store(Ref, Node, Get(State)) of
+        ok ->
+            case execute_node(Node, Outcome, Mode, MR) of
+                {ok, Action} -> Action;
+                {error, Reason} ->
+                    erlang:error({invalid_continuation, Reason})
+            end;
+        {error, Reason} ->
+            erlang:error({invalid_continuation, Reason})
+    end.
+
+dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
+    do([
+        MR
+     || async_r_t:do_put_state(CleanState, MR),
+        case execute_node(Node, Outcome, Mode, MR) of
+            {ok, Action} -> Action;
+            {error, Reason} ->
+                erlang:error({invalid_continuation, Reason})
+        end
+    ]).
+
+preserve_outer_with_children(Ref, Node, Callbacks) ->
+    case async_util:callback_value_kind(Node) of
+        outer_node ->
+            case async_util:find(?CHILDREN(Ref), Callbacks) of
+                {ok, #{kind := sf_reverse_index, protocol := 1,
+                    children := [_ | _]}} -> true;
+                _ -> false
+            end;
+        _ -> false
+    end.
 
 dispatch_continuation(Ref, Outcome, Offset, State) ->
     dispatch_state(Ref, Outcome, success, Offset, State).
