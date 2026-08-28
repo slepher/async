@@ -946,8 +946,14 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
                 {?MODULE, IM}, Direction),
             AccRef = maps:get(acc_ref, Decoded),
             MR = async_r_t:new(IM),
-            Scoped = monad:'>>'(ARTA,
-                async_sf_cc:cleanup_accumulator(AccRef, MR), MR),
+            Scoped = async_r_t:'>>='(ARTA,
+                fun(Result) ->
+                    do([
+                        MR
+                     || async_sf_cc:cleanup_accumulator(AccRef, MR),
+                        async_r_t:return(Result, MR)
+                    ])
+                end, MR),
             async_r_t:run_scope(Scoped, {CallbacksG, CallbacksS}, AccRef,
                 NState, MR);
         error ->
