@@ -7,7 +7,8 @@
 -include_lib("common_test/include/ct.hrl").
 -include_lib("eunit/include/eunit.hrl").
 
-all() -> [accepted_external_matrix, rejected_source_forms, diagnostic_positions].
+all() -> [accepted_external_matrix, external_fun_context_lifecycle,
+    rejected_source_forms, diagnostic_positions].
 
 accepted_external_matrix(_Config) ->
     lists:foreach(fun(Expression) ->
@@ -21,6 +22,32 @@ accepted_external_matrix(_Config) ->
         "exec_sf_cc(Promise, fun erlang:send/2, Context, 2, State)",
         "exec_sf_cc(Promise, fun maps:get/3, Context, 2, State)"
     ]).
+
+%% R3: the accepted external fun term and opaque Context survive generated
+%% source expansion and a real suspension; this is not another syntax matrix.
+external_fun_context_lifecycle(_Config) ->
+    Expression = "run_with_sf_cc(Promise, "
+        "fun async_sf_cc_macro_SUITE:runtime_callback/3, Context, 2, State)",
+    {ok, Module, Binary, _Warnings} = compile_expression(Expression),
+    {module, Module} = code:load_binary(Module, "sf_cc_macro_runtime.erl", Binary),
+    try
+        Ref = make_ref(), Token = make_ref(), State0 = {state, #{}},
+        {ok, State1} = Module:f(async_m:promise(Ref), ignored,
+            {self(), Token}, State0),
+        {reply, {state, #{}}} = async_m:run_info({Ref, reply}, 2, State1),
+        receive
+            {macro_runtime, Token, reply, {state, #{}}} -> ok
+        after 1000 ->
+            ct:fail(missing_macro_runtime_callback)
+        end
+    after
+        code:purge(Module),
+        code:delete(Module)
+    end.
+
+runtime_callback(Outcome, {Pid, Token}, State) ->
+    Pid ! {macro_runtime, Token, Outcome, State},
+    State.
 
 rejected_source_forms(_Config) ->
     Expressions = [

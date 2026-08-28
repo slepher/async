@@ -75,24 +75,55 @@ match_state(_State, _Type, _Len) ->
 
 callback_exists(Callbacks) ->
     lists:any(
-        fun({_Key, Value}) -> callback_value_kind(Value) =:= action_callback end,
+        fun({_Key, Value}) ->
+            lists:member(callback_value_kind(Value), [stable_action, ordinary_action])
+        end,
         to_list(Callbacks)
     ).
 
-decode_callback(#callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = CcRef}) ->
-    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => CcRef}};
+decode_callback(#callback{cc = Cc, acc_ref = AccRef, parent_ref = ParentRef} = Value) ->
+    case callback_value_kind(Value) of
+        ordinary_action ->
+            {ok, #{kind => ordinary_action, cc => Cc, acc_ref => AccRef,
+                parent_ref => ParentRef}};
+        _ -> error
+    end;
+decode_callback(#sf_callback{frame = Frame, acc_ref = AccRef,
+        parent_ref = ParentRef, timer_ref = TimerRef} = Value) ->
+    case callback_value_kind(Value) of
+        stable_action ->
+            {ok, #{kind => stable_action, frame => Frame, acc_ref => AccRef,
+                parent_ref => ParentRef, timer_ref => TimerRef}};
+        _ -> error
+    end;
 decode_callback(_) ->
     error.
 
-callback_value_kind(Value) ->
-    case decode_callback(Value) of
-        {ok, _} -> action_callback;
-        error ->
-            case Value of
-                #{kind := sf_cc_ref, protocol := 1, cc := _} -> sf_cc_ref;
-                _ -> other
-            end
-    end.
+callback_value_kind(#callback{cc = Callback, acc_ref = AccRef,
+        parent_ref = ParentRef}) when is_function(Callback, 1), is_reference(AccRef),
+        (is_reference(ParentRef) orelse ParentRef =:= none) -> ordinary_action;
+callback_value_kind(#callback{}) -> other;
+callback_value_kind(#sf_callback{acc_ref = AccRef, parent_ref = ParentRef})
+        when is_reference(AccRef), (is_reference(ParentRef) orelse ParentRef =:= none) ->
+    stable_action;
+callback_value_kind(#sf_callback{acc_ref = undefined, parent_ref = ParentRef})
+        when is_reference(ParentRef); ParentRef =:= none -> intermediate_node;
+callback_value_kind(#sf_callback{}) -> other;
+callback_value_kind(#{kind := ordinary_continuation, protocol := 1,
+        callback := Callback, parent_ref := ParentRef})
+        when is_function(Callback, 1),
+            (is_reference(ParentRef) orelse ParentRef =:= none) -> intermediate_node;
+callback_value_kind(#{kind := sf_cc, protocol := 1, mode := async_r_t,
+        callback := Callback, context := _Context, parent_ref := none})
+        when is_function(Callback, 2) -> outer_node;
+callback_value_kind(#{kind := sf_cc, protocol := 1, mode := direct_state,
+        callback := Callback, context := _Context, parent_ref := none})
+        when is_function(Callback, 2); is_function(Callback, 3) -> outer_node;
+callback_value_kind(#{kind := sf_reverse_index, protocol := 1}) -> other;
+callback_value_kind(Value) when is_tuple(Value), tuple_size(Value) > 0,
+        element(1, Value) =:= callback -> other;
+callback_value_kind(Value) when is_map(Value); is_list(Value); is_tuple(Value) -> accumulator;
+callback_value_kind(_) -> other.
 
 to_list(Dict) when is_map(Dict) ->
     maps:to_list(Dict);
@@ -117,8 +148,7 @@ fun_availability(Fun) when is_function(Fun) ->
                     end;
                 {error, nofile} ->
                     {unavailable, MFA};
-                {error, Reason} ->
-                    {error, {module_load_failed, MFA, Reason}}
+                {error, Reason} -> {error, Reason}
             end
     end.
 %%--------------------------------------------------------------------
