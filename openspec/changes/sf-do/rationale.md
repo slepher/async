@@ -33,8 +33,9 @@ runtime 通过 external MFA 进入当前加载版本的 generated function；该
 bindings、消费 action outcome，并返回后续 Monad。
 
 source 可以在非最终 action 前用 standalone literal atom qualifier 显式提供 StepName。runtime 只用
-lexical BlockPath 和 StepName 判断当前版本是否仍声明同一个恢复点；它不比较 Action AST，也不从
-source index 或代码相似度派生恢复身份。缺少 StepName 的 boundary 仍可普通执行，但 transform
+`{Protocol, module-wide Block, StepName}` 判断当前版本是否仍声明同一个恢复点；lexical parent、函数
+提取、Promise传递、Action AST、source index或代码相似度都不派生恢复身份。缺少显式Block或StepName的
+boundary仍可普通执行，但transform
 必须产生 warning，且该 frame 不获得 migration 资格。
 
 因此，`sf_do` 解决的是由 transform 生成的 bind/then continuation 对旧 code version 的隐式依赖。
@@ -61,19 +62,23 @@ ordinary fun callback 自动转换成 stable frame。它建立的边界仅是：
 suspension 保存的 continuation 使用 external data frame；业务主动保存的 local fun 由应用和显式
 migration 负责。
 
-该边界通过显式 `SfContext` 参数传播，不使用进程字典。ordinary bind 仍产生 anonymous continuation，
-只有 `bind_frame` 创建 frame。当 stable frame 的 downstream 是 ordinary fun 时，runtime 把该 fun
-物化为同一 callbacks store 中的 continuation node；stable callback 只保存指向该 node 的 `next_ref`。
+该边界通过显式 `SfContext` 参数传播，不使用进程字典。ordinary bind 仍产生 anonymous continuation；
+真正挂起的 Promise writer把该 fun 与direct `parent_ref` 保存进ordinary `#callback{}`，无需拆包Promise。
+只有 `bind_frame` 创建 frame。当 stable frame 的 downstream 是尚未可寻址的 ordinary fun 时，runtime
+才把该 fun物化为同一 callbacks store中的continuation node；完整 stable callback保留自身所有 action
+lifecycle fields，其唯一 parent edge指向该node。
 
 ## 最终完成不属于 frame 本身
 
 frame 只描述“收到 Input 后从哪个稳定边界继续执行”，不拥有完整父层或最终 callback。父层同样是
-callbacks store 中的一个 node；当前 stable callback 只保存直接 `next_ref`。最外层 callback 只是
-`next_ref = none` 的叶节点，不使用另一种 FinalCcRef 类型。
+callbacks store 中的一个 node；当前 stable callback只保存一个直接 parent edge，但仍完整保存`frame`、
+`acc_ref`和timer lifecycle fields。最外层 callback只是`parent_ref = none` 的叶节点，
+不使用另一种 FinalCcRef 类型。
 
-这种表示让 normal completion 和 failure 都遵循同一条逐节点路径。success 执行当前 frame；frame
-resolution、migration 或 invocation failure 跳过普通 success frame并交给直接外层。若外层仍不能处理，
-继续沿 `next_ref` 传播；显式 failure handler 可以在任意层消费。系统不需要在每层复制 root reference。
+这种表示让 normal completion 和 failure 都遵循同一条逐节点路径。ordinary success调用current `cc`，
+frame success执行current frame；current `cc`/frame本身不可用、frame resolution或migration failure会
+跳过当前success continuation并交给直接外层。若外层仍不能处理，
+继续沿 `parent_ref` 传播；显式 failure handler 可以在任意层消费。系统不需要在每层复制 root reference。
 
 `wait`、ordinary anonymous callback runner 和 explicit sf-cc runner 可以把自己的 completion 作为同一种
 continuation node 注册；只有显式 external fun 获得 compile-time source guarantee。调用已经成功进入
@@ -88,4 +93,4 @@ MFA 前逐节点 resolve。nested chain 中来自其他 modules 的 frame 保持
 
 sf-do 负责产生这类 self-describing frame 和 current target manifest；是否映射 endpoint、转换 Env/Input、
 使用 optional historical metadata 或在 downgrade 时 fail closed，属于 sf-migrate。无法 resolve 时不猜测
-旧调用栈或重放前置 action，而是把 failure 交给当前 node 的直接 `next_ref`。
+旧调用栈或重放前置 action，而是把 failure 交给当前 node 的直接 `parent_ref`。

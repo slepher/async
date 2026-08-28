@@ -2,23 +2,27 @@
 
 ## 2026-08-28 — linked continuation migration contract（机制同步，未实现）
 
-- migration 的持久化对象从 callback 内递归 continuation chain 收敛为单个 stable node：
-  `#sf_callback{frame = CurrentFrame, next_ref = ParentRef, ...}`。
+- migration identity同步为显式`{Protocol, Block, StepName}`；plan、manifest与result按Block/StepName直接
+  索引，不保存或交换AsyncId/hash。相同identity/MFA默认继承，不同Block/Step必须显式mapping。
+- migration 的持久化对象从 callback 内递归 continuation chain 收敛为单个完整 stable node：
+  `#sf_callback{frame = CurrentFrame, acc_ref = AccRef, parent_ref = ParentRef,
+  timer_ref = TimerRef}`。`frame + parent_ref` 只是
+  continuation 投影，不是完整 record。
 - eager migration 扫描 callbacks store 中所有 stable nodes，并逐 entry 迁移其当前 frame；不得递归改写
   某个 callback 内的 outer chain，也不得依赖每层携带 final/root CcRef。
-- reply-time lazy migration 只解析当前节点。成功后按 `next_ref` 继续；failure/abort 作为 Outcome 只转发
+- reply-time lazy migration 只解析当前节点。成功后按 `parent_ref` 继续；failure/abort 作为 Outcome 只转发
   给直接外层节点，由外层继续传播或处理，不再直接 terminal-complete root CcRef。
 - downgrade preflight 必须覆盖本次将提交的全部 stable nodes 和引用边；commit 只替换对应 node.frame，
-  保留 entry key、`next_ref`、request/timer/monitor/accumulator lifecycle 数据。
-- legacy `#callback{}` 继续保持隔离；统一的是 continuation reference，不是把 ordinary legacy callback
-  误分类为可迁移 frame。
+  保留 entry key、`parent_ref`、request/timer/monitor/accumulator lifecycle 数据。
+- ordinary `#callback{cc,acc_ref,parent_ref,...}` 继续保持隔离；统一的是 continuation reference，不是把
+  anonymous ordinary callback误分类为可迁移 frame。
 - 本条 supersede 旧文档中所有“通过 callback root CcRef terminal-abort”以及“递归 chain migration”含义；
-  StepName/BlockPath identity、directional Env/Input conversion 和 OTP downgrade ordering 不变。
+  StepName/Block identity、directional Env/Input conversion 和 OTP downgrade ordering 不变。
 
 ## 2026-08-24
 
 - 收敛 `sf-do` dependency 为 inline StepName marker：使用 `sf_do(Comprehension)` 与
-  `sf_do(BlockName, Comprehension)`；named identity 只使用 Protocol、BlockPath 和 StepName，
+  `sf_do(BlockName, Comprehension)`；named identity 只使用 Protocol、Block 和 StepName，
   unnamed frame warning 且 migration failure。删除 derived identity、Action canonicalizer/AsyncForm
   digest 依赖。
 - historical declaration 同步收敛为 `sf_migrate(OldDoBlock, Spec)`，StepName 内联在 historical
@@ -27,10 +31,10 @@
   2026-08-21 的 derived/adoption 记录仅保留为被本条取代的历史草案。
 - frame Env 与 CaptureAbi 收敛为 capture-name atom map及排序后的 atom list，不为 capture key/layout
   维护 SHA、binder-origin identity 或第二套 canonicalizer。
-- 修正 Env migration 边界：相同 AsyncId/MFA 仍默认 automatic inheritance，但允许显式配置
+- 修正 Env migration 边界：相同Protocol/Block/StepName/MFA仍默认automatic inheritance，但允许显式配置
   directional `migrate_env` 的 same-identity Env-only mapping，用于变量改名、capture set 变化或
-  同名变量 value 语义转换；该 path 只替换 Env，不改变 AsyncId/MFA。
-- 因此 2026-08-21 中“`sf-migrate` 只处理不同 AsyncId”的表述被本条取代；无 migrator 的
+  同名变量 value 语义转换；该 path 只替换 Env，不改变boundary identity/MFA。
+- 因此 2026-08-21 中“`sf-migrate` 只处理不同boundary identity”的表述被本条取代；无 migrator 的
   same-identity mapping 仍报 `redundant_sf_migration_mapping`。
 - 增加 fun-valued Env 责任说明：upgrade 不会自动清除或重写 State 中的 anonymous/local fun，
   source body 未变化也不表示旧 fun 已指向新 code。原则上避免捕获；需要时由 explicit Env migrator
@@ -45,16 +49,15 @@
   增加 named historical `sf_migrate(StepNames, [Monad || ...], Spec)` 与
   `{step,StepName}` selector，用于首次
   derived → named、named → derived 或 step rename；相同 named identity 仍自动继承。
-- 划清 `sf-do` automatic inheritance 与 `sf-migrate` 边界：protocol、BlockName、
-  async-only index 和 scope-aware canonical AsyncForm 未变时 AsyncId/MFA 不变，
+- 划清 `sf-do` automatic inheritance 与 `sf-migrate` 边界：Protocol、BlockName、StepName和MFA未变时，
   pending frame 无需 declaration、anchor、plan 或 migration API 自动继承。
 - continuation、bind pattern、CaptureAbi 和 Env runtime values 不再参与 async identity；
-  Capture/Env 问题归为执行环境或显式 Env migration，不把同一 AsyncId 重新
+  Capture/Env 问题归为执行环境或显式 Env migration，不把同一 StepName 重新
   分类为不同 async。
-- `sf-migrate` 只处理 derived fields、named BlockName/StepName 或 identity mode 变化造成的
-  source/target AsyncId 不同；无显式 mapping 时默认 directional `incompatible_frame`，禁止
+- `sf-migrate` 只处理named BlockName/StepName identity变化；无显式mapping时默认directional
+  `incompatible_frame`，禁止
   相邻 index、AST/capture 相似度、bind name 或 runtime value fuzzy matching。
-- historical/current selector 现在解析为 AsyncId；1-based `bind|then|let` source index
+- historical/current selector 现在解析为 StepName；1-based `bind|then|let` source index
   仍用于人类定位，另外建立不计 let 的零基 async-only index。
 
 ## 2026-08-18
@@ -67,7 +70,7 @@
 - step mapping 增加 `directions` allowlist。up/down 可分别启用并配置独立 Env migrator，
   不再接受方向不明的 migrator，也不推断逆迁移函数。
 - migration manifest 拆分 up/down plans；historical metadata 增加 downgrade 构造 target frame
-  所需的 BlockName、AsyncId、MFA 与 CaptureAbi。downgrade 只写入 historical MFA，不提前执行。
+  所需的 BlockName、StepName、MFA 与 CaptureAbi。downgrade 只写入 historical MFA，不提前执行。
 - downgrade 调用方必须先生成 target historical State layout，并把 target callbacks offset
   传入 migration API。所有 current source frame、down plan 和 historical target metadata
   必须在 mutation 前完成原子预检；失败会阻止旧 module 加载。

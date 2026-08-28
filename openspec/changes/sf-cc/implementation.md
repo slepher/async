@@ -19,7 +19,7 @@ parent materialization，以及 ordinary/stable action entry dispatch。
 
 ### `async_sf_runtime`
 
-负责 current `sf_frame` validation/resolution/invocation。它只接收 current frame 和 direct `next_ref`，
+负责 current `sf_frame` validation/resolution/invocation。它只接收 current frame 和 direct `parent_ref`，
 不得遍历或构造递归 continuation chain。
 
 ### `async_r_t` / `async_util` / `async_m`
@@ -30,10 +30,14 @@ parent materialization，以及 ordinary/stable action entry dispatch。
 
 ## 2. Shared Store Encoding
 
-legacy ordinary callback 保持既有 encoding：
+ordinary action callback 使用：
 
 ```erlang
--record(callback, {cc, acc_ref}).
+-record(callback, {
+    cc,
+    acc_ref,
+    parent_ref
+}).
 ```
 
 stable action callback 使用独立 encoding：
@@ -41,21 +45,22 @@ stable action callback 使用独立 encoding：
 ```erlang
 -record(sf_callback, {
     frame,
-    next_ref,
     acc_ref,
-    timer_ref = undefined,
-    protocol_version = 1,
-    code_change = undefined
+    parent_ref,
+    timer_ref = undefined
 }).
 ```
 
 精确字段可由 shared internal header扩展 monitor/resource metadata，但以下语义不可改变：
 
-- `frame` 只表示 current reply consumer；
-- `next_ref` 只指向 direct outer node；
+- `cc`/`frame` 只表示 current reply consumer；
+- `parent_ref` 只指向 current `cc`/`frame` 的 direct continuation parent；
+- continuation payload只有current `cc`/frame和direct `parent_ref`；entry仍完整保存`acc_ref`和timer等
+  action lifecycle metadata；
 - entry 不保存 outer frame副本、recursive downstream 或 root/final Ref；
-- ActionMRef 是 stable callback 的 external reply key；intermediate node使用内部 Ref key；
-- legacy `#callback{}` 不被猜测或升级为 `#sf_callback{}`。
+- ActionMRef 是 ordinary/stable callback 的 external reply key；intermediate node使用内部 Ref key；
+- ordinary `#callback{}` 不被猜测或升级为 `#sf_callback{}`，但两者都必须保存显式 `parent_ref`；
+- 缺少 `parent_ref` 的旧 callback tuple 不属于本 change 的 reader compatibility boundary。
 
 ## 3. Unified ContinuationRef Nodes
 
@@ -67,16 +72,16 @@ stable action callback 使用独立 encoding：
   | #{kind := ordinary_continuation,
       protocol := 1,
       callback := fun(),
-      next_ref := continuation_ref() | none}
+      parent_ref := continuation_ref() | none}
   | #{kind := sf_cc,
       protocol := 1,
       mode := async_r_t | direct_state,
       callback := fun(),
       context := term(),
-      next_ref := none}.
+      parent_ref := none}.
 ```
 
-FinalCcRef 与 OuterRef 不得成为不同 reference types。value shape 决定 executor，`next_ref = none`
+FinalCcRef 与 OuterRef 不得成为不同 reference types。value shape 决定 executor，`parent_ref = none`
 决定链结束。node absence 是 consumed marker；不得创建 done tombstone。
 
 `sf_cc` callback/context contract保持：
@@ -94,7 +99,7 @@ FinalCcRef 与 OuterRef 不得成为不同 reference types。value shape 决定 
 2. 注册 ordinary/library/sf_cc outer node；
 3. 用该 Ref作为 current parent运行 Promise；
 4. immediate completion在同一 evaluation内 dispatch/take outer node；
-5. suspension只在 stable callback中保存 direct parent Ref。
+5. ordinary/stable suspension都在各自 action callback中保存 direct parent Ref。
 
 `run_cc`、`run_with_cc`、`exec_cc`、`run`、`wait` 保持既有 arguments、normalization 和正常结果。
 它们注册 ordinary/library outer node，不获得 external-fun source guarantee。
@@ -106,13 +111,15 @@ FinalCcRef 与 OuterRef 不得成为不同 reference types。value shape 决定 
 ```erlang
 undefined
 | #{current := {frame, SfFrame} | {ordinary, Fun} | {ref, ContinuationRef},
+    parent_ref := ContinuationRef | none,
     runner := fun()}.
 ```
 
-- ordinary `>>=` 继续创建 anonymous `K`；
-- Promise 仅在实际 `K =:= SfContext.runner` 时写 stable `#sf_callback{}`；
+- ordinary `>>=` 继续创建 anonymous `K`并透传 current `parent_ref`；
+- Promise 仅在实际 `K =:= SfContext.runner` 时写 stable `#sf_callback{}`；否则写
+  `#callback{cc = K, parent_ref = ParentRef, ...}`；
 - `bind_frame(Action,Frame,...)` 若 current parent尚不可寻址，先物化 ParentRef；
-- 新 Action在 `{current = Frame, next_ref = ParentRef}` 下执行；
+- 新 Action在 `{current = Frame, parent_ref = ParentRef}` 下执行；
 - nested bind每次只物化一层，因此 dynamic case/try/nested path无需静态枚举；
 - ordinary downstream被物化为 ordinary node，不嵌入 stable frame data。
 
@@ -138,17 +145,19 @@ dispatch_continuation(Ref, Outcome, OffsetOrLens, State) ->
 
 | Node | success | failure |
 |---|---|---|
-| stable success frame | resolve/invoke frame，returned Monad运行于 `next_ref` | 不调用 frame，dispatch `next_ref` |
+| stable success frame | resolve/invoke frame，returned Monad运行于 `parent_ref` | 不调用 frame，dispatch `parent_ref` |
 | explicit failure handler | 按 handler contract | handler MAY consume或产生新 Outcome |
-| ordinary continuation | 调用当前 continuation | dispatch `next_ref`；若无 next则按 ordinary outer contract |
+| ordinary continuation | 调用当前 continuation；不得在正常返回后额外 dispatch `parent_ref` | 仅当 current continuation 本身不可调用时 dispatch `parent_ref`；若无 parent则按 ordinary outer contract |
 | outer sf_cc | invoke/normalize callback | invoke/normalize callback |
 
-frame protocol/manifest/MFA/migration failure使用规定 Outcome并只向 direct `next_ref` 转发。dispatcher不得
+frame protocol/manifest/MFA/migration failure使用规定 Outcome并只向 direct `parent_ref` 转发。dispatcher不得
 搜索 root、跳过多个节点或直接定位 final callback。
 
 ## 7. Exception Boundary
 
-只有能够精确归属到“当前 continuation 本身不可调用”的 `badfun`/`undef` 才转换为 failure并向外一层。
+只有能够精确归属到“当前 continuation 本身不可调用”的 `badfun`/`undef` 才转换为 failure并向
+`parent_ref` 外移一层。对 ordinary action，runtime MAY 捕获 `error:{badfun, Cc}`，但其中 term MUST 与
+正在调用的 `#callback.cc` 完全相同。
 一旦已经进入用户 callback，其内部调用产生的 `badfun`、`undef` 或其他 exception保持 callback contract，
 不得误分类为 continuation availability failure。
 
@@ -164,7 +173,7 @@ exactly-once以每个 node为单位，而不是按重复 root CcRef批量完成�
 - callback crash/invalid return不恢复 node；
 - direct `/3` 只看到 current node direct cleanup后的 CleanState。
 
-normal execution只需要 forward `next_ref`。主动 cancellation或 parallel teardown若需从 outer node反向找到
+continuation execution只需要 current node 的 direct `parent_ref`。主动 cancellation或 parallel teardown若需从 outer node反向找到
 children，MUST 使用独立 reverse index/ownership metadata，并满足：
 
 - index不参与 continuation execution semantics；
@@ -176,8 +185,8 @@ children，MUST 使用独立 reverse index/ownership metadata，并满足：
 
 - message不消费 ActionMRef或 continuation node；
 - reply、timeout、DOWN按既有 action lifecycle决定是否消费 ActionMRef；
-- ordinary timeout/DOWN Outcome默认作为 current frame Input；
-- 只有 frame infrastructure不可调用当前 success continuation时才进入 failure forwarding。
+- ordinary timeout/DOWN Outcome默认作为 current `cc`/frame Input；
+- 只有 ordinary `cc` 本身或 frame infrastructure不可调用 current continuation时才进入 failure forwarding。
 
 ## 10. Store Classification
 
@@ -185,14 +194,14 @@ shared classifier MUST 区分：
 
 ```erlang
 {stable_action, SfCallback}
-{legacy_action, Callback}
+{ordinary_action, Callback}
 {intermediate_node, Node}
 {outer_node, SfCc}
 {accumulator, Value}
 other
 ```
 
-external reply router只执行 stable/legacy action entries；intermediate/outer nodes只能由 internal dispatcher
+external reply router只执行 stable/ordinary action entries；intermediate/outer nodes只能由 internal dispatcher
 执行。`callback_exists/1` 只统计 external pending action entries。map/list/dict backends使用相同语义。
 
 ## 11. Inspection
@@ -203,21 +212,20 @@ external reply router只执行 stable/legacy action entries；intermediate/outer
 #{
     request_mref := term(),
     stable := boolean(),
-    next_ref := reference() | none,
+    parent_ref := reference() | none,
     continuation_kind := ordinary_fun | sf_frame | unknown,
     frame := #{
         module := module(),
         vsn := term() | undefined,
         protocol := integer(),
-        block_path := [atom()],
-        step_name := atom() | undefined,
-        async_id := binary()
+        block := atom() | undefined,
+        step_name := atom() | undefined
     } | undefined
 }.
 ```
 
 summary不公开 Env、State、timer、monitor、accumulator、continuation payload、sf_cc callback或Context。
-默认只报告 current frame。若提供 chain view，MUST 显式沿 `next_ref` lookup并限制 cycle、depth和invalid shape。
+默认只报告 current frame。若提供 chain view，MUST 显式沿 `parent_ref` lookup并限制 cycle、depth和invalid shape。
 
 matcher snapshot/sort/preflight必须在mutation前完成；matcher exception原样传播，non-boolean result报
 `{invalid_matcher_return,Value}`。
@@ -230,13 +238,14 @@ matcher snapshot/sort/preflight必须在mutation前完成；matcher exception原
 {error, {sf_aborted, Reason}}
 ```
 
-commit按selected Ref term order。current node被消费后，failure只dispatch direct `next_ref`。legacy entry
-返回 `legacy`且不删除。result status为 `forwarded | handled | failed | unhandled`。shared outer node遵守
+commit按selected Ref term order。current node被消费后，failure只dispatch direct `parent_ref`。ordinary
+entry返回`ordinary`且不删除。result status为
+`forwarded | handled | failed | unhandled | ordinary`。shared outer node遵守
 normal exactly-once take，不按root去重。
 
 ## 13. Metadata and Vsn
 
-frame summary保存 Module、literal module Vsn或`undefined`、protocol、BlockPath、StepName、AsyncId。
+frame summary保存 Module、literal module Vsn或`undefined`、Protocol、Block和StepName。
 不得公开 Env；不得把 OTP attribute container `[Vsn]` 当成literal Vsn。
 
 ## 14. Required Tests
@@ -251,7 +260,7 @@ frame summary保存 Module、literal module Vsn或`undefined`、protocol、Block
 - node take-before-invoke、late reply、duplicate fail、shared parent exactly-once；
 - timer/message/DOWN/monitor/accumulator direct cleanup；
 - parallel reverse-index cancellation和orphan cleanup；
-- stable/legacy/intermediate/outer classifier；
+- stable/ordinary/intermediate/outer classifier；
 - current-only inspection、explicit safe chain traversal、matcher preflight atomicity；
 - external callback availability不捕获callback-internal `badfun`/`undef`；
 - map/list/dict backends、compile、EUnit、Common Test、xref、dialyzer和supported OTP matrix。

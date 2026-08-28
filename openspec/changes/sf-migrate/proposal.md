@@ -3,11 +3,11 @@
 ## Why
 
 `sf-do` 使用 inline atom StepName marker。named frame 在目标 manifest 仍有相同
-BlockPath/StepName 及其 generated AsyncId/MFA 时，旧 reply 直接进入目标版本同名 continuation
+Protocol/Block/StepName及generated MFA时，旧 reply 直接进入目标版本同名 continuation
 function，不需要 migration declaration 或 API。unnamed frame 可普通执行，但 migration 必须失败。
 Action AST、source index 和代码相似度不参与该判断。
 
-`sf-migrate` 解决两类显式 code-change：一类是 BlockPath 或 StepName 改名导致 identity 改变；
+`sf-migrate` 解决两类显式 code-change：一类是 Block 或 StepName 改名导致 identity 改变；
 另一类是 identity 未变但 Env 需要显式
 转换，例如 capture 变量改名或同名变量的 value 含义变化。
 runtime 不得在这些情况下使用 index 接近、AST/capture 相似度或 bind name 猜测
@@ -36,9 +36,9 @@ target；未显式迁移时默认失败。
   current frame 时阻止 code rollback。
 - `steps` 的 `directions` 分别是 upgrade/downgrade allowlist；用户可只开放一个方向，
   正向 Env migrator 不得被当作反向 migrator 使用。
-- 显式 step mapping 通常连接 source/target AsyncId 不同的边界。AsyncId 相同的 frame 默认由
+- 显式 step mapping 通常连接 source/target Block/Step identity不同的边界。identity相同的frame默认由
   `sf-do` 自动继承；但 mapping 若为至少一个 enabled direction 显式配置 `migrate_env`，则允许作为
-  Env-only migration，只转换 capture-name map，保持 AsyncId/MFA 不变。没有 Env migrator 的
+  Env-only migration，只转换 capture-name map，保持Protocol/Block/StepName/MFA不变。没有 Env migrator 的
   same-identity mapping 仍是 redundant。
 - step mapping 只支持 `{step, StepName}` selector 和可选 capture Env migration MFA；compiler
   不按 source index、bind variable name 或 Action content 定位恢复步骤。
@@ -53,16 +53,17 @@ target；未显式迁移时默认失败。
   能力，不作为当前 sf-migrate initiative 的强制验收。
 - 扩展 `async_sf_transform`，在分析当前 `sf_do` 后分析历史 block 并交叉校验。
 - 在 `code_change/3` 显式调用 migration API；runtime 扫描共享 callbacks field 中所有 stable
-  `#sf_callback{}` nodes，并只替换各 node 的 current `frame`。
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}` nodes，并只替换各 node 的
+  current `frame`；其余 record fields bit-for-bit 保留。
 - downgrade 必须先把业务 State 转成目标旧版 layout，再使用目标 callbacks offset 迁移
   current frames；全部 pending stable entries 可处理后，OTP 才能加载旧 module。
 - 匿名与命名 endpoint 间迁移只要求用户填写 `{Function, Arity, N}`，不得要求 generated
-  atom、AsyncId 或 hash。
-- 保留 node key、direct `next_ref`、request key、monitor、timer 和 accumulator reference；不重放
+  atom或hash。
+- 保留 node key、direct `parent_ref`、request key、monitor、timer 和 accumulator reference；不重放
   workflow 或重新发送 request。
 - mismatch callback 只允许产生 failure/abort Outcome，不允许用自定义 replacement frame 绕过
-  编译期 step allowlist；Outcome 必须交给该 node 的 direct `next_ref`，不得定位 root/final Ref。
-- migration result 显式区分 `source_block/source_async` 与 `target_block/target_async`；API
+  编译期 step allowlist；Outcome 必须交给该 node 的 direct `parent_ref`，不得定位 root/final Ref。
+- migration result 显式区分 `source_block/source_step` 与 `target_block/target_step`；API
   infrastructure error 使用结构化 stage/reason context，并返回未修改的入口 TargetState。
 - 当前功能尚未发布，directional manifest 直接替换旧草案并继续使用
   `format => 1, protocol => 1`；不实现旧草案 manifest 的兼容 reader 或升级路径。
@@ -71,7 +72,8 @@ target；未显式迁移时默认失败。
   旧 frame Env；compiler 只记录 metadata，runtime 根据实际 source frame 进入 mismatch。
 - 保持 `async_m:migrate_sf_callbacks/4` 为薄 facade，migration orchestration 位于独立
   `async_sf_migration` 模块，并复用已有 State/callback、stable-term 和 ContinuationRef dispatch 能力。
-- legacy `#callback{}`、普通 do 和未声明迁移的 stable block 不受影响。
+- ordinary `#callback{cc,acc_ref,parent_ref,...}`、普通 do 和未声明迁移的 stable block 不受影响；migration
+  不从 anonymous `cc` 推断或合成 stable frame。
 
 ## Capabilities
 
@@ -82,8 +84,9 @@ target；未显式迁移时默认失败。
 
 ## Dependencies
 
-- 依赖 `sf-do` 的 `sf_frame()`、`#sf_callback{frame,next_ref,...}`、shared ContinuationRef router、current
-  manifest 和 `async_sf_transform` orchestrator。
+- 依赖 `sf-do` 的 `sf_frame()`、完整
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}`、shared ContinuationRef router、
+  current manifest 和 `async_sf_transform` orchestrator。
 - 必须在 `sf-do` 完成并验证后实现。
 
 ## Impact

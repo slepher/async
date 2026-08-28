@@ -2,23 +2,31 @@
 
 ## Context
 
-legacy `async_t` callback entry 是：
+ordinary `async_t` action callback entry 是：
 
 ```erlang
 -record(callback, {
     cc,
     acc_ref,
+    parent_ref
 }).
 ```
 
 stable path 使用独立 entry：
 
 ```erlang
-#sf_callback{frame = CurrentFrame, next_ref = ParentRef, acc_ref = AccRef, ...}.
+#sf_callback{
+    frame = CurrentFrame,
+    acc_ref = AccRef,
+    parent_ref = ParentRef,
+    timer_ref = TimerRef
+}.
 ```
 
-legacy `#callback.cc` 继续保存 ordinary anonymous continuation fun。stable callback 只保存 current frame
-和 direct `next_ref`；outer frame 与 final callback 是 callbacks store 中其他 nodes。
+`#callback.cc` 保存 ordinary anonymous continuation fun，`#callback.parent_ref` 保存该 fun 的 direct
+continuation parent。stable callback 的continuation portion保存current frame和同义的direct `parent_ref`，
+同时保留`acc_ref`和timer等action lifecycle metadata；outer frame与final callback
+是callbacks store中的其他nodes。
 
 resume 由统一 ContinuationRef dispatcher 负责；sf-cc 拥有 node registration、take、direct cleanup、
 failure forwarding 和 outer callback invocation。
@@ -27,7 +35,8 @@ failure forwarding 和 outer callback invocation。
 
 - 每个 public runner invocation 注册一个 outer continuation node。
 - ordinary runner 与 stable frame runner 使用相同 ContinuationRef store、dispatch 和主动失败路径。
-- legacy `#callback.cc` 保持原 continuation；stable `#sf_callback{}` 保存 current frame + direct `next_ref`。
+- ordinary `#callback{}` 保存 current anonymous continuation + direct `parent_ref`；完整 stable
+  `#sf_callback{}` 的 continuation 投影是 current frame + direct `parent_ref`。
 - sf-prefixed API 的用户 final callback 必须是源码中显式出现的 external fun；ordinary API 保持原合同。
 - outer callback 在 current ActionMRef/node 清理后调用；`/3` 看到 CleanState。
 - 正常完成、结构失败、迁移失败和人工失败均逐 node exactly-once。
@@ -36,7 +45,7 @@ failure forwarding 和 outer callback invocation。
 ## Non-Goals
 
 - ContinuationRef 不是多个独立业务 promises 的 operation-group id。
-- 不从 anonymous fun 恢复 source stack、BlockPath、StepName 或 source Vsn。
+- 不从 anonymous fun 恢复 source stack、Protocol、Block、StepName 或 source Vsn。
 - 不定义 migration mapping、Env/Input converter 或 appup/appdown transition ordering。
 - 不迁移 final external fun 或 Context。
 - 不保证 final callback 外部副作用可回滚。
@@ -48,11 +57,13 @@ failure forwarding 和 outer callback invocation。
 - `ContinuationRef`：callbacks store 中任一 continuation node 的一次性 reference；不区分 outer/final Ref 类型。
 - `sf_cc`：outer node 可持有的 stable callback descriptor。
 - `CleanState`：已 take 当前 node并清理其直接 lifecycle resources 后的 State。
-- stable callback：明确编码的 `#sf_callback{frame,next_ref,...}`。
-- legacy callback：既有 `#callback{cc,acc_ref,...}` ordinary entry，不自动获得 frame migration。
+- stable callback：明确编码的
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}`；`frame`本身是完整
+  self-describing `sf_frame` data。
+- ordinary callback：`#callback{cc,acc_ref,parent_ref,...}` action entry，不自动获得 frame migration。
 
 `AccRef` 与 `ContinuationRef` 不得合并。内部 parallel/local accumulator 可重绑定 AccRef；当前 node
-只持有 direct `next_ref`，不复制顶层 address。
+只持有 direct `parent_ref`，不复制顶层 address。
 
 ## Public API
 
@@ -171,21 +182,25 @@ callbacks store 使用统一 reference key：
 -type continuation_ref() :: reference().
 
 ContinuationRef =>
-    #sf_callback{frame = Frame, next_ref = ParentRef, acc_ref = AccRef, ...}
+    #sf_callback{frame = Frame, acc_ref = AccRef,
+                 parent_ref = ParentRef, timer_ref = TimerRef}
   | #{kind => ordinary_continuation, protocol => 1, callback => Fun,
-      next_ref => ParentRef | none}
+      parent_ref => ParentRef | none}
   | #{kind => sf_cc, protocol => 1, mode => Mode, callback => Fun,
-      context => Context, next_ref => none}.
+      context => Context, parent_ref => none}.
 ```
 
-Ref 的类型不表达 outer/final；value shape 决定 executor，`next_ref = none` 决定链结束。entry absence
-是 consumed marker，不另存 tombstone。一个 node 只保存 direct `next_ref`，不得复制 root/final Ref。
+Ref 的类型不表达 outer/final；value shape 决定 executor，`parent_ref = none` 决定链结束。entry absence
+是 consumed marker，不另存 tombstone。一个 node 只保存一个 direct parent edge，不得复制 root/final Ref；
+stable action node仍保留完整 lifecycle fields。
 
-### Stable and legacy action callbacks
+### Stable and ordinary action callbacks
 
-stable suspension MUST 写 `#sf_callback{frame,next_ref,...}`。ActionMRef 本身就是该 current node 的路由
-key；如果父层尚未可寻址，`bind_frame` 先用新 ContinuationRef 把父层物化。legacy `#callback{cc,acc_ref}`
-继续按 ordinary contract 解码，不从 fun/map 推断 stable frame或补造 parent/root Ref。
+ordinary suspension MUST 写 `#callback{cc,acc_ref,parent_ref,...}`；stable suspension MUST 写完整
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`。ActionMRef 本身就是 current action node 的路由 key。ordinary `bind`
+把当前 anonymous `K` 放进 `cc`，并把执行该 `K` 之后的 direct outer continuation address 放进
+`parent_ref`；`bind_frame` 对 frame 执行相同规则，若 direct parent 尚不可寻址则先物化一个
+ContinuationRef node。runtime 不从 ordinary fun 推断 stable frame metadata。
 
 record/tag 定义 MUST 位于 shared internal header，所有 router、inspection 和 migration readers 使用同一
 classifier。
@@ -201,23 +216,25 @@ initial execution 和 resumed continuation 创建下一 ActionMRef 时必须知�
 - continuation context 保存 current continuation data或 addressable ParentRef；
 - `local_ref(NewAccRef, Action)` 只替换 AccRef；
 - public runners 安装 outer callback node；
-- reply executor 从 stable callback 的 `acc_ref`、`frame` 与 `next_ref` 重建 context。
+- reply executor 从 ordinary/stable callback 的 `acc_ref` 与 `parent_ref` 重建 parent scope；stable entry
+  还从 `frame` 重建 current frame scope。
 
 ### Explicit async continuation context
 
 `async_t` internal action MUST 显式接收 `(K, SfContext)`。`SfContext` 保存 current structured continuation
 和对应 stable runner，不得通过进程字典或其他隐藏 mutable channel 传播。
 
-- ordinary `>>=` 继续构造 anonymous `K`，只透传 `SfContext`；
-- Promise 仅在实际 `K` 与 `SfContext.runner` 完全相同时写 `#sf_callback{}`，否则保持 ordinary path；
-- `bind_frame` 把尚未可寻址的 current parent 物化为 node，并把 Ref 保存为新 frame 的 `next_ref`；
+- ordinary `>>=` 继续构造 anonymous `K`，并显式透传 `SfContext.parent_ref`；
+- Promise 在实际 `K` 与 `SfContext.runner` 完全相同时写 `#sf_callback{}`，否则写保存实际 `K` 与同一
+  direct parent edge 的 `#callback{}`；
+- `bind_frame` 把尚未可寻址的 current parent 物化为 node，并把 Ref 保存为新 frame 的 `parent_ref`；
 - ordinary anonymous downstream 被物化为 ordinary node，不嵌入 stable frame data。
 
 ## Frame Integration
 
-frame continuation MUST 是单层 `CurrentFrame + NextRef`。normal success invoke current frame并把返回 Monad
-运行于 NextRef；structural/manifest/MFA/migration/invocation availability failure MUST 跳过当前普通 success
-frame并 dispatch NextRef。dispatcher 不寻找 root，也不区分 FinalCcRef 与 OuterRef。
+frame continuation MUST 是单层 `CurrentFrame + ParentRef`。normal success invoke current frame并把返回 Monad
+运行于 ParentRef；structural/manifest/MFA/migration/invocation availability failure MUST 跳过当前普通 success
+frame并 dispatch ParentRef。dispatcher 不寻找 root，也不区分 FinalCcRef 与 OuterRef。
 
 ## Completion State Machine
 
@@ -240,8 +257,8 @@ commit order：
 2. atomic-with-respect-to-process `take` current node；
 3. cancel/demonitor/remove current node直接拥有的 timer、monitor 和 accumulator resources；
 4. obtain CleanState；
-5. success 时执行 current continuation；failure 时普通 success frame直接 dispatch `next_ref`；
-6. current invocation 产生可归属 failure 时 dispatch `next_ref`；
+5. success 时执行 current continuation；failure 时普通 success frame直接 dispatch `parent_ref`；
+6. current invocation 产生可归属 failure 时 dispatch `parent_ref`；
 7. outer callback node 应用 mode-specific result semantics。
 
 parallel cancellation 如需从 outer node 查找 active children，MUST 使用独立反向索引/ownership metadata；
@@ -251,9 +268,11 @@ parallel cancellation 如需从 outer node 查找 active children，MUST 使用�
 crash、返回非法 shape 或产生外部副作用，Ref 保持 consumed，不 rollback、不 retry。callback/effect
 内部异常原样传播。batch fail 只把预期的 unavailable callback 或 invalid return 记录为 `failed`。
 
-reply/timeout/DOWN path 在执行 continuation 前已知 ActionMRef 和 decoded callback。frame
-protocol/shape/manifest/MFA failure dispatch direct `next_ref`。仅可归属当前 invocation availability 的
-`badfun`/`undef` 被转换为 failure；callback-internal exception 原样传播。message path MUST 保留 ActionMRef。
+reply/timeout/DOWN path 在执行 continuation 前已知 ActionMRef 和 decoded callback。ordinary business
+Outcome 必须交给 `#callback.cc`，不得仅凭 Outcome shape 绕过它。frame protocol/shape/manifest/MFA failure
+dispatch direct `parent_ref`；ordinary `cc` 或 frame 的 `badfun`/`undef` 只有可精确归属到 current
+continuation 本身不可调用时才转换为 failure并 dispatch direct `parent_ref`。callback-internal exception
+原样传播。message path MUST 保留 ActionMRef。
 
 ## Outcome Contract
 
@@ -271,9 +290,9 @@ manual failure：
 {error, {sf_aborted, Reason}}
 ```
 
-ordinary reply、timeout、DOWN 和业务 `{error, Reason}` 默认仍是 continuation Input；只有 structured
-frame infrastructure 明确不能调用当前 success continuation 时，才把 runtime failure 向 direct
-`next_ref` 转发。
+ordinary reply、timeout、DOWN 和业务 `{error, Reason}` 默认仍是 continuation Input；只有 ordinary `cc`
+本身或 structured frame infrastructure 明确不能调用 current continuation 时，才把 runtime failure 向
+direct `parent_ref` 转发。
 
 ## Active Inspection and Failure
 
@@ -284,16 +303,15 @@ matcher 每个 action callback 调用一次，并接收：
 ```erlang
 #{
     request_mref := term(),
-    next_ref := reference() | none,
+    parent_ref := reference() | none,
     stable := boolean(),
     continuation_kind := ordinary_fun | sf_frame | unknown,
     frame := #{
         module := module(),
         vsn := term() | undefined,
         protocol := integer(),
-        block_path := [atom()],
-        step_name := atom() | undefined,
-        async_id := binary()
+        block := atom() | undefined,
+        step_name := atom() | undefined
     } | undefined
 }.
 ```
@@ -323,9 +341,10 @@ preflight rules：
 - matcher exception 原样传播；非-boolean result 抛出 `{invalid_matcher_return, Value}`；
 - 所有 matcher 必须在任意 mutation 前完成；
 - inspect 永不修改 State；
-- fail 对 selected stable entries 按 RequestMRef/ContinuationRef preflight；legacy entries 返回 `legacy`，不删除；
-- commit 按 selected Ref term order执行，并向其 direct `next_ref` 注入 manual failure；
-- node 结果记录 `forwarded | handled | failed | unhandled`；legacy callback 记录 `legacy`；
+- fail 对 selected stable entries 按 RequestMRef/ContinuationRef preflight；ordinary entries 返回
+  `ordinary`且不删除；
+- commit 按 selected Ref term order执行，并向其 direct `parent_ref` 注入 manual failure；
+- node 结果记录 `forwarded | handled | failed | unhandled`；ordinary callback记录`ordinary`；
 - `failed` 不携带 Class、Reason 或 Stacktrace，只表示 invalid descriptor 在 preflight 失败，或预期的
   unavailable callback/invalid return 在 current node 消费后失败；
 - callback/effect 内部异常原样传播并停止本次 commit；此前已经消费的 nodes 不 rollback。
@@ -334,10 +353,10 @@ manual Outcome 固定为 `{error, {sf_aborted, Reason}}`。
 
 ## callback_exists and Routing
 
-callbacks dictionary 同时包含 stable/legacy action callbacks、continuation nodes 和 accumulator data。分类必须基于 value
+callbacks dictionary 同时包含 stable/ordinary action callbacks、continuation nodes 和 accumulator data。分类必须基于 value
 shape：
 
-- `callback_exists/1` 只统计可接收 action reply 的 stable/legacy action entries；
+- `callback_exists/1` 只统计可接收 action reply 的 stable/ordinary action entries；
 - intermediate/outer node 不单独表示 external pending action；
 - ActionMRef router 只执行 decoded action entry；
 - internal dispatcher 才能按 ContinuationRef 执行 intermediate/outer node；
@@ -360,7 +379,8 @@ take 后没有 rollback：
 ## Compatibility and Rollout
 
 - ordinary、wait 和 sf-prefixed runners 都注册 outer continuation node，同时保留 public callback/result contract。
-- stable path 使用 `#sf_callback{}`；legacy `#callback{}` 保持 ordinary runtime compatibility并与 migration 隔离。
+- stable path 使用 `#sf_callback{}`；ordinary path 使用带 direct `parent_ref` 的 `#callback{}`，但仍与
+  frame identity/migration 隔离。缺少 `parent_ref` 的旧 callback tuple 不属于本 change 的 compatibility boundary。
 - ordinary bind 保持 anonymous continuation，且不获得 stable-frame migration guarantee。
 - recursive `sf_next`、`sf_cc_ref` terminal 和 per-callback root `sf_cc_mref` 是被 supersede 的未发布合同，
   不保留双 representation。
@@ -370,16 +390,18 @@ take 后没有 rollback：
 ### Store final callback only inside continuation
 
 完整 final descriptor 不嵌入 stable frame；它是外层 node。损坏 current frame 时只需读取其 direct
-`next_ref`，不需要 root address。
+`parent_ref`，不需要 root address。
 
-### Wrap every callback in a new envelope
+### Wrap every ordinary callback in another continuation node
 
-legacy ordinary callback 不改变；stable path 使用独立 `#sf_callback{}`，避免让一个 record 同时承载
-ordinary fun、recursive frame chain 和 root ownership。
+ordinary action entry 本身已经能同时保存 current `cc` 与 direct `parent_ref`；为每个 ordinary suspension
+再创建只包装同一个 fun 的 continuation node 会重复 current continuation identity。只有 stable frame 需要把
+尚未可寻址的 ordinary parent 作为独立 node materialize。
 
 ### Root sidecar as continuation semantics
 
-normal resume 不需要 sidecar，只沿 direct `next_ref`。主动 cancellation/parallel reverse lookup MAY 使用
+ordinary normal resume直接调用current `cc`；stable returned Monad与current-continuation availability
+failure只需要direct `parent_ref`，不需要root sidecar。主动 cancellation/parallel reverse lookup MAY 使用
 独立索引，但该索引不参与 continuation 语义。
 
 ### Reuse AccRef as ContinuationRef

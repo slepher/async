@@ -4,42 +4,42 @@
 
 ### Requirement: Automatic identity inheritance is the default
 
-目标 current manifest 中相同的 pending AsyncId/MFA MUST 默认自动继承。
-named identity MUST 只使用 protocol、BlockPath 和 inline StepName。unnamed frame 在 migration
+目标 current manifest 中相同的pending Protocol/Block/StepName/MFA MUST 默认自动继承。
+named identity MUST 只使用 protocol、Block 和 inline StepName。unnamed frame 在 migration
 中 MUST incompatible。没有显式 Env-only plan 时，named automatic path
 MUST NOT 要求 `sf_migrate`
 declaration、version anchor、step mapping 或 `migrate_sf_callbacks/4`。用户显式调用 migration
 API 且当前方向存在 same-identity `migrate_env` 时，runtime MUST 在 resume 前转换 Env，同时保持
-AsyncId/MFA。该 async 之后的
+Protocol/Block/StepName/MFA。该 async 之后的
 continuation、bind pattern、CaptureAbi 和 Env values MUST NOT 参与 automatic identity。
 
 #### Scenario: Same async automatically resumes new continuation
 
-- **给定**old/new block 使用相同 BlockPath/StepName
+- **给定**old/new block 使用相同 Block/StepName
 - **并且**新版本完全重写 Action AST、source index、continuation/captures
 - **当**old pending reply 在 code change 与 old-code purge 后到达
-- **那么**runtime 使用相同 AsyncId/MFA 进入新 continuation
+- **那么**runtime 使用相同Protocol/Block/StepName/MFA进入新continuation
 - **并且**不查询 migration manifest
 
 #### Scenario: Module has no migration declaration
 
-- **给定**module 只包含 `sf_do` 且 pending AsyncId 在目标 manifest 中仍存在
+- **给定**module只包含`sf_do`且pending Protocol/Block/StepName在目标manifest中仍存在
 - **当**upgrade 或 downgrade 后 reply 到达
 - **那么**frame 仍自动继承
 
 ### Requirement: Unmatched async fails closed
 
-runtime MUST 在 source AsyncId 不存在于目标 manifest 时 fail closed。触发条件包括 BlockPath 或
-StepName 变化。runtime MUST NOT 使用相邻 index、
+runtime MUST 在 source Protocol/Block/StepName不存在于目标manifest时fail closed。触发条件包括Protocol、
+Block或StepName变化。runtime MUST NOT 使用相邻 index、
 AST/capture 相似度、bind name 或 runtime value 猜测
 target。若 `sf_migrate.steps` 未显式将 source selector 映射到 target selector，或
 application 未在 `code_change/3` 调用 migration API，frame MUST 默认失败。
 
 #### Scenario: Step moves without identity change
 
-- **给定**old pending action 之前插入新 async，但 BlockPath/StepName 不变
+- **给定**old pending action 之前插入新 async，但 Block/StepName 不变
 - **当**pending reply 到达
-- **那么**相同 named AsyncId/MFA 自动继承
+- **那么**相同named Protocol/Block/StepName/MFA自动继承
 
 #### Scenario: StepName changes without mapping
 
@@ -60,7 +60,7 @@ block 生成 historical metadata，不得从 current block 或旧 BEAM 推断历
 
 - **给定**v1 block 已不同于 current named `sf_do`
 - **当**用户在 `sf_migrate` 中提供完整 v1 block
-- **那么**compiler 从 v1 block 计算 old AsyncId 和 CaptureAbi
+- **那么**compiler从v1 block读取显式old StepName并计算CaptureAbi
 - **并且**不生成或调用 v1 executable stable functions
 
 #### Scenario: Partial historical block
@@ -72,8 +72,8 @@ block 生成 historical metadata，不得从 current block 或旧 BEAM 推断历
 ### Requirement: Unified bidirectional block transition
 
 Spec 的 `transition` MUST 包含两个 `block_ref()` endpoint：命名 endpoint 使用 atom，
-匿名 endpoint 使用 `{Function, Arity, N}`。transform MUST 将匿名 endpoint 解析为
-`'-Function/Arity-fun-N-'`，用户 MUST NOT 填写 generated atom、AsyncId 或 hash。
+匿名 endpoint 使用 `{Function, Arity, N}`。transform MUST 将匿名 endpoint 解析为对应module-local
+locator；用户 MUST NOT 填写 generated function atom或hash。
 
 upgrade 与 downgrade MUST 使用同一个 transition schema、manifest schema 和 runtime API；
 不得实现两套互不相干的 runtime。`old` selector MUST 永远描述 historical/较旧 block，
@@ -153,20 +153,20 @@ module。
 每个 step mapping 的 `directions` MUST 是独立的 direction allowlist。存在 `up` 表示允许
 old/historical → new/current；存在 `down` 表示允许 new/current → old/historical。未开放
 的方向 MUST NOT 因 index 接近、ABI 或 content 相似而自动迁移。该 allowlist
-适用于 source/target AsyncId 不同的 boundary mapping，也适用于显式配置 `migrate_env` 的
-same-identity Env-only mapping。没有 Env-only plan 时，相同 AsyncId 仍由 `sf-do` automatic path
+适用于source/target Block/Step identity不同的boundary mapping，也适用于显式配置`migrate_env`的
+same-identity Env-only mapping。没有Env-only plan时，相同Protocol/Block/StepName仍由`sf-do`automatic path
 继承。up/down MUST 可配置不同的 Env migrator，
 runtime MUST NOT 反向调用另一个方向的 MFA。
 
-resolved old/new AsyncId 与 runtime BlockName 都相同、且所有 enabled direction 均未配置
+resolved old/new Protocol/Block/StepName/MFA都相同、且所有enabled direction均未配置
 `migrate_env` 时，compiler MUST 报 `redundant_sf_migration_mapping`。若至少一个 enabled
-direction 显式配置 migrator，compiler MUST 生成 Env-only plan；runtime MUST 保持 AsyncId/MFA，
+direction 显式配置 migrator，compiler MUST 生成 Env-only plan；runtime MUST 保持Protocol/Block/StepName/MFA，
 只用 migrator 返回的 TargetEnv 更新 frame。same-identity mapping 中没有配置 migrator 的另一方向
 MUST 继续 automatic inheritance，不得生成 no-op plan。
 
 #### Scenario: Redundant mapping of an automatically inherited async
 
-- **给定**old/new selector 解析到相同 BlockName/AsyncId
+- **给定**old/new selector解析到相同Protocol/BlockName/StepName/MFA
 - **并且**所有 enabled direction 都没有配置 `migrate_env`
 - **当**module 编译
 - **那么**transform 报 `redundant_sf_migration_mapping`
@@ -174,18 +174,18 @@ MUST 继续 automatic inheritance，不得生成 no-op plan。
 
 #### Scenario: Same identity with explicit Env migration
 
-- **给定**old/new selector 解析到相同 BlockName/AsyncId/MFA
+- **给定**old/new selector解析到相同Protocol/BlockName/StepName/MFA
 - **并且**`directions.up.migrate_env` 显式配置了 external MFA
 - **当**upgrade migration API 处理 pending frame
 - **那么**runtime 调用该 MFA 生成 TargetEnv
-- **并且**frame 的 BlockName、AsyncId 和 MFA 保持不变
+- **并且**frame的Protocol、BlockName、StepName和MFA保持不变
 
 #### Scenario: Omit one historical step
 
 - **给定**historical block 有三个 pending-capable boundaries
 - **并且**Spec 只 mapping 前两个
 - **当**callback 停在第三个 step
-- **那么**runtime 产生 `async_not_mapped` mismatch
+- **那么**runtime 产生 `step_not_mapped` mismatch
 
 #### Scenario: Downgrade direction omitted
 
@@ -199,9 +199,9 @@ MUST 继续 automatic inheritance，不得生成 no-op plan。
 mapping MUST 只支持 `{step, StepName}`。old selector MUST 在 historical block 的 inline named
 boundaries 中精确解析，new selector MUST 在 current block 中精确解析。selector MUST NOT 依赖
 source index、Action AST、bind variable name 或 qualifier kind，也 MUST NOT 接受 Offset。runtime
-manifest MUST 只保存解析后的 source/target AsyncId，不得在 code change 时重新解析 source selector。
+manifest MUST 只保存解析后的source/target Block和StepName，不得在code change时重新解析source selector。
 
-downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交换 old/new 的版本含义。
+downgrade MUST 交换 source/target Block/Step endpoint的使用方向，但 MUST NOT 交换 old/new 的版本含义。
 缺失 StepName MUST 报 `sf_step_not_found`；duplicate StepName MUST 在 block validation 阶段失败。
 
 #### Scenario: Same named step needs no mapping
@@ -210,7 +210,7 @@ downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交�
 - **并且**action index/form 已改变
 - **并且**不需要转换 Env
 - **当**module 编译或 pending reply 到达
-- **那么**frame 由相同 named AsyncId/MFA 自动继承
+- **那么**frame由相同named Protocol/Block/StepName/MFA自动继承
 - **并且**无 `migrate_env` 的显式 old/new `{step,load_user}` mapping 报
   `redundant_sf_migration_mapping`
 
@@ -219,7 +219,7 @@ downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交�
 - **给定**historical named block 声明 `load_user`，current named block 改为 `fetch_user`
 - **并且**mapping 使用 old `{step,load_user}` 与 new `{step,fetch_user}`
 - **当**compiler 解析 mapping
-- **那么**两个 StepName 分别解析为 OldAsyncId 与 NewAsyncId
+- **那么**两个 StepName 分别解析为 OldStep 与 NewStep
 
 #### Scenario: Unsupported fuzzy selector
 
@@ -237,7 +237,7 @@ downgrade MUST 交换 source/target AsyncId 的使用方向，但 MUST NOT 交�
 
 ### Requirement: Shared compiler analysis
 
-historical block MUST 使用 `sf-do` 相同的 boundary analyzer、inline marker parser、named AsyncId
+historical block MUST 使用 `sf-do` 相同的 boundary analyzer、inline marker parser、named Block/Step identity
 和 CaptureLayout。CaptureAbi MUST 直接是排序后的 capture-name atom list。`sf-migrate` MUST
 扩展同一个 `async_sf_transform` orchestrator，且不得引入 Action canonicalizer、source index 或
 content digest。
@@ -289,8 +289,8 @@ runtime value 的 map。未声明该方向的 State capture 时，migrator conte
 `#{env => SourceEnv}`。
 
 CaptureAbi MUST 直接是排序后的 capture-name atom list，不得另做 SHA/digest。显式 migrator
-MUST 在 ABI 相同或不同、AsyncId 相同或不同的 mapping 上都可用；这允许变量改名、capture set
-变化以及同名变量 value 语义转换。same-identity plan MUST 只替换 Env，不改变 AsyncId/MFA。
+MUST 在ABI相同或不同、boundary identity相同或不同的mapping上都可用；这允许变量改名、capture set
+变化以及同名变量value语义转换。same-identity plan MUST只替换Env，不改变Protocol/Block/StepName/MFA。
 
 ABI 不同但缺少该方向 migrator MUST NOT 是 compile error。compiler 只能分析 declaration
 中的 historical metadata，不能访问真正运行中的 source frame/Env；它 MUST 生成
@@ -431,8 +431,10 @@ support 可在后续 change 中定义，不属于本 requirement 的强制验收
 ### Requirement: Replace only each stable node's current frame
 
 成功迁移 MUST deterministic enumeration callbacks store 中所有 `#sf_callback{}` nodes，并只替换各
-node 的 `frame`。node key、direct `next_ref`、request key、acc_ref、timer、monitor 和已发出的 request
-MUST 保持不变。runtime MUST NOT 递归改写 callback 内父链；outer frame作为独立 node处理。
+node 的 `frame`。完整 stable record 是
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`；node key、direct
+`parent_ref`、request key、`acc_ref`、`timer_ref`、monitor 和已发出的
+request MUST 保持不变。runtime MUST NOT 递归改写 callback 内父链；outer frame作为独立 node处理。
 
 #### Scenario: Resume from current breakpoint
 
@@ -440,7 +442,7 @@ MUST 保持不变。runtime MUST NOT 递归改写 callback 内父链；outer fra
 - **当**其 frame 成功迁移
 - **那么**Ref2 不重建，之前 step 不重跑
 - **并且**Ref2 reply 到达后调用 current target stable function
-- **并且**其 direct `next_ref` bit-for-bit 不变
+- **并且**其 direct `parent_ref` bit-for-bit 不变
 
 ### Requirement: OTP-ordered downgrade migration
 
@@ -449,7 +451,7 @@ downgrade MUST 在较新/current dynamic callback module 仍加载时，由该 m
 State 转换为 target historical layout、保留 callbacks map，并把 target layout 的 callbacks
 offset 与转换后的 State 传给 `migrate_sf_callbacks/4`。runtime MUST 在任何 mutation 前
 预检 target anchor、所有 current source frames、down plans、historical target
-Block/AsyncId/MFA/CaptureAbi metadata 和 target offset。
+Block/StepName/MFA/CaptureAbi metadata 和 target offset。
 
 runtime MUST 只根据 historical metadata 构造 target frame，不得执行尚未加载的 historical
 MFA。成功返回时，每个 pending current/new frame MUST 已迁移为 historical target frame，
@@ -483,19 +485,19 @@ code change 返回 error，从而阻止 OTP 加载旧 module。
 - **给定**pending current/new frame 没有 down plan
 - **并且**没有显式 mismatch policy 可处理该 entry
 - **当**downgrade preflight
-- **那么**migration 返回 error且 State、timer、monitor 和 next_ref 均未改变
+- **那么**migration 返回 error且 State、timer、monitor 和 parent_ref 均未改变
 - **并且**OTP 不得继续加载 old module
 
 ### Requirement: Current anchor refresh
 
-upgrade SourceVsn 锚定 `current` 时，runtime MUST 直接用 current manifest 验证
-AsyncId 并刷新 frame MFA；不得选择 historical plan。CaptureAbi 不参与是否为
+upgrade SourceVsn 锚定 `current` 时，runtime MUST直接用current manifest验证
+Protocol/Block/StepName并刷新frame MFA；不得选择historical plan。CaptureAbi不参与是否为
 current async 的判断。downgrade TargetVsn MUST
 锚定 historical block，不能把 `current` anchor 当作 old target。
 
 #### Scenario: Frame already matches current block
 
-- **给定**v4 anchor 为 current，pending frame 的 AsyncId 在 current manifest 中
+- **给定**v4 anchor为current，pending frame的Protocol/Block/StepName在current manifest中
 - **当**执行 migration
 - **那么**frame 从 current manifest 重建并标记 already_current
 - **并且**Env 与 callback lifecycle fields 保持不变
@@ -504,7 +506,7 @@ current async 的判断。downgrade TargetVsn MUST
 
 - **给定**upgrade SourceVsn 锚定 `current`
 - **并且**相关 declaration 的 `steps` 是空列表或没有匹配 source async 的 historical mapping
-- **当**pending frame 的 AsyncId 存在于 current manifest
+- **当**pending frame的Protocol/Block/StepName存在于current manifest
 - **那么**runtime 仍直接 refresh current frame
 - **并且**不得查询或要求 historical async plan
 
@@ -517,10 +519,10 @@ current async 的判断。downgrade TargetVsn MUST
     ref => Ref,
     direction => up | down,
     version => SourceVsn | TargetVsn,
-    source_block => atom(),
-    source_async => binary(),
+    source_block => atom() | undefined,
+    source_step => atom() | undefined,
     target_block => atom() | undefined,
-    target_async => binary() | undefined,
+    target_step => atom() | undefined,
     status => migrated | already_current | aborted | unhandled,
     reason => mapped
             | current_anchor
@@ -556,7 +558,7 @@ API-level error MUST 返回 `{error, ErrorInfo, TargetState, []}`。ErrorInfo MU
             | invalid_callbacks_map
             | {unanchored_downgrade_target, term()}
             | {invalid_source_frame, term()}
-            | down_async_not_mapped
+            | down_step_not_mapped
             | {invalid_historical_target, term()}
             | {unhandled_downgrade_mismatch, mismatch_reason()}
             | {state_commit_failed, term()},
@@ -564,9 +566,9 @@ API-level error MUST 返回 `{error, ErrorInfo, TargetState, []}`。ErrorInfo MU
     version => SourceVsn | TargetVsn,
     ref => term() | undefined,
     source_block => atom() | undefined,
-    source_async => binary() | undefined,
+    source_step => atom() | undefined,
     target_block => atom() | undefined,
-    target_async => binary() | undefined
+    target_step => atom() | undefined
 }
 ```
 
@@ -576,10 +578,10 @@ State、Env 或 callback map。多个错误 MUST 按 callbacks key 的 Erlang te
 
 #### Scenario: Downgrade result names both endpoints
 
-- **给定**current block `request_flow` 的 NewAsync 成功 downgrade 到 historical anonymous block
+- **给定**current block `request_flow` 的NewStep成功downgrade到historical anonymous block
 - **当**runtime 返回 migrated result
-- **那么**source_block/source_async 描述 current `request_flow`/NewAsync
-- **并且**target_block/target_async 描述 historical anonymous block/OldAsync
+- **那么**source_block/source_step描述current `request_flow`/NewStep
+- **并且**target_block/target_step描述historical anonymous block/OldStep
 
 #### Scenario: API error returns no apparent committed result
 
@@ -591,13 +593,13 @@ State、Env 或 callback map。多个错误 MUST 按 callbacks key 的 Erlang te
 ### Requirement: Mismatch failure follows the linked continuation
 
 系统 MUST 支持 external `on_mismatch/3`，其返回仅允许 `{abort, NewState}`。abort MUST 产生规定
-failure Outcome并从 current node 的 direct `next_ref` dispatch。普通 success frame MUST 跳过；linked
+failure Outcome并从 current node 的 direct `parent_ref` dispatch。普通 success frame MUST 跳过；linked
 chain中的显式 failure handler MAY 消费 Outcome。runtime MUST NOT 定位 root/final Ref。
 
 Info MUST 使用与 result 相同的 source/target endpoint fields，并包含 module、direction、
 version、anchor、source_capture_abi、callback_ref 与 mismatch reason。downgrade callback
 收到的 LogicalState MUST 是 API 第四参数采用的 target historical layout，不得回退为 source
-current layout。mismatch reason MUST 是 `historical_async_not_found`、`async_not_mapped`、
+current layout。mismatch reason MUST 是 `historical_async_not_found`、`step_not_mapped`、
 `capture_abi_mismatch`、`env_migration_failed`、`unstable_capture`、
 `current_async_not_found`、`current_capture_abi_mismatch`、
 `unanchored_downgrade_target` 或 `invalid_historical_target`。
@@ -613,7 +615,7 @@ MUST 使用 forced-abort fallback，但 MUST NOT 构造 replacement frame。
 - **并且**mismatch callback 返回 `{abort, NewState}`
 - **当**migration 执行
 - **那么**entry 被删除，timer/monitor 被清理
-- **并且**direct `next_ref` 收到
+- **并且**direct `parent_ref` 收到
   `{error, {async_aborted, {sf_migration, Info}}}`
 
 #### Scenario: Invalid mismatch callback result
@@ -631,14 +633,16 @@ MUST 使用 forced-abort fallback，但 MUST NOT 构造 replacement frame。
 - **那么**migration 返回 error且不修改 State
 - **并且**不得沿用 upgrade 的 implicit forced-abort default
 
-### Requirement: Shared callbacks field and legacy isolation
+### Requirement: Shared callbacks field and ordinary isolation
 
-migration MUST 处理现有 callbacks field 中所有 `#sf_callback{}` values，无论 key 是 ActionMRef 还是
-internal ContinuationRef。legacy `#callback{}`、ordinary/outer nodes和accumulator values MUST bit-for-bit保持不变。
+migration MUST 处理现有 callbacks field 中所有完整
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}` values，无论 key 是 ActionMRef
+还是 internal ContinuationRef。ordinary `#callback{cc,acc_ref,parent_ref,...}`、ordinary/outer descriptor
+nodes和accumulator values MUST bit-for-bit保持不变。
 
 #### Scenario: Mixed callbacks during code change
 
-- **给定**callbacks map 同时包含 legacy、stable 和 accumulator entries
+- **给定**callbacks map 同时包含 ordinary callback、stable callback、continuation descriptor 和 accumulator entries
 - **当**执行 migration API
 - **那么**只读取和可能修改 stable entries
 - **并且**不要求第二个 callbacks offset 或 `async_sf_t`
@@ -647,7 +651,7 @@ internal ContinuationRef。legacy `#callback{}`、ordinary/outer nodes和accumul
 
 migration plan/Env migrator MUST 仅在用户调用 `async_m:migrate_sf_callbacks/4` 时执行。
 仅声明 `sf_migrate` 或加载新 async runtime MUST NOT 自动扫描 callbacks。这不限制
-`sf-do` 在 reply 恢复时按 AsyncId/MFA 执行 automatic inheritance；后者不是 migration。
+`sf-do`在reply恢复时按Protocol/Block/StepName/MFA执行automatic inheritance；后者不是migration。
 
 #### Scenario: Application omits migration call
 
@@ -655,7 +659,7 @@ migration plan/Env migrator MUST 仅在用户调用 `async_m:migrate_sf_callback
 - **并且**业务 `code_change/3` 没有调用 migration API
 - **当**upgrade 或 downgrade 发生
 - **那么**runtime 不执行任何显式 mapping 或 Env migrator
-- **并且**相同 AsyncId 仍可在 reply 到达时自动继承，不同 AsyncId 则默认失败
+- **并且**相同Protocol/Block/StepName仍可在reply到达时自动继承，不同identity则默认失败
 
 ### Requirement: Deterministic state update
 
@@ -687,12 +691,12 @@ entry。downgrade MUST 在 mutation 前预检所有 source frame、down plan 与
 
 ### Requirement: Additive compatibility
 
-`sf-migrate` MUST 是新增显式能力。普通 do、legacy callback、未声明 migration 的
+`sf-migrate` MUST 是新增显式能力。普通 do、ordinary callback、未声明 migration 的
 stable block 和 `async_r_t` State/store semantics MUST 保持不变。
 
 #### Scenario: Existing process has no migration declarations
 
-- **给定**现有进程只使用 legacy async 或未迁移的 stable workflow
+- **给定**现有进程只使用 ordinary async 或未迁移的 stable workflow
 - **当**升级包含 sf-migrate 的 async 版本
 - **那么**进程不需要修改 State layout
 - **并且**除显式 migration API 外不存在新的运行时副作用

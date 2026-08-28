@@ -10,9 +10,11 @@ pending callback 的措辞被“Linked ContinuationRef integration”取代；�
 ## Dependency gate
 
 - [ ] `sf-do` 的 identity 协议已实现并冻结：`sf_do/1,2` 使用 inline atom marker，named identity
-  只使用 Protocol + BlockPath + StepName；unnamed frame warning、普通执行可用、migration failure；
-  Action/index/continuation/capture 不参与 identity，相同 named AsyncId/MFA 默认自动继承但允许显式 Env-only
-  migration，不同 AsyncId 默认 directional `incompatible_frame`。
+  只使用 Protocol + Block + StepName；unnamed frame warning、普通执行可用、migration failure；
+  Action/index/continuation/capture/lexical parent不参与identity，相同named Protocol/Block/StepName/MFA
+  默认自动继承但允许显式Env-only migration，不同identity默认directional `incompatible_frame`。
+- [ ] `sf-do` named MFA直接使用`'$sf_<block>__<step>'/2`，manifest不含AsyncId/hash；migration按
+  Block/StepName直接索引并复用编译期collision diagnostics。
 - [x] 当前 master 不含 sf-migrate 产品实现；开始 Task 1 前只运行 dependency baseline，
   不把 baseline 或最终命令验证建立为独立产品 task。
 
@@ -37,9 +39,9 @@ task 完成前，相关字段必须被明确拒绝，不能静默接受后失效
 - [ ] 保持 `async_m:migrate_sf_callbacks/4` 为薄 facade，在独立 `async_sf_migration` 中实现
   manifest/target-state/frame preflight、historical mapping、same-ABI reuse、runtime Env
   mismatch、current-anchor refresh 和一次 target callbacks setter commit。
-- [ ] 相同 BlockName/AsyncId/MFA 默认 automatic inheritance；若 resolved source version 存在
+- [ ] 相同Protocol/BlockName/StepName/MFA默认automatic inheritance；若resolved source version存在
   directional `migrate_env`，允许 same-identity Env-only plan 先生成 TargetEnv并保持 identity/MFA。
-  不同 AsyncId 没有 plan 时不得 fuzzy match。
+  不同Block/Step identity没有plan时不得fuzzy match。
 - [ ] current-anchor 必须在 `steps => []` 或无 historical mapping 时独立工作；upgrade source
   未锚定时 entry 原样 unhandled。
 - [ ] terminal policy 只允许 abort；删除 replacement/replaced 路径。实现固定
@@ -52,7 +54,7 @@ task 完成前，相关字段必须被明确拒绝，不能静默接受后失效
 - [ ] 添加 declaration/anchor/selector/current-refresh、manifest collision/conditional export、
   same-ABI/migrator、abort/forced-abort、notification failure、deterministic order、mixed
   callbacks、pending request continuity、purge 和 structured error/result behavior tests。
-- [ ] 添加 BlockPath/StepName rename、相同 named step automatic inheritance、Action/index changes
+- [ ] 添加 Block/StepName rename、相同 named step automatic inheritance、Action/index changes
   不影响 identity、same-identity capture rename/同名 value 转换，以及缺少显式 mapping 默认失败的 tests。
 - [ ] 同步 README：upgrade declaration/options、current refresh、result/error 与排错。
 
@@ -67,9 +69,9 @@ index/content/name matching 机制。
 **依赖：** Task 1。该 task 不改变 runtime migration protocol，可与 Task 3 的设计并行，
 但若修改同一 transform 文件必须串行集成。
 
-- [ ] historical/current block 仅建立 StepName → AsyncId table；old/new selector 分别精确解析。
+- [ ] historical/current block建立StepName → boundary metadata table；old/new selector分别精确解析。
 - [ ] index、bind name、content 和 Offset selector 均在编译期作为 unsupported syntax 拒绝。
-- [ ] manifest/runtime 只消费 resolved AsyncId，不保存或重算 selector AST。
+- [ ] manifest/runtime 只消费 resolved StepName，不保存或重算 selector AST。
 - [ ] 添加 StepName found/missing/duplicate/rename 与所有 fuzzy selector rejection tests，并同步
   README selector 表。
 
@@ -84,9 +86,9 @@ v3 接管的 historical frame，或按显式 policy abort；失败阻止 code ro
 
 - [ ] 固定 old=historical/new=current；启用 `directions.down`，up/down 使用独立 plan 与
   Env migrator，绝不推断逆函数。
-- [ ] historical metadata 保存 target runtime BlockName/AsyncId/MFA/CaptureAbi；down plan 以
-  NewAsyncId 为 source。只构造 historical frame，不生成或提前调用 historical function。
-- [ ] historical target 的 BlockName/AsyncId/MFA 与 source 相同时默认 automatic inheritance；存在
+- [ ] historical metadata 保存 target runtime BlockName/StepName/MFA/CaptureAbi；down plan 以
+  NewStep 为 source。只构造 historical frame，不生成或提前调用 historical function。
+- [ ] historical target的Protocol/BlockName/StepName/MFA与source相同时默认automatic inheritance；存在
   explicit down Env migrator 时执行 same-identity Env-only plan，不同时才要求 boundary mapping 或
   terminal policy。
 - [ ] 实现 `{down,TargetVsn}` 方向、historical target anchor、current source validation 和
@@ -141,16 +143,17 @@ directive 时 Task 1/3 的 context 与行为 bit-for-bit 不变。
 
 ## Linked ContinuationRef integration（2026-08-28，未实现）
 
-- [ ] migration enumeration覆盖 callbacks store中所有 `#sf_callback{frame,next_ref,...}` values，包括
-  ActionMRef current nodes和internal ContinuationRef outer nodes；legacy `#callback{}` 保持隔离。
-- [ ] up/down/current-refresh只替换每个 node.frame，bit-for-bit保留 key、next_ref、request、AccRef、
-  timer、monitor和protocol metadata；不得递归改写内嵌父链。
+- [ ] migration enumeration覆盖 callbacks store中所有完整
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}` values，包括ActionMRef current
+  nodes和internal ContinuationRef outer nodes；ordinary `#callback{cc,acc_ref,parent_ref,...}` 保持隔离。
+- [ ] up/down/current-refresh只替换每个 node.frame，bit-for-bit保留 key、parent_ref、request、AccRef、
+  timer_ref、monitor和其他resource metadata；不得递归改写内嵌父链。
 - [ ] mismatch/forced-abort不定位root/final Ref；消费current node后把规定 failure Outcome dispatch给
-  direct next_ref，普通 success frame跳过，显式 failure handler可消费。
+  direct parent_ref，普通 success frame跳过，显式 failure handler可消费。
 - [ ] downgrade preflight覆盖所有stable nodes和引用边；API-level error不得提交部分 frame、取消资源或
   dispatch failure。
 - [ ] result reason把`notification`改为`dispatch => forwarded | handled | unhandled | {failed,term()}`。
-- [ ] 添加deep nested/case、multi-module、internal outer node、legacy mixed store、next_ref preservation、
+- [ ] 添加deep nested/case、multi-module、internal outer node、ordinary mixed store、parent_ref preservation、
   one-hop failure、handler consumption、atomic downgrade和orphan-index integration tests。
 
 ## Initiative final acceptance

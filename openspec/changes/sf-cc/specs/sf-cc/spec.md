@@ -14,7 +14,7 @@
 - **给定**一个内部 bind continuation 是 anonymous fun 的 ordinary Promise
 - **并且**用户通过 `run_with_sf_cc/5` 提供 external final callback
 - **当**Promise 挂起并在之后完成
-- **那么**action callback 保持原 anonymous fun
+- **那么**action callback 保存原 anonymous fun 与其 direct `parent_ref`
 - **并且**最终 Outcome 沿 ContinuationRef nodes 交给 external outer callback 一次
 
 #### Scenario: Frame promise uses the same runner
@@ -46,13 +46,14 @@ source constraint。
 - **给定**用户在升级后调用 `wait/1` 或 `wait_t/2`
 - **当**Promise 挂起后完成
 - **那么**调用方观察到与旧 wait 合同相同的正常结果
-- **并且**stable 挂起 action 通过 direct `next_ref` 链接该 wait outer node
+- **并且**stable 挂起 action 通过 direct `parent_ref` 链接该 wait outer node
 
 #### Scenario: Ordinary callback facade uses the common lifecycle
 
 - **给定**ordinary runner 的 final callback 是 anonymous adapter fun
 - **当**该 runner 在升级后创建 pending action
-- **那么**outer node 持有 ordinary `sf_cc` completion descriptor，stable action 只持有 direct parent Ref
+- **那么**outer node 持有 ordinary `sf_cc` completion descriptor；完整 stable action entry保留自身
+  lifecycle fields，且其唯一 parent edge指向该 outer Ref
 - **并且**normal completion 仍按旧 adapter 的 normalization 执行
 
 ### Requirement: Macro accepts only explicit external callback source forms
@@ -163,37 +164,45 @@ return。invalid return MUST 在 outer node 已消费后失败。
 - **那么**runtime 报 invalid sf-cc return
 - **并且**不得恢复已消费的 outer node
 
-### Requirement: Stable callbacks store one frame and one direct reference
+### Requirement: Every action callback stores its current continuation and direct parent
 
-stable suspension MUST 使用独立 `#sf_callback{}`，并且只保存 current `sf_frame`、direct `next_ref` 与
-该 action 的 lifecycle metadata。它 MUST NOT 保存 recursive downstream、outer frame副本或 root/final Ref。
-legacy `#callback{}` MUST 保持 ordinary encoding，runtime MUST NOT 从其 fun/map 猜测 stable frame。
+stable suspension MUST 使用完整
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`。其中 continuation 投影是 current `sf_frame` 与 direct
+`parent_ref`；其余字段保存该 action 的 accumulator 和 timer lifecycle。shared header MAY 追加
+monitor/resource metadata，但它 MUST NOT 保存 recursive
+downstream、outer frame副本或 root/final Ref。
+ordinary suspension MUST 使用 `#callback{cc,acc_ref,parent_ref,...}`，其中 `cc` 精确保存 current anonymous
+continuation，`parent_ref` 精确保存该 `cc` 的 direct continuation parent。runtime MUST NOT 从 ordinary
+fun/map 猜测 stable frame，也 MUST NOT 把 `parent_ref` 当作 source Block identity、resource owner或root Ref。
 
-#### Scenario: Legacy ordinary continuation remains isolated
+#### Scenario: Ordinary continuation stores its fallback edge
 
 - **给定**ordinary Promise 挂起并保存 anonymous continuation `Fun`
-- **当**runtime 写入 legacy callback
+- **并且**该 bind 在 `ParentRef` continuation scope 下执行
+- **当**runtime 写入 ordinary callback
 - **那么**`#callback.cc` 仍精确为 `Fun`
-- **并且**不把该 entry 分类为 stable frame
+- **并且**`#callback.parent_ref` 精确为 `ParentRef`，且不把该 entry 分类为 stable frame
 
 #### Scenario: Stable frame stores no parent copy
 
 - **给定**InnerFrame 在 OuterFrame 下挂起
 - **当**runtime 写入 stable callback
-- **那么**entry 保存 `InnerFrame + OuterRef`
+- **那么**entry 保存完整 `#sf_callback{frame = InnerFrame, parent_ref = OuterRef, ...}` 及其 lifecycle fields
 - **并且**不保存 OuterFrame 内容或最外层 Ref
 
 ### Requirement: Continuation scope is independent from accumulator scope
 
 runtime MUST 独立传播 `AccRef` 与 current continuation context。`get_local_ref` MUST 继续返回 AccRef；
-`local_ref/3` 或内部 parallel/aggregation 重绑定 AccRef 时 MUST 保持 current frame/direct `next_ref`。
-reply executor MUST 从 decoded `#sf_callback{acc_ref,frame,next_ref}` 重建两个 scopes。
+`local_ref/3` 或内部 parallel/aggregation 重绑定 AccRef 时 MUST 保持 current `cc`/frame 和 direct
+`parent_ref`。reply executor MUST 从 decoded ordinary callback 的 `cc`、`acc_ref`、`parent_ref`，或完整
+stable callback 的 `frame`、`acc_ref`、`parent_ref` 及 lifecycle fields 重建两个 scopes；这里的字段投影
+不是缩减后的 record encoding。
 
 #### Scenario: Sequential suspension links to its direct parent
 
 - **给定**ActionA stable callback 携带 FrameA 与 ParentRef
 - **当**ActionA reply 恢复 continuation，且 ActionB 随后挂起
-- **那么**ActionB 的新 callback 只携带其 current frame 与当时的 direct parent Ref
+- **那么**ActionB 写入完整 stable callback；其中 continuation 投影为其 current frame 与当时的 direct parent Ref
 - **并且**ActionA callback 已按 reply lifecycle 删除
 
 #### Scenario: Accumulator ref changes
@@ -208,28 +217,37 @@ reply executor MUST 从 decoded `#sf_callback{acc_ref,frame,next_ref}` 重建两
 `async_t` internal action MUST 显式接收 `(K, SfContext)`，且 MUST NOT 通过进程字典传播 continuation 或
 runner。ordinary bind MUST 继续构造 anonymous continuation，只透传 `SfContext`；只有 `bind_frame/4`
 MAY 创建 stable frame context。Promise MUST 仅在实际 `K` 与 `SfContext.runner` 相同时保存
-`#sf_callback{}`，否则保存实际 ordinary `K`。
+`#sf_callback{}`，否则保存实际 ordinary `K` 与 `SfContext.parent_ref` 到 `#callback{}`。
 
 #### Scenario: Ordinary bind remains anonymous
 
 - **给定**stable execution context 内存在 ordinary bind
 - **当**该 bind 的 Action 挂起
 - **那么**callback.cc 保存 ordinary anonymous continuation
-- **并且**ordinary bind 不创建 frame
+- **并且**callback.parent_ref 保存该 continuation 的 direct parent，ordinary bind 不创建 frame
+
+#### Scenario: Classic do directly uses an sf-cc runner
+
+- **给定**classic `do` Promise 直接由 `run_sf_cc/3` 或 `run_with_sf_cc/5` 运行
+- **并且**runner 已注册 `OuterRef` callback node
+- **当**classic bind 内的 Action 挂起
+- **那么**ActionMRef entry 保存 `#callback{cc = K, parent_ref = OuterRef, ...}`，其中 `K` 是当前 do remainder
+- **并且**runtime 不需要遍历或拆包 Promise；真正挂起的 Promise writer从显式 `SfContext` 取得该 Ref
 
 #### Scenario: Frame bridges an ordinary downstream
 
 - **给定**`bind_frame` 的 downstream 是 ordinary anonymous continuation
 - **当**frame Action 挂起
 - **那么**runtime 为 anonymous downstream 注册 ordinary continuation node
-- **并且**stable callback 只保存指向该 node 的 `next_ref`，不嵌入 fun
+- **并且**完整 stable callback 的 parent edge 指向该 node，其他 lifecycle fields 保持在本 entry，且不嵌入 fun
 
 ### Requirement: One reference type addresses every continuation node
 
 frame node、ordinary continuation node 和 outer `sf_cc` node MUST 使用同一种 `ContinuationRef` key，
 并与 action callbacks 共用现有 callbacks dictionary。Ref 类型 MUST NOT 区分 FinalCcRef 与 OuterRef；
-value shape 决定 executor，`next_ref = none` 决定链结束。entry presence 表示 pending，absence表示 consumed，
-不得保留 done tombstone。每个 node MUST 只保存 direct `next_ref`，不得复制 root/final Ref。
+value shape 决定 executor，`parent_ref = none` 决定链结束。entry presence 表示 pending，absence表示 consumed，
+不得保留 done tombstone。每个 node MUST 只保存一个 direct parent edge，不得复制 root/final Ref；这不删减
+action callback 自身的 accumulator、timer 或其他 resource fields。
 
 #### Scenario: Immediate Promise leaves no outer node
 
@@ -299,11 +317,12 @@ continuation MUST 按现有 message semantics 执行。reply、timeout 和 DOWN 
 - **那么**ActionMRef 与 current continuation node 都保持 pending
 - **并且**后续 reply 仍可正常恢复并最终调用 sf_cc 一次
 
-### Requirement: Stable-frame failure propagates one node outward
+### Requirement: Current-continuation availability failure propagates one node outward
 
-runtime MUST 在 stable-frame continuation 发生结构性不可用时跳过当前 success frame，并把 failure
-dispatch 给其 direct `next_ref`。结构性不可用包括 frame protocol/shape 损坏、manifest/MFA validation
-failure 或 migration failure。runtime MUST NOT 定位或直接调用 root/final callback。
+runtime MUST 在 current continuation 本身不可用时跳过当前 ordinary `cc` 或 success frame，并把 failure
+dispatch 给其 direct `parent_ref`。结构性不可用包括 ordinary `cc` 的精确 invocation availability failure，
+以及 frame protocol/shape 损坏、manifest/MFA validation failure 或 migration failure。runtime MUST NOT
+定位或直接调用 root/final callback。
 runtime structural Outcome MUST 是 `{error, {sf_runtime, Reason}}`。ordinary business error、timeout 和 DOWN
 不得仅凭 Outcome shape 自动进入该路径。
 
@@ -311,40 +330,58 @@ runtime structural Outcome MUST 是 `{error, {sf_runtime, Reason}}`。ordinary b
 
 - **给定**当前 continuation 因 purge 不可调用且该 `badfun` 可归属到本次 invocation
 - **当**Action reply 到达
-- **那么**runtime 构造 failure并 dispatch direct `next_ref`
+- **那么**runtime 构造 failure并 dispatch direct `parent_ref`
 - **并且**不执行当前 ordinary success frame，也不跳过更多层
+
+#### Scenario: Ordinary callback badfun falls back to its parent
+
+- **给定**classic `do` 的 pending action 保存 `#callback{cc = Cc, parent_ref = ParentRef, ...}`
+- **并且**old-code purge使 `Cc` 本身不可调用
+- **当**reply executor尝试调用 `Cc`
+- **那么**runtime 只将精确归属 `Cc` 本身的 `error:{badfun, Cc}` 转成
+  `{error, {sf_runtime, unavailable_continuation}}`
+- **并且**消费当前 ActionMRef后 dispatch `ParentRef`，最终 callback仅在逐层传播到其 node时调用
+
+#### Scenario: Ordinary business failure still enters cc
+
+- **给定**ordinary callback保存有效 `Cc` 与 `ParentRef`
+- **当**Action产生 timeout、DOWN、pattern mismatch或业务 `{error, Reason}` Outcome
+- **那么**runtime调用 `Cc(Outcome)`并保持经典 `do`/Monad failure语义
+- **并且**不得仅凭 Outcome shape直接 dispatch `ParentRef`
 
 #### Scenario: Corrupt frame needs only its direct edge
 
-- **给定**current frame 无法执行但 stable callback.next_ref 有效
+- **给定**current frame 无法执行但 stable callback.parent_ref 有效
 - **当**runtime 检测 structural failure
-- **那么**runtime 直接 dispatch callback.next_ref
+- **那么**runtime 直接 dispatch callback.parent_ref
 - **并且**不寻找 root/final callback
 
 ### Requirement: Nested frames form a linked node chain
 
-stable frame continuation MUST 只保存 current frame 与 direct `next_ref`。`next_ref` MAY 指向 frame、
+stable frame continuation 的投影 MUST 只包含 current frame 与 direct `parent_ref`；完整 action entry 仍是
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`。`parent_ref` MAY 指向 frame、
 ordinary continuation 或 outer sf_cc node；Ref 类型相同。normal completion MUST 每次执行/消费一个 node。
 
 #### Scenario: Nested frame stores one edge
 
 - **给定**nested continuation 包含 InnerFrame 与 OuterFrame
 - **当**检查持久化 continuation
-- **那么**inner entry 只包含 `InnerFrame + OuterRef`
+- **那么**inner entry 的 continuation 投影只包含 `InnerFrame + OuterRef`，同时保留自身 lifecycle fields
 - **并且**OuterFrame 与 external callback/Context 位于各自独立 nodes
 
-### Requirement: Callback readers distinguish stable and legacy encodings
+### Requirement: Callback readers distinguish stable and ordinary encodings
 
-runtime MUST 明确解码 stable `#sf_callback{}` 与 legacy `#callback{}`。legacy entry MUST 保持 ordinary
-执行，但 MUST NOT 获得 frame migration、`next_ref` 推断或 fallback root。所有 callback readers、router、
-inspection、migration 和 `callback_exists/1` MUST 使用一致 classifier。
+runtime MUST 明确解码 stable `#sf_callback{}` 与 ordinary `#callback{}`。ordinary entry MUST 保持 ordinary
+执行并使用其显式 `parent_ref` 作为 current `cc` availability fallback，但 MUST NOT 获得 frame migration或
+fallback root推断。缺少 `parent_ref` 的旧 callback tuple不属于本 change 的 compatibility boundary。所有
+callback readers、router、inspection、migration 和 `callback_exists/1` MUST 使用一致 classifier。
 
-#### Scenario: Legacy callback is not promoted
+#### Scenario: Ordinary callback is not promoted to a frame
 
-- **给定**callbacks store 中存在 legacy `#callback{cc = Cc, acc_ref = AccRef}`
+- **给定**callbacks store 中存在 ordinary `#callback{cc = Cc, acc_ref = AccRef, parent_ref = ParentRef}`
 - **当**router 或 inspection 读取该 value
 - **那么**它按 ordinary callback contract 分类
-- **并且**runtime 不把它分类为 stable frame或推断 `next_ref`
+- **并且**runtime 使用 stored `ParentRef`，不把它分类为 stable frame或推断 frame metadata
 
 ### Requirement: Final callback availability handling is exact
 
@@ -364,8 +401,8 @@ external final callback 在 apply 前 MUST 使用 `code:ensure_loaded/1` 与
 ### Requirement: Matcher inspection exposes safe callback metadata
 
 `inspect_sf_callbacks/3` MUST 对每个 action callback 同步调用一次 `Matcher/1`，并且只向 matcher 暴露 sanitized summary。
-summary MUST 包含 request MRef、direct `next_ref`、stable flag、continuation kind 和 current frame summary。
-frame summary MUST 公开 Module、Vsn、protocol、BlockPath、StepName 和 AsyncId。Vsn MUST 是 frame producer
+summary MUST 包含 request MRef、direct `parent_ref`、stable flag、continuation kind 和 current frame summary。
+frame summary MUST 公开 Module、Vsn、Protocol、Block和StepName。Vsn MUST 是 frame producer
 保存的 module `-vsn` literal term或 `undefined`，不得限制为 atom。ordinary fun 的 frame MUST 为
 `undefined`；不得从 closure 推断 source metadata。summary MUST NOT 包含 Env、State、timer、monitor、
 accumulator、continuation value、outer callback 或 Context。父链 inspection 若提供，MUST 显式沿 Ref lookup
@@ -373,10 +410,10 @@ accumulator、continuation value、outer callback 或 Context。父链 inspectio
 
 #### Scenario: User matches a nested frame
 
-- **给定**一个 stable callback 的 current frame 属于 ModuleA，next_ref 指向 ModuleB node
-- **当**Matcher 按 current Module/Vsn/BlockPath/StepName 筛选
+- **给定**一个 stable callback 的 current frame 属于 ModuleA，parent_ref 指向 ModuleB node
+- **当**Matcher 按 current Module/Vsn/Protocol/Block/StepName 筛选
 - **那么**它可选中该 callback而不自动暴露 ModuleB payload
-- **并且**显式 chain inspection 可沿 next_ref 读取 sanitized ModuleB summary
+- **并且**显式 chain inspection 可沿 parent_ref 读取 sanitized ModuleB summary
 
 #### Scenario: Matcher sees no private data
 
@@ -400,24 +437,25 @@ Matcher exception MUST 原样传播；non-boolean return MUST 抛出 `{invalid_m
 
 ### Requirement: Active failure enters the selected node chain
 
-`fail_sf_callbacks/4` MUST 以 `{error, {sf_aborted, Reason}}` 注入选中的 stable callback/node，并按 selected
-Ref term order commit。failure MUST 先进入 selected node 的 direct `next_ref`，不得定位 root。legacy
-callback MUST 返回 `legacy` 且不删除。result status MUST 是 `forwarded | handled | failed | unhandled`。
+`fail_sf_callbacks/4` MUST 以 `{error, {sf_aborted, Reason}}` 注入选中的 stable callback/node，并按selected
+Ref term order commit。failure MUST 先进入 selected node 的 direct `parent_ref`，不得定位 root。ordinary
+callback MUST 返回`ordinary`且不删除；它的`parent_ref`只用于current `cc` availability fallback。
+result status MUST 是 `forwarded | handled | failed | unhandled | ordinary`。
 callback/effect 内部 exception MUST 原样传播并停止 commit；已经消费的 nodes 不回滚。
 
 #### Scenario: Two selected callbacks share an outer node
 
-- **给定**Matcher 选中两个 direct `next_ref` 指向同一 outer node 的内部 callbacks
+- **给定**Matcher 选中两个 direct `parent_ref` 指向同一 outer node 的内部 callbacks
 - **当**主动失败
 - **那么**每个 selected current node只被消费一次
 - **并且**共享 outer node也遵守一次性 take，重复到达返回 unhandled
 
-#### Scenario: Selected legacy callback is isolated
+#### Scenario: Selected ordinary callback remains pending
 
-- **给定**Matcher 选中一个 legacy `#callback{}`
+- **给定**Matcher 选中一个 ordinary `#callback{parent_ref = ParentRef}`
 - **当**主动失败
-- **那么**result status 是 legacy
-- **并且**callback 保持不变
+- **那么**result status是`ordinary`且callback保持pending
+- **并且**runtime不把manual failure伪装成current `cc` unavailable，也不dispatch `ParentRef`
 
 ### Requirement: Module version metadata uses literal module vsn terms
 

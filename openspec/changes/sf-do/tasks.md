@@ -8,10 +8,11 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] `async_sf_transform` top-level traversal 改用 Astranaut `mapfold`，不再 generic-walk module
   forms。
 - [x] 拆分 collect/analyze/rewrite 两阶段，identity 始终基于 original source AST。
-- [x] 用 `{SourceFunction, LexicalBlockPath, OccurrenceIndex}` 对齐两遍 traversal，并以 original-node
+- [x] 用 `{SourceFunction, LexicalPath, OccurrenceIndex}` 对齐两遍 traversal，并以 original-node
   digest 检测 traversal/order mismatch。
 - [x] 第二遍只消费冻结 plan；generated functions 在 traversal 后追加且不再进入 source analysis。
-- [x] 收集 lexical nested block path、source function owner 和 anonymous occurrence。
+- [x] 收集仅用于traversal scheduling的lexical nesting、source function owner和anonymous occurrence；
+  lexical path不参与named identity。
 - [x] public source 使用 `sf_do(Comprehension)` 与 `sf_do(BlockName, Comprehension)`；删除额外
   StepNames list/record 参数。
 - [x] 实现 inline literal atom StepName marker pairing/removal；duplicate、dangling、consecutive、
@@ -22,7 +23,7 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] 删除 Pass 2 的 source-form/name-marker/identity/capture 重复校验，只消费冻结 plan 与改写后 AST。
 - [x] 将 transform-owned reason 收敛为严格 `format_error/1` 精确 clauses，删除领域 catch-all；由
   Astranaut adapter 独占 compiler fallback，并让测试直接调用领域 formatter 暴露 `function_clause`。
-- [x] 去除 duplicate StepName/BlockPath 与 trailing marker 的派生 diagnostics，同时保持不同 occurrence
+- [x] 去除 duplicate StepName/Block 与 trailing marker 的派生 diagnostics，同时保持不同 occurrence
   的独立错误累计；ordering mismatch 只报告有界摘要，不打印完整 rewrite state。
 
 ## 2. Same-Monad frame lowering
@@ -59,7 +60,8 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 
 - [x] nested `sf_do` 作为普通 Monad Action 编译和运行。
 - [x] inner suspension 保存 outer downstream frame，inner completion 恢复 outer frame。
-- [x] nested explicit/anonymous-path block 使用 original lexical BlockPath，generated owner 不污染 identity。
+- [x] nested named block 使用module-wide唯一BlockName；lexical parent、generated owner、函数提取和
+  Promise传递不污染identity。anonymous block只使用non-migratable local locator。
 - [x] 覆盖两层以上 nesting、immediate inner、suspended inner、inner failure 和 timeout/DOWN。
 
 ## 5. Identity and manifest
@@ -67,11 +69,13 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [ ] 删除 derived identity、Action canonicalizer、annotation/alpha/map normalization 和
   AsyncForm digest；source-order index 不参与 identity。
 - [x] final action 不消费 StepName，不生成 frame function 或 manifest entry。
-- [ ] named identity 仅使用 `{sf_named_async, Protocol, BlockPath, StepName}`；unnamed boundary 使用
+- [ ] named identity 仅使用 `{Protocol, Block, StepName}`；unnamed boundary 使用
   non-migratable local frame locator/MFA，并在 manifest 记录 `step_name => undefined`。
-- [x] continuation、pattern、captures 和 Env 不参与 AsyncId/MFA。
-- [ ] export `'$async_sf_manifest'/0`，记录 `StepName | undefined`、MFA 和排序后的 required capture schema；
-  删除 identity mode、AsyncIndex 和 AsyncForm digest。
+- [x] continuation、pattern、captures、Env、lexical parent和调用位置不参与named identity/MFA。
+- [ ] generated function直接使用`'$sf_<block>__<step>'/2`；编译期检查拼接碰撞、用户函数冲突和名称过长，
+  不生成hash、hex或AsyncId。
+- [ ] export `'$async_sf_manifest'/0`，按Block/StepName记录MFA和排序后的required capture schema；
+  删除identity mode、AsyncIndex、AsyncId和AsyncForm digest。
 - [x] automatic resume 使用 identity check + required-capture subset check，允许 extra Env keys。
 
 ## 6. Verification
@@ -87,12 +91,12 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] 检查 transformed bind/then continuation 和 callback continuation slots 不包含 transform
   生成的 anonymous remainder fun；不得递归拒绝 Env/Action/`sf_cc` context 中的任意 runtime term。
 - [x] 证明 stable completion 不通过 ordinary `run_cc` adapter/runner。
-- [x] continuation-only change 保持 AsyncId/MFA；Env subset、缺失 capture、extra key、变量改名导致
+- [x] continuation-only change 保持 `{Protocol,Block,StepName}` identity/MFA；Env subset、缺失 capture、extra key、变量改名导致
   missing key，以及跨版本同名 key 默认直接复用分别验证；显式转换由 sf-migrate 测试负责。
 - [x] 增加 inline marker API/grammar、marker 不执行、unnamed warning/普通运行/migration failure、
-  Action/index/binder changes 不影响 named identity，以及 BlockPath/StepName rename 改变 identity 的测试。
+  Action/index/binder changes 不影响 named identity，以及 Block/StepName rename 改变 identity 的测试。
 - [x] 增加多错误 Pass 1 累计、`to_compiler/1` 输出和 Pass 2 未运行的回归测试。
-- [x] CT 增加 non-literal block、non-comprehension、invalid Monad、duplicate BlockPath 和直接
+- [x] CT 增加 non-literal block、non-comprehension、invalid Monad、duplicate Block 和直接
   generated-function conflict 的真实 compiler 回归；EUnit 增加 defensive AST、严格 formatter 精确文本
   和 Astranaut fallback 单元测试。
 - [ ] 增加 `case`/`receive`/`try` outer equality capture 与 fun/named-fun fresh shadowing 回归测试。
@@ -119,7 +123,7 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 - [x] Preserve frame continuation in `callback.cc` and the matching CcRef in `callback.sf_cc_mref`.
 - [x] Route frame structural failure through decoded `callback.sf_cc_mref` without traversing damaged continuation data.
 - [x] Propagate ordinary action continuation `badfun`、`undef` and callback-internal exceptions unchanged.
-- [x] Store frame/manifest owner Module and literal Vsn/`undefined`, with Vsn excluded from AsyncId.
+- [x] Store frame/manifest owner Module and literal Vsn/`undefined`, with Vsn excluded from boundary identity.
 - [x] Resolve each generated MFA through its owner Module/Vsn boundary and preserve other-module downstream nodes.
 - [x] Accept the actual stored frame as the source endpoint without requiring a historical source block.
 - [ ] Integrate optional TargetEnv/TargetInput conversion with sf-migrate without freezing converter policy in sf-do.
@@ -129,11 +133,12 @@ same-Monad frame-bind contract 重新打开；旧测试可作为行为基线，�
 
 ## 9. Linked continuation reference rewrite（2026-08-28，未实现）
 
-- [ ] 定义统一 `ContinuationRef` 和 stable `#sf_callback{current frame, next_ref, lifecycle metadata}`；
-  legacy `#callback{}` 保持 ordinary encoding。
+- [ ] 定义统一 `ContinuationRef`、ordinary `#callback{cc,acc_ref,parent_ref,...}` 和 stable
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}`；不保留缺少 `parent_ref` 的旧 callback tuple reader。
 - [ ] 删除 recursive `sf_next.downstream`、`sf_cc_ref` terminal 和 stable callback 的 root `sf_cc_mref`。
-- [ ] 让 `bind_frame` 自动物化直接父层 node；nested suspension 只保存 `InnerFrame + OuterRef`。
-- [ ] 将 normal resume 改为逐节点 take/dispatch；returned Monad 运行于 direct `next_ref`。
+- [ ] ordinary `bind`透传`SfContext.parent_ref`，由真正挂起的Promise writer保存`cc + parent_ref`；
+  `bind_frame`自动物化直接父层node，nested suspension只保存`InnerFrame + OuterRef`。
+- [ ] 将 normal resume 改为逐节点 take/dispatch；returned Monad 运行于 direct `parent_ref`。
 - [ ] 将 frame resolution/migration/invocation failure 改为跳过普通 success frame并只向外 dispatch 一层；
   增加显式 failure-handler consumption tests。
 - [ ] 更新 callback writer/decoder、timeout/DOWN/message routing，证明 request、monitor、timer 和 accumulator

@@ -4,16 +4,27 @@
 
 ## 2026-08-28 — linked continuation contract（未实现）
 
+- named frame identity收敛为`{Protocol, Block, StepName}`；BlockName在module内全局唯一，lexical parent、
+  函数提取、调用位置和Promise传递不参与identity。持久化frame字段由`block_path`改为`block`。
+- 删除persisted `AsyncId`及SHA/hex命名；named generated function固定为
+  `'$sf_<block>__<step>'/2`，拼接碰撞、用户函数冲突和名称过长均在编译期拒绝。
+- continuation edge统一命名为`parent_ref`，表示current `cc`/frame的direct dynamic continuation parent，
+  而不是下一source qualifier、root address或resource owner。
+- ordinary action callback改为`#callback{cc,acc_ref,parent_ref,...}`。classic `do` bind只透传显式
+  `SfContext`；真正挂起的Promise writer保存current anonymous `cc`与direct parent Ref，不拆包Promise。
+- ordinary Outcome仍调用`cc`；只有精确归属current `cc`本身不可调用的availability failure才跳过它并
+  dispatch `parent_ref`，从而让classic `do`直接由sf-cc runner运行时仍可逐层fallback。
 - stable continuation 从 callback 内递归 `sf_next(..., Downstream)` 值改为 callbacks store 中的单向
-  `ContinuationRef` 链。每个 stable node 只保存当前 `sf_frame` 和直接 `next_ref`，不得复制 outer
-  frame、完整 downstream chain 或最终/root reference。
+  `ContinuationRef` 链。完整 stable entry 是
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}`；其 continuation 投影只含当前
+  `sf_frame` 和直接 `parent_ref`，不得复制 outer frame、完整 downstream chain 或最终/root reference。
 - `ContinuationRef` 不区分 outer 与 final 引用类型；同一种 reference 可以指向 frame node、ordinary
-  callback node 或最外层 completion descriptor，节点内容和 `next_ref = none` 决定行为。
+  callback node 或最外层 completion descriptor，节点内容和 `parent_ref = none` 决定行为。
 - `bind_frame` 在 nested composition 时自动物化直接父层节点，并让 inner suspension 只保存
   `InnerFrame + OuterRef`。`run_cc`/sf-cc runner 只把外层 callback 作为同一链上的节点，不创建
   `sf_cc_ref` terminal map。
 - normal Outcome 每次恢复一层；frame invocation、resolution、migration 或可归属的 `badfun` 失败时，
-  普通 success frame 不执行，failure 被转发给直接 `next_ref`。可处理 failure 的显式 handler 可以消费它；
+  普通 success frame 不执行，failure 被转发给直接 `parent_ref`。可处理 failure 的显式 handler 可以消费它；
   无 handler 时逐层到达最外层 callback。
 - 删除 stable callback 对 `sf_cc_mref` root/final address 的重复保存。主动取消和 parallel cleanup 所需
   的反向关系属于 sf-cc 的独立索引/生命周期设计，不得重新塞入每个 continuation node。
@@ -27,10 +38,10 @@
   只携带规则、允许形式及必要动态身份，不复制 AST/source 或完整内部 state。
 - 领域 `format_error/1` 收敛为严格精确 clauses，不再自带 catch-all；正常 compiler 未匹配兜底归
   `astranaut_lib`，测试直接调用领域 formatter 以暴露 reason 拼写或 clause 遗漏。
-- duplicate StepName/BlockPath 不再级联 generated-function conflict；trailing marker 不再同时派生
+- duplicate StepName/Block 不再级联 generated-function conflict；trailing marker 不再同时派生
   invalid-last qualifier。不同 source occurrence 的独立 diagnostics 仍按 source order 累计。
 - ordering mismatch 只报告 occurrence identity 或有界 rewrite 摘要；missing target capture 明确归属
-  sf-migrate/runtime resolver，AsyncId 与 generated-function collision 不重复报告。
+  sf-migrate/runtime resolver；generated-name collision只报告一次。
 - empty comprehension 仅作为 earlier-transform malformed AST 的防御性 diagnostic；function 外
   application 不是合法 compiler form，删除不可达的领域 reason。
 
@@ -75,14 +86,14 @@
   `#callback.sf_cc_mref` 进入 `sf-cc` 的统一 completion primitive，由它先消费并清理 CcRef
   所属 lifecycle，再调用 final callback。
 - `sf_frame` 和 current manifest 增加 owner Module 与 module `-vsn` literal term（无可用显式
-  Vsn 时为 `undefined`）。Vsn 不进入 AsyncId，只供 inspection 和 migration endpoint selection。
+  Vsn 时为 `undefined`）。Vsn 不进入boundary identity，只供 inspection 和 migration endpoint selection。
 - frame resume 增加逐节点 owner-module resolution 边界。外部 owner module 独立升级、持有进程未执行
   `code_change/3` 时，reply-time 仍须在调用 frame MFA 前进行 lazy resolve；不同模块的 nested frames
   分别处理。
 - `sf-do` 只提供 source identity、stored Env、frame owner/version 和 current target manifest。
   historical block、Env/Input migrator、migration catalog、version-chain composition 与 strict downgrade
   policy 由 `sf-migrate` 定义，不在本 change 重复冻结。
-- ordinary timeout、DOWN、message、Monad failure、source syntax、BlockPath/StepName identity、capture
+- ordinary timeout、DOWN、message、Monad failure、source syntax、Block/StepName identity、capture
   analysis 和 nested Monad composition 保持既有合同。
 
 ### 实现核实
@@ -92,7 +103,7 @@
 **已实现的旧基线**
 
 - `async_sf_transform` 已生成 `bind_frame`/`then_frame`、external generated frame MFA、minimal Env、
-  BlockPath/StepName/AsyncId 和 `'$async_sf_manifest'/0`。
+  Block/StepName identity 和 `'$async_sf_manifest'/0`。
 - `async_sf_runtime` 已实现 `run_sf_frame/4`、内嵌完整 `sf_cc` terminal、current-manifest validation、
   frame resume 和 structural failure 后调用旧 terminal `sf_cc`。
 - `async_t` 已实现 frame-aware bind/then 和在 `#callback.cc` 中保存 stable continuation data。
@@ -119,8 +130,9 @@
 - standalone literal atom qualifier 只允许作为 StepName marker；duplicate、dangling、连续 marker、
   修饰 pure let/final action 或其他位置均为 source error。unnamed boundary 产生 warning，允许普通
   执行和 same-version resume，但 appup/appdown migration 必须失败。
-- migration identity 只使用 Protocol、BlockPath 和 StepName；删除 derived identity、Action
-  canonicalization、AsyncForm digest 及 AST/index fuzzy matching。
+- migration identity 只使用 Protocol、Block 和 StepName；删除 derived identity、Action
+  canonicalization、AsyncId/hash、AsyncForm digest 及 AST/index fuzzy matching；generated function直接使用
+  `'$sf_<block>__<step>'/2`。
 - Pass 1 使用 Astranaut return channel 累积 errors/warnings；有 error 时直接
   `astranaut_return:to_compiler/1` 且不运行 Pass 2，只有 warning 时继续 rewrite。Pass 2 只消费冻结
   plan，不重复 source validation。

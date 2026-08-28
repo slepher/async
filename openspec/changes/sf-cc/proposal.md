@@ -11,9 +11,10 @@ async callback store 可以持有两种 continuation：
 completion。frame 无法 migration、用户主动终止或 continuation data 损坏时，runtime 不能依赖
 frame chain 中嵌入完整 callback 来完成 Promise。
 
-`sf-cc` 把 continuation 表示为 callbacks store 中的一次性单向 node chain。stable callback 只保存
-current frame 与 direct `next_ref`；outer frame 和最终 callback 各自是独立 node。outer/final reference
-使用同一种 `ContinuationRef`，不在每个 pending callback 中复制 root address。
+`sf-cc` 把 continuation 表示为 callbacks store 中的一次性单向 node chain。stable callback的
+continuation portion只保存current frame与direct `parent_ref`，record另外保存accumulator和timer等
+action lifecycle metadata；outer frame和最终callback各自是独立node。outer/final
+reference使用同一种`ContinuationRef`，不在每个pending callback中复制root address。
 
 ## What Changes
 
@@ -37,33 +38,37 @@ current frame 与 direct `next_ref`；outer frame 和最终 callback 各自是�
   source argument 是 external fun，并拒绝 local fun、anonymous fun、runtime fun variable 和错误 arity。
 - macro MUST 将原 external-fun expression 传给普通 runtime function，不拆成 MFA tuple。
 - runtime MUST 持久化 `sf_cc` descriptor：external fun、预存 Context 和 runner mode。
-- stable path MUST 使用 `#sf_callback{frame, next_ref, ...}`；legacy `#callback{}` 保持 ordinary encoding。
+- ordinary suspension MUST 使用 `#callback{cc, acc_ref, parent_ref, ...}`，其中 `cc` 是当前 anonymous
+  continuation，`parent_ref` 是该 `cc` 的 direct continuation parent。stable path MUST 使用
+  `#sf_callback{frame, acc_ref, parent_ref, timer_ref}`；两种 action entry 都显式保存 direct parent edge，但 ordinary
+  callback 不因此获得 frame identity 或 migration guarantee。
 - callbacks store MUST 以同一种 `ContinuationRef` 保存 frame、ordinary continuation 或 outer completion
   node。任何 node 都不得重复保存 root/final Ref。
 - node dispatch MUST 先 take 当前 node、清理它直接拥有的 ActionMRef/timer/monitor/accumulator 等资源，
   然后执行或转发该 node；只有 outer sf_cc node调用 final callback，`/3` MUST 看到 CleanState。
 - 每个 ContinuationRef MUST exactly-once。node crash、迟到 reply、重复 fail 不得恢复或再次调用。
 - 新增 inspect 和 immediate-fail API，核心 selector 为用户 matcher fun。matcher 可按
-  Module、module `-vsn`、BlockPath、StepName、protocol、AsyncId、continuation kind 和 request
+  Module、module `-vsn`、Protocol、Block、StepName、continuation kind 和 request
   MRef 筛选，但不可见 Env、State、timer 或 CC Context。
-- structural failure MUST 跳过当前 ordinary success frame并向 direct `next_ref` 转发；不得跳到 root。
-  `next_ref = none` 的 outer callback node 才执行最终 completion。
+- structural failure MUST 跳过当前 ordinary success frame并向 direct `parent_ref` 转发；不得跳到 root。
+  `parent_ref = none` 的 outer callback node 才执行最终 completion。
 
 ## Compatibility
 
-- callback store 明确区分 stable `#sf_callback{}` 与 legacy `#callback{}`；legacy ordinary callback
-  不被猜测为 stable frame。
+- callback store 明确区分 stable `#sf_callback{}` 与 ordinary `#callback{}`；ordinary callback
+  不被猜测为 stable frame。当前 change 不保留缺少 `parent_ref` 的旧 callback tuple compatibility。
 - 所有 public runners 都注册 outer continuation node：`wait/1`、`wait_t/2` 使用 library-owned completion；
   ordinary callback APIs 使用 ordinary completion descriptor；sf-prefixed APIs 使用用户 external-fun descriptor。
 - ordinary API 不受新 macro/external-fun source 约束，且其 normal callback/result contract 不变；
   anonymous final callback 本身不获得 external fun 的跨 purge 稳定保证。
-- ContinuationRef 不把 ordinary anonymous continuation 转换为 frame。仅当 `badfun`/`undef` 可归属到当前
-  node availability 时才转成 failure并向外一层；callback-internal exception 保持原合同。
+- ContinuationRef 不把 ordinary anonymous continuation 转换为 frame。ordinary outcome 始终先调用
+  `#callback.cc`；仅当 `badfun`/`undef` 可精确归属到当前 `cc` 本身不可调用时，runtime 才跳过该 `cc`
+  并向 `parent_ref` 转发一层。callback-internal exception 保持原合同。
 
 ## Non-Goals
 
 - 不将 ContinuationRef 定义为多个业务 promises 的 operation-group identity。
-- 不从 ordinary anonymous fun 推断 Module/Vsn/BlockPath/StepName。
+- 不从 ordinary anonymous fun 推断 Module/Vsn/Protocol/Block/StepName。
 - 不定义 Env/Input migration DSL、version transition catalog 或 appup/appdown ordering；这些属于
   `sf-migrate`。
 - 不迁移用户的 external final callback 或 Context。
@@ -86,7 +91,7 @@ current frame 与 direct `next_ref`；outer frame 和最终 callback 各自是�
 ## Impact
 
 - `async_m`：新 macro facade/runtime functions、现有 runner/wait facade 和 inspect/fail facade。
-- `async_t`：`#sf_callback.frame/next_ref`、scope propagation、ContinuationRef node routing。
+- `async_t`：`#callback.cc/parent_ref`、`#sf_callback.frame/parent_ref`、scope propagation、ContinuationRef node routing。
 - `async_r_t`：传播与 accumulator ref 独立的 current continuation context。
 - `async_sf_runtime`：逐节点 frame execution 与 failure forwarding。
 - `async_util`：current callback decoding、callback existence 与 callbacks dictionary 分类。

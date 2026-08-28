@@ -33,7 +33,7 @@ typeclass dispatcher 的标准失败行为。
 
 - **给定**`sf_do(request_flow, [async_m || load, Action, finish()])`
 - **当**module 编译
-- **那么**block path 包含 `request_flow`
+- **那么**frame block identity 精确为 module-wide `request_flow`
 - **并且**expression 编译为 `bind_frame`/`then_frame` sequencing chain
 
 #### Scenario: Anonymous block
@@ -41,24 +41,24 @@ typeclass dispatcher 的标准失败行为。
 - **给定**source function `f/1` 中的第一个 anonymous `sf_do`
 - **并且**它使用 `sf_do([async_m || load, Action, finish()])`
 - **当**module 编译
-- **那么**local block component 为 `'-f/1-fun-0-'`
+- **那么**transform分配仅用于普通执行/同版本resume的module-local locator
 - **并且**named block 不消耗 anonymous occurrence 序号
 
 ### Requirement: Inline StepName markers
 
 transform MUST 将紧随非最终 `bind`/`then` action 的 standalone literal atom qualifier 解释为
 StepName marker。
-marker MUST 是 compile-time metadata，并从 executable qualifier stream 删除。同一 BlockPath 内
+marker MUST 是 compile-time metadata，并从 executable qualifier stream 删除。同一 Block 内
 StepName MUST 唯一。standalone literal atom qualifier 不具有 ordinary action 语义；缺少后继
 boundary、修饰 pure let/final action、连续 marker 或任何其他 placement MUST 报 source error。
 pure let 和 final action不形成当前 block frame，不需要 name。
 
 #### Scenario: Named action moves
 
-- **给定**两个版本使用相同 inline BlockPath/StepName
+- **给定**两个版本使用相同 inline Block/StepName
 - **并且**action index/form 发生变化
 - **当**计算 named identity
-- **那么**AsyncId/MFA 保持不变
+- **那么**`{Protocol,Block,StepName}` identity与generated MFA保持不变
 
 #### Scenario: Invalid marker
 
@@ -88,8 +88,8 @@ ignore-input frame 丢弃。这与 `classic_do` 用 `>>=` 和 `_` continuation l
 
 - **给定**Action 挂起
 - **当**通过 `bind_frame` 运行
-- **那么**stable callback 只保存 NextFrame 和 direct `next_ref`
-- **并且**不保存 bind continuation closure
+- **那么**stable callback的continuation portion只保存NextFrame和direct `parent_ref`
+- **并且**entry仍保存accumulator和timer等action lifecycle metadata，但不保存bind continuation closure
 
 #### Scenario: Immediate bind
 
@@ -109,26 +109,36 @@ ignore-input frame 丢弃。这与 `classic_do` 用 `>>=` 和 `_` continuation l
 ### Requirement: Frame context propagation is explicit
 
 `async_t` internal action MUST 显式接收 `(K, SfContext)`，并且 MUST NOT 使用进程字典传播 structured
-continuation 或 runner。ordinary bind MUST 继续创建 anonymous continuation。Promise MUST 仅在实际
-`K` 等于 stable runner 时保存 `#sf_callback{}`；`bind_frame` MUST 自动把尚未可寻址的直接父层物化为 node。
+continuation 或 runner。ordinary bind MUST 继续创建 anonymous continuation并透传 direct
+`SfContext.parent_ref`。Promise MUST 在实际 `K` 等于 stable runner时保存 `#sf_callback{}`，否则保存
+`#callback{cc = K, parent_ref = ParentRef, ...}`；`bind_frame` MUST 自动把尚未可寻址的直接父层物化为 node。
+
+#### Scenario: Classic do suspension saves its direct parent
+
+- **给定**classic `do` Promise直接在sf-cc runner注册的 `OuterRef` 下执行
+- **当**ordinary bind内部Action挂起
+- **那么**Promise writer保存current anonymous `K`与`parent_ref = OuterRef`
+- **并且**bind不遍历或拆包Promise，后续Action只有实际执行并挂起时才创建自己的entry
 
 #### Scenario: Frame has an ordinary downstream
 
 - **给定**`bind_frame` 外层是 ordinary bind
 - **当**frame Action 挂起
 - **那么**runtime 将 ordinary anonymous downstream 物化为同一 callbacks store 中的 continuation node
-- **并且**frame callback 只保存指向该 node 的 direct `next_ref`
+- **并且**完整 frame callback 的 parent edge 指向该 node，并保留其余 lifecycle fields
 
 ### Requirement: Stable frame data has one encoding
 
 `NextMFA` MUST 是 `{Module, Function, 2}`，且 tagged `sf_frame` MUST 保存 owner Module 和 module Vsn。
-`FrameContext` MUST 包含 protocol `1`、Module、`Vsn | undefined`、BlockPath、
-`StepName | undefined`、AsyncId 和 Env。runtime MUST 验证 Module 与 NextMFA owner 相等并合成
+`FrameContext` MUST 包含 protocol `1`、Module、`Vsn | undefined`、`Block | undefined`、
+`StepName | undefined` 和 Env。runtime MUST 验证 Module 与 NextMFA owner 相等并合成
 tagged-map `sf_frame`。Vsn MUST 是 explicit module `-vsn` literal term或 `undefined`；不得强制转换为
-atom/string，也不得进入 AsyncId。
-stable callback MUST 保存一个 current `sf_frame` 和一个 direct `next_ref`。outer frame、ordinary
-continuation 与完整 sf_cc descriptor MUST 作为 callbacks store 中独立 node 存在。callback MUST NOT
-嵌入递归 downstream chain，也 MUST NOT 重复保存 root/final Ref。
+atom/string，也不得进入 named boundary identity。
+stable callback MUST 使用完整
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}` encoding。其continuation
+portion是一个current `sf_frame`和一个direct `parent_ref`；outer frame、ordinary continuation与完整sf_cc
+descriptor MUST作为callbacks store中独立node存在。callback MUST NOT嵌入递归downstream chain，也MUST
+NOT重复保存root/final Ref。
 
 #### Scenario: Nested downstream representation
 
@@ -177,7 +187,7 @@ final expression 和 lexical local-call lowering 为 baseline，不得另行添�
 - **那么**该 action 直接作为 remainder 返回
 - **并且**不生成 `{done,...}` 或 terminal frame
 - **并且**不消耗 StepName，也不生成 frame function 或 manifest entry
-- **并且**若该 action 挂起，只保存进入它时已有的 direct `next_ref`
+- **并且**若该 action 挂起，完整 action callback 保留自己的 lifecycle fields，其 parent edge 使用进入它时已有的 direct `parent_ref`
 
 #### Scenario: Nested lexical Monad
 
@@ -204,7 +214,7 @@ final expression 和 lexical local-call lowering 为 baseline，不得另行添�
 sf-do MUST 使用 sf-cc 提供的统一 ContinuationRef store/dispatcher，且 MUST NOT 定义完整 final callback
 descriptor 或 public final runner contract。external-fun source validation、Context、runner mode、
 callback `/2`/`/3` return、node cleanup-before-invoke 和 exactly-once semantics MUST 由 sf-cc capability 定义。
-stable continuation MUST 表示为 current frame + direct `next_ref`，不得是递归 frame chain或 transform
+stable continuation MUST 表示为 current frame + direct `parent_ref`，不得是递归 frame chain或 transform
 生成的 local bind continuation fun。用户 final callback/Context MUST NOT 进入 do block
 identity、manifest 或 migration，sf-do 也不得自动分析、捕获或迁移 Context。
 
@@ -213,7 +223,7 @@ identity、manifest 或 migration，sf-do 也不得自动分析、捕获或迁�
 - **给定**用户把需升级的业务逻辑放在 `sf_do` 最后部分
 - **并且**通过 sf-cc runner 提供 external final callback 和 Context
 - **当**block 完成
-- **那么**Outcome 沿 `next_ref` 逐层到达最外层 sf-cc callback node
+- **那么**Outcome 沿 `parent_ref` 逐层到达最外层 sf-cc callback node
 - **并且**`sf_do` manifest 不记录 final callback 或 Context
 
 ### Requirement: Nested sf_do uses Monad composition
@@ -231,9 +241,9 @@ NextFrame 与 `OuterRef`，并使 inner completion value 进入 `OuterRef` 指�
 #### Scenario: Nested names
 
 - **给定**两个不同 parent block 都包含 local name `inner`
-- **当**生成 identity
-- **那么**完整 BlockPath 不同且不冲突
-- **并且**generated parent function name 不参与 child identity
+- **当**module编译
+- **那么**transform报告duplicate module-wide Block `inner`
+- **并且**第二个block必须显式使用不同BlockName；parent位置不参与消歧
 
 ### Requirement: classic_do pattern failure semantics
 
@@ -272,15 +282,15 @@ timeout、DOWN 和 final reply MUST 传给当前 generated frame；runtime MUST 
 ### Requirement: Structural runtime failure propagates one node outward
 
 runtime MUST 在 unsupported protocol、损坏 current frame 或 manifest/MFA validation failure 时生成
-`{error, {sf_runtime, Reason}}` 并 dispatch direct `next_ref`。runtime MUST NOT invoke 未验证 generated
+`{error, {sf_runtime, Reason}}` 并 dispatch direct `parent_ref`。runtime MUST NOT invoke 未验证 generated
 frame，不得寻找 root/final Ref，也不得把结构错误伪装成 timeout 或 DOWN。普通 bind success frame MUST
 跳过；显式 failure handler MAY 消费该 Outcome，否则继续逐层向外传播。
 
 #### Scenario: Missing current MFA
 
-- **给定**pending frame 的 AsyncId/MFA 无法在 current manifest 验证
+- **给定**pending frame 的 Protocol/Block/StepName/MFA 无法在 current manifest 验证
 - **当**reply 到达
-- **那么**runtime 以 `{error, {sf_runtime, Reason}}` dispatch 当前 callback.next_ref
+- **那么**runtime 以 `{error, {sf_runtime, Reason}}` dispatch 当前 callback.parent_ref
 - **并且**不执行 stored MFA
 
 ### Requirement: Scope-aware minimal Env
@@ -336,7 +346,7 @@ values，也不保证 State 中已有 fun 在 upgrade 时被清除或替换；ol
 `sf_do` MUST NOT 为未知 future versions 捕获 enclosing scope 的全部 bindings，也 MUST NOT 定义 Env/Input migration protocol。
 目标版本新增 required capture 而 source Env 不含该值时，resolver 只能使用 sf-migrate 提供的
 optional Env conversion；没有可用值时不得执行 target frame或重放 prefix action，并必须进入
-migration failure，沿 direct `next_ref` 传播。具体 migration Outcome、converter return 和 downgrade policy 不由
+migration failure，沿 direct `parent_ref` 传播。具体 migration Outcome、converter return 和 downgrade policy 不由
 sf-do 定义。
 
 #### Scenario: New continuation needs absent prefix value
@@ -347,52 +357,71 @@ sf-do 定义。
 - **那么**runtime 不重放 prefix action
 - **并且**以 incompatible environment 失败
 
-### Requirement: Named async identity uses BlockPath and StepName
+### Requirement: Named async identity uses Protocol, Block and StepName directly
 
-有 inline StepName 的非最终 `bind`/`then` qualifier 的 migration AsyncId MUST 只使用 protocol、
-BlockPath 和 StepName：
+有 inline StepName 的非最终 `bind`/`then` qualifier 的 migration identity MUST 精确为
+`{Protocol, Block, StepName}`。Block MUST 是module-wide唯一的显式atom。source-order index、lexical
+parent、调用位置、Action AST、source annotation、binder/reference name、map entry order、pattern、suffix、
+CaptureLayout、runtime Env和continuation structure MUST NOT参与identity。transform MUST NOT维护Action
+canonicalizer、hash、hex或派生AsyncId。默认Protocol为`1`。
 
-```erlang
-crypto:hash(sha256,
-    term_to_binary({sf_named_async, Protocol, BlockPath, StepName})).
-```
+generated function atom MUST 直接使用`'$sf_<block>__<step>'`，arity固定为2。transform MUST 在编译期
+拒绝不同Block/Step拼接出的同名function、与用户或其他generated `Function/2`冲突及名称过长；不得
+truncate或fallback到hash。
 
-AsyncId 是 named tuple 的固定长度编码，不增加 Action 相似度判定。source-order index、Action AST、
-source annotation、binder/reference name、map entry order、pattern、suffix、CaptureLayout 和 runtime
-Env MUST NOT 参与 AsyncId。transform MUST NOT 为 identity 维护 Action canonicalizer。默认 Protocol
-为 `1`。generated function atom MUST 使用 `'$sf_'` 加完整 AsyncId lowercase hex，不得截断。
+#### Scenario: Generated function name is readable
+
+- **给定**Block为`order_flow`且StepName为`after_payment`
+- **当**transform生成named frame function
+- **那么**MFA精确为`{Module,'$sf_order_flow__after_payment',2}`
+- **并且**frame和manifest不保存AsyncId或hash
+
+#### Scenario: Concatenated names collide
+
+- **给定**两个不同Block/Step组合拼接出相同`'$sf_<block>__<step>'/2` atom
+- **当**Pass 1完成module-wide generated-name validation
+- **那么**transform报告generated-function conflict
+- **并且**不得hash、truncate或延迟到runtime消歧
 
 unnamed boundary MUST 有仅用于普通执行/same-version resume 的 module-local locator/MFA，并在
 current manifest 中记录 `step_name => undefined`。该 locator MUST NOT 被解释为 migration
-identity；migration resolver MUST 在调用 frame MFA 前 fail closed，并通过 sf-cc direct `next_ref`
+identity；migration resolver MUST 在调用 frame MFA 前 fail closed，并通过 sf-cc direct `parent_ref`
 dispatch 提交 sf-migrate 定义的 failure Outcome。
 
 #### Scenario: Change only remainder
 
-- **给定**pending boundary 的 BlockPath/StepName 不变
+- **给定**pending boundary 的 Block/StepName 不变
 - **并且**Action AST、source position 或后续 continuation 改写
 - **当**目标版本编译
-- **那么**AsyncId/MFA 保持不变
+- **那么**named identity/MFA 保持不变
 
 #### Scenario: Move a named action
 
 - **给定**一个 named action 在 block 内移动，或在其前方插入另一个 async action
-- **并且**该 action 的 BlockPath/StepName 保持不变
+- **并且**该 action 的 Block/StepName 保持不变
 - **当**重新计算 identity
-- **那么**该 action 的 AsyncId/MFA 保持不变
+- **那么**该 action 的 identity/MFA 保持不变
+
+#### Scenario: Extract a named block or pass its Promise
+
+- **给定**named block被提取到另一个source function，或其Promise经参数/返回值传递
+- **并且**owner Module、Block和StepName不变
+- **当**目标版本编译
+- **那么**identity与`'$sf_<block>__<step>'/2` MFA保持不变
+- **并且**调用位置或lexical parent不进入identity
 
 #### Scenario: Rename a step
 
-- **给定**pending boundary 的 BlockPath 或 StepName 改变
+- **给定**pending boundary 的 Block 或 StepName 改变
 - **当**重新计算 identity
-- **那么**AsyncId/MFA 改变
+- **那么**identity/MFA 改变
 - **并且**runtime 不按 index、Action AST 或相似度 fuzzy-match target
 
 ### Requirement: Every frame resolves by owner before invocation
 
 runtime MUST 在调用每个 stored frame MFA 前按该 frame 的 owner Module/Vsn 独立 resolve target。
-无需显式 mapping 的 direct resume MUST 同时满足 target manifest 中存在相同 BlockPath/StepName 及
-generated AsyncId/MFA，并且 target required captures 是 StoredEnv keys 的子集；StoredEnv extra keys
+无需显式 mapping 的 direct resume MUST 同时满足 target manifest 中存在相同Protocol/Block/StepName及
+generated MFA，并且 target required captures 是 StoredEnv keys 的子集；StoredEnv extra keys
 MUST 被允许。没有 StepName 的 frame在普通执行/same-version resume 中 MAY 继续，但 resolver MUST
 NOT 从 local locator、index/AST 推导 migration target。
 
@@ -404,11 +433,11 @@ NOT 从 local locator、index/AST 推导 migration target。
 
 #### Scenario: Identity matches but Env is insufficient
 
-- **给定**AsyncId/MFA 相同
+- **给定**Protocol/Block/StepName/MFA相同
 - **并且**target required capture 缺失
 - **当**没有 Env migration
 - **那么**frame 不执行
-- **并且**resolver 通过当前 callback 的 direct `next_ref` 提交 migration failure
+- **并且**resolver 通过当前 callback 的 direct `parent_ref` 提交 migration failure
 
 #### Scenario: Unnamed frame cannot migrate
 
@@ -422,7 +451,7 @@ NOT 从 local locator、index/AST 推导 migration target。
 - **给定**holder process 未执行 `code_change/3`，但 pending frame 的 owner module 已升级
 - **当**该 frame 收到 reply 并即将恢复
 - **那么**runtime 在调用任何 stored/current MFA 前按 owner Module/Vsn 进行 lazy resolution
-- **并且**无法 resolve 时通过 callback.next_ref 向外传播 failure
+- **并且**无法 resolve 时通过 callback.parent_ref 向外传播 failure
 
 #### Scenario: Nested modules resolve independently
 
@@ -441,10 +470,10 @@ NOT 从 local locator、index/AST 推导 migration target。
 ### Requirement: Current manifest has one public shape
 
 transform MUST export `'$async_sf_manifest'/0`，且 manifest MUST 暴露 owner Module 与 literal module Vsn。
-manifest MUST 使用 format/protocol `1`，并按 BlockPath 和 AsyncId 记录 StepName、generated MFA 和
-排序后的 required capture keys。Vsn MUST 是 explicit `-vsn` term或 `undefined`，不得加入 AsyncId。manifest
-MUST 允许 unnamed entry 使用 `step_name => undefined`，并按该字段禁止 migration。manifest
-MUST NOT 包含 AsyncForm digest、full source AST、runtime Env、sf-cc descriptor、migration selector 或
+manifest MUST 使用 format/protocol `1`，并按module-wide Block及其StepName直接记录generated MFA和
+排序后的required capture keys。Vsn MUST 是 explicit `-vsn` term或`undefined`，不得加入boundary identity。
+manifest MAY 单独记录unnamed local locator并使用`step_name => undefined`禁止migration。manifest MUST NOT
+包含AsyncId/hash、AsyncForm digest、full source AST、runtime Env、sf-cc descriptor、migration selector或
 historical mapping。
 
 #### Scenario: Query current boundary
@@ -457,7 +486,7 @@ historical mapping。
 ### Requirement: Astranaut compiler traversal
 
 transform MUST 使用 AST-aware traversal 收集和替换 source occurrences。identity MUST 基于
-Pass 1 冻结的 BlockPath/StepName；generated frame AST MUST NOT 被当作 source 再分析。第一遍 MUST
+Pass 1 冻结的 Block/StepName；generated frame AST MUST NOT 被当作 source 再分析。第一遍 MUST
 冻结 occurrence plan；第二遍 MUST 按稳定 lexical occurrence id 消费 plan，而不是重新分析 source
 form、name-marker pairing、identity/capture，或依赖 AST term identity/source line 猜测 occurrence。
 
@@ -507,7 +536,7 @@ generic catch-all 或调用 shared dispatcher。直接传入未知 reason MUST �
 `astranaut_lib` 使用原始 reason 的默认 term formatting 安全兜底。
 
 Pass 1 MUST 累计不同 source occurrence 的独立 violations，但 MUST NOT 为同一根因产生派生噪音：
-duplicate StepName 或 BlockPath 后不得再报告由它派生的 generated-function collision；trailing marker
+duplicate StepName 或 Block 后不得再报告由它派生的 generated-function collision；trailing marker
 已报告 dangling marker 后不得再因它让前一个 generator/match 成为最后 executable qualifier而报告
 invalid-last。真正与用户已有 `Function/2` 的 generated-function conflict 仍 MUST 报告。
 
@@ -532,18 +561,19 @@ diagnostic 保留；它不是普通 Erlang source 可输入形式。function 外
 
 #### Scenario: One source cause has one primary diagnostic
 
-- **给定**一个 block 内 duplicate StepName，或第二个 block 重复同一 BlockPath
+- **给定**一个 block 内 duplicate StepName，或第二个 block 重复同一 Block
 - **当**Pass 1 分析 generated identities
-- **那么**只报告 duplicate StepName 或 duplicate BlockPath primary diagnostic
+- **那么**只报告 duplicate StepName 或 duplicate Block primary diagnostic
 - **并且**不再报告由该重复派生的 generated-function conflict
 
 ### Requirement: Shared callback store and lifecycle
 
-stable action callbacks、intermediate continuation nodes、outer callback nodes、legacy `#callback{}` 和
-accumulator data MUST 共用现有 callbacks dictionary。frame path MUST 保持 request key、monitor、timer、
-accumulator reference 和 issued request；`#sf_callback{}` MUST 保存 current frame 与 direct `next_ref`。
-它 MUST NOT 保存递归 downstream 或 root/final Ref。legacy `#callback{}` MUST 保持 ordinary encoding并
-不得被推断为 stable frame。node cleanup ordering 由 sf-cc 定义。
+ordinary/stable action callbacks、intermediate continuation nodes、outer callback nodes 和 accumulator data
+MUST 共用现有 callbacks dictionary。frame path MUST 保持 request key、monitor、timer、accumulator reference
+和 issued request；stable path MUST 保存完整
+`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`，ordinary `#callback{}` MUST 保存
+current `cc`、`acc_ref` 与同义的 direct `parent_ref`。两者都 MUST NOT 保存递归 downstream 或 root/final
+Ref；ordinary callback不得被推断为 stable frame。node cleanup ordering 由 sf-cc 定义。
 
 #### Scenario: Stable frame update
 
@@ -551,18 +581,18 @@ accumulator reference 和 issued request；`#sf_callback{}` MUST 保存 current 
 - **当**frame metadata 更新
 - **那么**request 不重发、monitor 不重建、timeout 不重启
 
-#### Scenario: Legacy callback remains isolated
+#### Scenario: Ordinary callback remains distinct from a frame
 
-- **给定**callbacks store 中存在 legacy `#callback{}`
+- **给定**callbacks store 中存在 `#callback{cc = Cc, parent_ref = ParentRef, ...}`
 - **当**runtime 读取该 entry
 - **那么**它按 ordinary callback contract 分类
-- **并且**sf-do 不把它推断为 `#sf_callback{}` 或迁移 frame
+- **并且**sf-do使用stored `ParentRef`，但不把它推断为 `#sf_callback{}` 或迁移 frame
 
 #### Scenario: Current continuation availability failure propagates one layer
 
 - **给定**当前 continuation 因旧代码 purge 已不可调用
 - **当**reply executor 调用该 continuation
-- **那么**runtime 将可归属的 `badfun` 转为 failure并 dispatch direct `next_ref`
+- **那么**runtime 仅将精确归属current `cc`/frame本身的 `badfun` 转为 failure并 dispatch direct `parent_ref`
 - **并且**只跳过当前层，不直接定位或调用 root/final callback
 
 #### Scenario: Internal suspension links only to its parent
@@ -585,7 +615,7 @@ anonymous callback API MUST 继续接受原 source forms、参数和 return norm
 - **给定**用户在升级后调用原 `async_m:wait(Promise)`
 - **当**Promise 正常完成
 - **那么**source call 和返回 Outcome 与升级前一致
-- **并且**stable action callbacks 通过直接 `next_ref` 链接 library-owned completion node
+- **并且**ordinary/stable action callbacks 通过直接 `parent_ref` 链接 library-owned completion node
 
 #### Scenario: Existing anonymous callback API keeps its contract
 
@@ -597,12 +627,13 @@ anonymous callback API MUST 继续接受原 source forms、参数和 return norm
 ### Requirement: Additive compatibility
 
 未使用 `sf_do` 的现有应用 MUST 保持 source、ordinary callback 和 runtime 可观察行为兼容。
-stable callback record MUST 使用 sf-cc 定义的 `#sf_callback{}` encoding；legacy `#callback{}` 保持
-ordinary compatibility且不自动获得 stable-frame migration guarantee。
+stable callback record MUST 使用 sf-cc 定义的 `#sf_callback{}` encoding；ordinary callback MUST 使用
+`#callback{cc,acc_ref,parent_ref,...}`，保持普通调用语义且不自动获得 stable-frame migration guarantee。
+缺少 `parent_ref` 的旧 callback tuple不属于本 change 的 runtime compatibility boundary。
 
 #### Scenario: Ordinary callback
 
 - **给定**ordinary async action 使用 fun CC
 - **当**升级包含 sf-do capability 的 async library
 - **那么**ordinary path 仍保存和调用原 CC
-- **并且**不把 anonymous CC 宣称为可迁移 external callback
+- **并且**同时保存direct `parent_ref`作为该CC本身不可用时的fallback，但不把anonymous CC宣称为可迁移frame

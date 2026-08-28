@@ -4,13 +4,22 @@
 
 ## 2026-08-28 — unified ContinuationRef chain（未实现）
 
+- stable frame inspection只暴露Protocol/Block/StepName/MFA identity metadata；删除BlockPath与AsyncId投影，
+  named generated MFA由sf-do固定为`'$sf_<block>__<step>'/2`。
+- 将 continuation edge 字段统一命名为 `parent_ref`：它表示 current `cc`/frame 的 direct dynamic
+  continuation parent，不表示下一 source qualifier，也不表示 resource owner。
+- ordinary action callback 改为 `#callback{cc,acc_ref,parent_ref,...}`。classic `do` bind 不拆包 Promise；
+  真正挂起的 Promise writer从显式 `SfContext` 保存 current anonymous `cc` 与 direct parent Ref。
+- ordinary Outcome仍调用 `cc`；只有可精确归属到 current `cc` 本身不可调用的 availability failure才跳过
+  `cc` 并 dispatch `parent_ref`。因此无需为每个 ordinary action再包装一个重复的 continuation node。
 - 移除 `FinalCcRef`/`OuterRef` 的类型和生命周期区分。callbacks store 中所有 continuation references
   使用同一种 Ref；Ref 指向 frame、ordinary callback 或 completion descriptor node。
-- stable node 只保存当前 continuation 和直接 `next_ref`。不再用 `#callback.sf_cc_mref` 在所有 pending
+- ordinary/stable action node 都保存当前 continuation 和直接 `parent_ref`。不再用
+  `#callback.sf_cc_mref` 在所有 pending
   entries 中复制 root，也不再以 `sf_cc_ref` map 作为 structured chain terminal。
 - dispatch 改为 take/validate/execute 一个节点：success 执行当前 continuation；failure 跳过普通 bind
-  success frame并转发给 `next_ref`；节点调用产生的可归属 failure 同样只向外跳一层。
-- final completion 是 `next_ref = none` 的最外层 callback node 行为，不是另一种 reference。exactly-once
+  success frame并转发给 `parent_ref`；节点调用产生的可归属 failure 同样只向外跳一层。
+- final completion 是 `parent_ref = none` 的最外层 callback node 行为，不是另一种 reference。exactly-once
   从“按 root CcRef 批量消费”改为“每个 node 在调用/转发前一次性消费”。
 - inspection、主动 failure、timer/monitor cleanup 和 parallel cancellation 改以节点链及独立反向索引工作；
   不允许靠每层重复 root Ref 恢复旧的 ownership 模型。
@@ -53,5 +62,5 @@
   不合成 orphan Outcome，也不调用不存在的 final CC。
 - final completion 先消费 CcRef 并清理 action lifecycle，再以 CleanState 调用用户
   `sf_cc`；迟到 reply 不得二次调用。
-- 新增 function matcher 驱动的 inspect/immediate-fail 能力，公开 Module/Vsn/BlockPath/
-  StepName 等只读 metadata，不公开 Env、State 或 CC Context。
+- 新增 function matcher 驱动的 inspect/immediate-fail 能力，公开 Module/Vsn/Protocol/Block/StepName
+  等只读 metadata，不公开 Env、State 或 CC Context。

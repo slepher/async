@@ -58,19 +58,22 @@
 
 ## 7. Unified ContinuationRef rewrite（2026-08-28，未实现）
 
-- [ ] 在 shared header 定义 stable `#sf_callback{frame,next_ref,...}`，恢复 legacy `#callback{cc,acc_ref}`
-  isolation，并统一所有 store readers/classifiers。
+- [ ] 在 shared header 定义 ordinary `#callback{cc,acc_ref,parent_ref,...}` 与 stable
+  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}`，并统一所有 store readers/classifiers；不保留缺少 `parent_ref` 的旧
+  callback tuple reader。
 - [ ] 用统一 ContinuationRef node替换 `sf_cc_ref` entry/terminal；Ref value支持 stable frame、ordinary
   continuation和outer sf_cc descriptor。
-- [ ] 实现 `bind_frame` direct-parent materialization和single-frame suspension writer。
+- [ ] 让 ordinary `bind` 显式透传 `SfContext.parent_ref`，由真正挂起的 Promise writer保存
+  `cc + parent_ref`；实现 `bind_frame` direct-parent materialization和single-frame suspension writer。
 - [ ] 实现 take-before-dispatch逐节点 executor；success运行当前 continuation，failure跳过普通 success
-  frame并只dispatch direct `next_ref`。
+  frame并只dispatch direct `parent_ref`。
 - [ ] 删除 root `sf_cc_mref` reader local、per-callback propagation、root scan cleanup和per-CcRef fail dedupe。
 - [ ] 建立仅供 active cancellation/parallel cleanup使用的reverse index/ownership metadata，并验证registration、
   take、shared parent和orphan cleanup一致性。
 - [ ] 更新 exception boundary，只转换精确归属于current continuation availability的 `badfun`/`undef`。
 - [ ] 更新 inspection/failure API为current-node summary、可选安全Ref traversal和
-  `forwarded | handled | failed | unhandled | legacy` results。
+  `forwarded | handled | failed | unhandled | ordinary` results；ordinary action的`parent_ref`只用于current
+  `cc` availability fallback，主动failure保持pending并返回`ordinary`。
 - [ ] 更新 runner、message/timeout/DOWN、late reply和所有 callback-store backend tests。
 - [ ] 运行 compile、EUnit、Common Test、xref、Dialyzer和三组 OpenSpec validation；不得以旧测试通过标记
   本节完成。
