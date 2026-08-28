@@ -75,24 +75,31 @@ match_state(_State, _Type, _Len) ->
 
 callback_exists(Callbacks) ->
     lists:any(
-        fun({_Key, Value}) -> callback_value_kind(Value) =:= action_callback end,
+        fun({_Key, Value}) ->
+            lists:member(callback_value_kind(Value), [stable_action, ordinary_action])
+        end,
         to_list(Callbacks)
     ).
 
-decode_callback(#callback{cc = Cc, acc_ref = AccRef, sf_cc_mref = CcRef}) ->
-    {ok, #{cc => Cc, acc_ref => AccRef, sf_cc_mref => CcRef}};
+decode_callback(#callback{cc = Cc, acc_ref = AccRef, parent_ref = ParentRef,
+        timer_ref = TimerRef}) ->
+    {ok, #{kind => ordinary_action, cc => Cc, acc_ref => AccRef,
+        parent_ref => ParentRef, timer_ref => TimerRef}};
+decode_callback(#sf_callback{frame = Frame, acc_ref = AccRef,
+        parent_ref = ParentRef, timer_ref = TimerRef}) ->
+    {ok, #{kind => stable_action, frame => Frame, acc_ref => AccRef,
+        parent_ref => ParentRef, timer_ref => TimerRef}};
 decode_callback(_) ->
     error.
 
-callback_value_kind(Value) ->
-    case decode_callback(Value) of
-        {ok, _} -> action_callback;
-        error ->
-            case Value of
-                #{kind := sf_cc_ref, protocol := 1, cc := _} -> sf_cc_ref;
-                _ -> other
-            end
-    end.
+callback_value_kind(#callback{}) -> ordinary_action;
+callback_value_kind(#sf_callback{acc_ref = AccRef}) when is_reference(AccRef) -> stable_action;
+callback_value_kind(#sf_callback{}) -> intermediate_node;
+callback_value_kind(#{kind := ordinary_continuation, protocol := 1}) -> intermediate_node;
+callback_value_kind(#{kind := sf_cc, protocol := 1}) -> outer_node;
+callback_value_kind(#{kind := sf_reverse_index, protocol := 1}) -> other;
+callback_value_kind(Value) when is_map(Value); is_list(Value); is_tuple(Value) -> accumulator;
+callback_value_kind(_) -> other.
 
 to_list(Dict) when is_map(Dict) ->
     maps:to_list(Dict);

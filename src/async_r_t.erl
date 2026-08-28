@@ -57,7 +57,8 @@
 -export([ask/1]).
 -export([do_get_state/1, do_put_state/2, do_modify_state/2]).
 -export([get_state/1, put_state/2, modify_state/2]).
--export([get_local_ref/1, get_sf_cc_ref/1, local_ref/3, local_sf_cc_ref/3,
+-export([get_local_ref/1, get_continuation_context/1, local_ref/3,
+    local_continuation_context/3,
     local/3, get_local/1, put_local/2, modify_local/2]).
 -export([find_ref/2, get_ref/3, modify_ref/3, put_ref/3, remove_ref/2]).
 -export([eval/5, exec/5, run/5, map/3]).
@@ -67,7 +68,8 @@
 -gen_fun(#{inner_type => monad, sfunctions => [get_state/1, put_state/2, modify_state/2]}).
 -gen_fun(#{
     inner_type => monad,
-    sfunctions => [get_local_ref/1, get_sf_cc_ref/1, local_ref/3, local_sf_cc_ref/3,
+    sfunctions => [get_local_ref/1, get_continuation_context/1, local_ref/3,
+        local_continuation_context/3,
         local/3, get_local/1, put_local/2, modify_local/2]
 }).
 -gen_fun(#{
@@ -214,8 +216,8 @@ get_local_ref({?MODULE, IM}) ->
     M4 = state_t:new(M3),
     real_to_async_r_t(state_t:lift(reader_t:ask(M3), M4)).
 
--spec get_sf_cc_ref(M) -> async_r_t(_S, M, reference() | undefined).
-get_sf_cc_ref({?MODULE, IM}) ->
+-spec get_continuation_context(M) -> async_r_t(_S, M, map() | undefined).
+get_continuation_context({?MODULE, IM}) ->
     M1 = reader_t:new(IM),
     M2 = reader_t:new(M1),
     M3 = reader_t:new(M2),
@@ -226,16 +228,16 @@ get_sf_cc_ref({?MODULE, IM}) ->
 local_ref(Ref, X, {?MODULE, _IM} = ART) ->
     local(fun(_) -> Ref end, X, ART).
 
--spec local_sf_cc_ref(reference() | undefined, async_r_t(S, M, A), t(M)) ->
+-spec local_continuation_context(map() | undefined, async_r_t(S, M, A), t(M)) ->
     async_r_t(S, M, A).
-local_sf_cc_ref(CcRef, X, {?MODULE, IM}) ->
+local_continuation_context(Context, X, {?MODULE, IM}) ->
     M1 = reader_t:new(IM),
     M2 = reader_t:new(M1),
     M3 = reader_t:new(M2),
     RM = state_t:new(M3),
     LocalCc = fun(R3) ->
         reader_t:map(
-            fun(R2) -> reader_t:local(fun(_) -> CcRef end, R2, M2) end,
+            fun(R2) -> reader_t:local(fun(_) -> Context end, R2, M2) end,
             R3,
             M3
         )
@@ -361,11 +363,11 @@ run(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
 
 -export([run_scope/6]).
 -spec run_scope(async_r_t(S, M, A), callback_gs(S), reference(),
-    reference() | undefined, S, t(M)) -> monad:m(M, {A, S}).
-run_scope(X, CallbacksGS, Acc, CcRef, State, {?MODULE, IM}) ->
+    map() | undefined, S, t(M)) -> monad:m(M, {A, S}).
+run_scope(X, CallbacksGS, Acc, ContinuationContext, State, {?MODULE, IM}) ->
     RM = real_new(IM),
     NStateV = state_t:run(async_r_to_real_t(X), State, RM),
-    reader_t:run(reader_t:run(reader_t:run(NStateV, Acc), CcRef), CallbacksGS).
+    reader_t:run(reader_t:run(reader_t:run(NStateV, Acc), ContinuationContext), CallbacksGS).
 
 -spec map(fun((monad:m(M, {A, S})) -> monad:m(N, {B, S})), async_r_t(S, M, A)) ->
     async_r_t(S, N, B).

@@ -10,9 +10,9 @@
 -type frame_mfa() :: {module(), atom(), 2}.
 -type frame_context() :: #{
     protocol := 1,
-    block_path := [atom()],
+    block := atom(),
     step_name := atom() | undefined,
-    async_id := binary(),
+    identity := {1, atom(), atom()} | undefined,
     module := module(),
     vsn := term(),
     env := #{atom() => term()}

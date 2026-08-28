@@ -14,7 +14,11 @@
 -type inner_async_t(S, R, M, A) ::
     fun((fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)), sf_context()) ->
         async_r_t:async_r_t(S, M, R)).
--type sf_context() :: undefined | #{continuation := term(), runner := fun((term()) -> term())}.
+-type sf_context() :: undefined | #{
+    current := {frame, map()} | {ordinary, fun()} | {ref, reference()},
+    parent_ref := reference() | none,
+    runner := fun((term()) -> term())
+}.
 -type callback_or_cc(S, R, M, A) ::
     async_t_cc(S, R, M, A)
     | fun(() -> any())
@@ -83,8 +87,7 @@
     modify_local/2,
     local_ref/3,
     local/3,
-    get_local_ref/1,
-    get_sf_cc_ref/1
+    get_local_ref/1
 ]).
 -export([
     lift_reply/2,
@@ -138,8 +141,7 @@
         modify_local/2,
         local_ref/3,
         local/3,
-        get_local_ref/1,
-        get_sf_cc_ref/1
+        get_local_ref/1
     ]
 }).
 
@@ -357,10 +359,6 @@ get_local_ref({?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
     lift_mr(async_r_t:get_local_ref(MR), AT).
 
-get_sf_cc_ref({?MODULE, IM} = AT) ->
-    MR = async_r_t:new(IM),
-    lift_mr(async_r_t:get_sf_cc_ref(MR), AT).
-
 -spec find_ref(reference() | integer() | binary(), M) ->
     async_t(_S, _R, M, {ok, _A} | error).
 find_ref(MRef, {?MODULE, IM} = AT) ->
@@ -428,31 +426,18 @@ promise(MRef, {?MODULE, _IM} = Monad) ->
 -spec promise
     (any(), integer(), M) -> async_t(_S, _R, M, _A);
     (any(), infinity, M) -> async_t(_S, _R, M, _A).
-promise(Action, Timeout, {?MODULE, IM} = Monad) when is_function(Action, 0) ->
+promise(Action, Timeout, {?MODULE, IM} = _Monad) when is_function(Action, 0) ->
     MR = async_r_t:new(IM),
     async_t(fun(K, SfContext) ->
-        Continuation = callback_continuation(K, SfContext),
         case Action() of
             MRef when is_reference(MRef) or is_integer(MRef) or is_binary(MRef) ->
                 do([
                     {async_r_t, IM}
                  || AccRef <- async_r_t:get_local_ref(MR),
-                    CcRef <- async_r_t:get_sf_cc_ref(MR),
                     begin
-                        {NK, Timer} = callback_with_timeout(
-                            Continuation, MRef, Timeout, Monad),
-                        Stored = async_r_t:put_ref(MRef,
-                            #callback{cc = NK, acc_ref = AccRef, sf_cc_mref = CcRef}, MR),
-                        case {CcRef, Timer} of
-                            {Ref, TimerRef} when is_reference(Ref),
-                                    is_reference(TimerRef) ->
-                                monad:'>>'(Stored,
-                                    async_r_t:put_ref({sf_cc_timer, Ref, MRef},
-                                        #{kind => sf_cc_resource, protocol => 1,
-                                            owner => Ref, resource => {timer, TimerRef}}, MR),
-                                    MR);
-                            _ -> Stored
-                        end
+                        Timer = start_callback_timer(MRef, Timeout),
+                        Entry = action_entry(K, SfContext, AccRef, Timer),
+                        async_sf_cc:register_action(MRef, Entry, MR)
                     end
                 ]);
             Value ->
@@ -809,50 +794,53 @@ exec_sf_cc(X, Callback, Context, Offset, State, {?MODULE, IM} = AT) ->
         run_with_sf_cc(X, Callback, Context, Offset, State, AT), IM).
 
 run_with_descriptor(X, Descriptor, {?MODULE, IM} = AT) ->
-    CcRef = make_ref(),
+    OuterRef = make_ref(),
     MR = async_r_t:new(IM),
-    Registered = async_r_t:put_ref(CcRef, async_sf_cc:new_ref(CcRef, Descriptor), MR),
-    Action = run_sf_action(X, async_sf_cc:terminal(CcRef), AT),
-    monad:'>>'(Registered, async_r_t:local_sf_cc_ref(CcRef, Action, MR), MR).
+    Registered = async_sf_cc:register_node(OuterRef, Descriptor, MR),
+    Runner = fun(Outcome) -> async_sf_cc:dispatch(OuterRef, Outcome, MR) end,
+    Context = #{current => {ref, OuterRef}, parent_ref => OuterRef, runner => Runner},
+    Action = raw_run_cc(X, Runner, Context, AT),
+    monad:'>>'(Registered,
+        async_r_t:local_continuation_context(Context, Action, MR), MR).
 
 continuation_descriptor(Callback) ->
     Invoke = fun(Outcome, Next) -> Next(Outcome) end,
     async_sf_cc:new(async_r_t, Invoke, Callback).
 
 run_frame_action(Action, Frame, Runner,
-        #{continuation := Downstream, runner := Runner}, AT) ->
-    Continuation = async_sf_runtime:new_next(Frame, Downstream),
-    run_sf_action(Action, Continuation, AT);
-run_frame_action(Action, Frame, Anonymous,
-        #{runner := _StableRunner}, {?MODULE, IM} = AT) ->
-    CcRef = make_ref(),
+        #{runner := _ExistingRunner} = SfContext, {?MODULE, IM} = AT) ->
     MR = async_r_t:new(IM),
-    Descriptor = continuation_descriptor(Anonymous),
-    Registered = async_r_t:put_ref(CcRef,
-        async_sf_cc:new_ref(CcRef, Descriptor), MR),
-    Continuation = async_sf_runtime:new_next(Frame, async_sf_cc:terminal(CcRef)),
-    Framed = run_sf_action(Action, Continuation, AT),
-    monad:'>>'(Registered,
-        async_r_t:local_sf_cc_ref(CcRef, Framed, MR), MR);
+    do([
+        MR
+     || ParentRef <- materialize_parent(Runner, SfContext, MR),
+        begin
+            FrameRunner = fun(Input) ->
+                async_sf_runtime:continue(Frame, ParentRef, Input, MR, resume)
+            end,
+            FrameContext = #{current => {frame, Frame}, parent_ref => ParentRef,
+                runner => FrameRunner},
+            Framed = raw_run_cc(Action, FrameRunner, FrameContext, AT),
+            async_r_t:local_continuation_context(FrameContext, Framed, MR)
+        end
+    ]);
 run_frame_action(_Action, _Frame, _Runner, undefined, _AT) ->
     erlang:error(sf_frame_requires_stable_runner).
 
-run_sf_action(Action, Continuation, Offset, State) ->
+run_sf_action(Action, ParentRef, Offset, State) ->
     AT = new(identity),
     Ref = make_ref(),
-    MonadMR = run_sf_action(Action, Continuation, AT),
+    MonadMR = run_sf_action(Action, ParentRef, AT),
     async_r_t:run(MonadMR, state_callbacks_gs(Offset), Ref, State).
 
-run_sf_action(Action, Continuation, {?MODULE, _IM} = AT) ->
-    case async_sf_runtime:validate_continuation(Continuation) of
-        ok ->
-            Runner = sf_continuation_callback(Continuation, AT, resume),
-            SfContext = #{continuation => Continuation, runner => Runner},
-            CTA = reply_t:run(async_to_real_t(Action, SfContext)),
-            cont_t:run(CTA, Runner);
-        {error, Reason} ->
-            erlang:error({invalid_sf_continuation, Reason})
-    end.
+run_sf_action(Action, ParentRef, {?MODULE, IM} = AT)
+        when is_reference(ParentRef); ParentRef =:= none ->
+    MR = async_r_t:new(IM),
+    Runner = case ParentRef of
+        none -> fun(Input) -> async_r_t:return(Input, MR) end;
+        _ -> fun(Input) -> async_sf_cc:dispatch(ParentRef, Input, MR) end
+    end,
+    SfContext = #{current => {ref, ParentRef}, parent_ref => ParentRef, runner => Runner},
+    raw_run_cc(Action, Runner, SfContext, AT).
 
 wait(ATA, {?MODULE, _IM} = AT) ->
     wait_t(ATA, #{}, AT).
@@ -962,13 +950,14 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
     case handle_reference(MRef, Callbacks, Opts) of
-        {ok, Callback, AccRef, CcRef, NCallbacks} ->
+        {ok, Decoded, NCallbacks} ->
             NState = CallbacksS(NCallbacks, State),
             Direction = maps:get(sf_direction, Opts, resume),
-            ARTA = execute_callback_a(Callback, ReplyType, A,
+            ARTA = execute_callback_a(Decoded, ReplyType, A,
                 {?MODULE, IM}, Direction),
-            async_r_t:run_scope(ARTA, {CallbacksG, CallbacksS}, AccRef, CcRef,
-                NState, async_r_t:new(IM));
+            async_r_t:run_scope(ARTA, {CallbacksG, CallbacksS},
+                maps:get(acc_ref, Decoded), continuation_scope(Decoded), NState,
+                async_r_t:new(IM));
         error ->
             %% A is ok, state is unhandled
             monad:return({ok, unhandled}, IM)
@@ -1089,23 +1078,11 @@ info_to_reply(_Info) ->
 handle_reference(MRef, Callbacks, #{type := ReplyType} = Opts) ->
     case match_reference(MRef, Opts) of
         true ->
-            case async_util:find(MRef, Callbacks) of
-                {ok, Value} ->
-                    case async_util:decode_callback(Value) of
-                        {ok, #{cc := Callback, acc_ref := Acc,
-                                sf_cc_mref := CcRef}} ->
-                            demonitor_ref(MRef, Opts),
-                            NCallbacks =
-                                case ReplyType of
-                                    reply -> remove_timer_resource(CcRef, MRef,
-                                        async_util:remove(MRef, Callbacks));
-                                    message -> Callbacks
-                                end,
-                            {ok, Callback, Acc, CcRef, NCallbacks};
-                        error -> error
-                    end;
-                error ->
-                    error
+            case async_sf_cc:route_action(MRef, ReplyType, Callbacks) of
+                {ok, Decoded, NCallbacks} ->
+                    demonitor_ref(MRef, Opts),
+                    {ok, Decoded, NCallbacks};
+                error -> error
             end;
         false ->
             error
@@ -1129,39 +1106,36 @@ demonitor_ref(MRef, #{type := reply, ref := monitored_reference}) when is_refere
 demonitor_ref(_Ref, #{}) ->
     ok.
 
-execute_callback_a(Callback, message, A, _AT, _Direction) when is_function(Callback, 1) ->
+execute_callback_a(#{kind := ordinary_action, cc := Callback}, message, A,
+        _AT, _Direction) ->
     Callback({message, A});
-execute_callback_a(#{kind := Kind}, message, A, {?MODULE, IM}, _Direction) when
-    Kind =:= sf_next; Kind =:= sf_cc_ref
-->
+execute_callback_a(#{kind := stable_action}, message, A,
+        {?MODULE, IM}, _Direction) ->
     async_r_t:return({message, A}, async_r_t:new(IM));
-execute_callback_a(Callback, reply, A, {?MODULE, _IM}, _Direction) when is_function(Callback, 1) ->
-    Callback(A);
-execute_callback_a(#{kind := Kind} = Continuation, reply, A, {?MODULE, _IM} = AT, Direction) when
-    Kind =:= sf_next; Kind =:= sf_cc_ref
-->
-    cancel_sf_timer(Continuation),
-    Runner = sf_continuation_callback(Continuation, AT, Direction),
-    Runner(A).
-
-callback_with_timeout(Callback, MRef, Timeout, {?MODULE, _IM}) when is_integer(Timeout) ->
-    Timer = erlang:send_after(Timeout, self(), {MRef, {error, timeout}}),
-    case Callback of
-        Fun when is_function(Fun, 1) ->
-            {fun(A) ->
-                _ = erlang:cancel_timer(Timer),
-                Fun(A)
-            end, Timer};
-        #{kind := Kind} = Continuation when
-                Kind =:= sf_next; Kind =:= sf_cc_ref ->
-            {Continuation#{timer => Timer}, Timer}
+execute_callback_a(#{kind := ordinary_action, cc := Callback,
+        parent_ref := ParentRef}, reply, A, {?MODULE, IM}, _Direction) ->
+    MR = async_r_t:new(IM),
+    try Callback(A)
+    catch
+        error:{badfun, Callback} ->
+            async_sf_cc:dispatch_failure(ParentRef,
+                {error, {sf_runtime, unavailable_continuation}}, MR)
     end;
-callback_with_timeout(Callback, _MRef, _Timeout, {?MODULE, _IM}) ->
-    {Callback, undefined}.
+execute_callback_a(#{kind := stable_action, frame := Frame,
+        parent_ref := ParentRef}, reply, A, {?MODULE, IM}, Direction) ->
+    async_sf_runtime:continue(Frame, ParentRef, A, async_r_t:new(IM), Direction).
 
-remove_timer_resource(CcRef, MRef, Callbacks) when is_reference(CcRef) ->
-    async_util:remove({sf_cc_timer, CcRef, MRef}, Callbacks);
-remove_timer_resource(_CcRef, _MRef, Callbacks) -> Callbacks.
+start_callback_timer(MRef, Timeout) when is_integer(Timeout) ->
+    erlang:send_after(Timeout, self(), {MRef, {error, timeout}});
+start_callback_timer(_MRef, _Timeout) -> undefined.
+
+action_entry(K, #{current := {frame, Frame}, parent_ref := ParentRef,
+        runner := K}, AccRef, Timer) ->
+    #sf_callback{frame = Frame, acc_ref = AccRef,
+        parent_ref = ParentRef, timer_ref = Timer};
+action_entry(K, SfContext, AccRef, Timer) ->
+    #callback{cc = K, acc_ref = AccRef, parent_ref = context_parent(SfContext),
+        timer_ref = Timer}.
 
 state_callbacks_gs(Offset) ->
     {
@@ -1171,26 +1145,37 @@ state_callbacks_gs(Offset) ->
         end
     }.
 
-callback_continuation(K, #{continuation := Continuation, runner := K}) ->
-    Continuation;
-callback_continuation(K, _SfContext) ->
-    K.
-
 raw_run_cc(X, CC, SfContext, {?MODULE, _IM}) ->
     CTA = reply_t:run(async_to_real_t(X, SfContext)),
     cont_t:run(CTA, CC).
 
-sf_continuation_callback(Continuation, AT, Direction) ->
-    fun(Input) -> async_sf_runtime:continue(Continuation, Input, AT, Direction) end.
+materialize_parent(Runner, #{runner := Runner, current := {ref, Ref}}, MR)
+        when is_reference(Ref) ->
+    async_r_t:return(Ref, MR);
+materialize_parent(Runner, #{runner := Runner, current := {frame, Frame},
+        parent_ref := ParentRef}, MR) ->
+    register_materialized(async_sf_cc:frame_node(Frame, ParentRef), MR);
+materialize_parent(Runner, #{runner := Runner, current := {ordinary, Callback},
+        parent_ref := ParentRef}, MR) ->
+    register_materialized(async_sf_cc:ordinary_node(Callback, ParentRef), MR);
+materialize_parent(Callback, SfContext, MR) ->
+    register_materialized(async_sf_cc:ordinary_node(
+        Callback, context_parent(SfContext)), MR).
 
-cancel_sf_timer(Continuation) ->
-    case maps:find(timer, Continuation) of
-        {ok, Timer} ->
-            _ = erlang:cancel_timer(Timer),
-            ok;
-        error ->
-            ok
-    end.
+register_materialized(Node, MR) ->
+    Ref = make_ref(),
+    monad:'>>'(async_sf_cc:register_node(Ref, Node, MR),
+        async_r_t:return(Ref, MR), MR).
+
+context_parent(#{parent_ref := ParentRef}) -> ParentRef;
+context_parent(undefined) -> none.
+
+continuation_scope(#{kind := ordinary_action, cc := Callback,
+        parent_ref := ParentRef}) ->
+    #{current => {ordinary, Callback}, parent_ref => ParentRef};
+continuation_scope(#{kind := stable_action, frame := Frame,
+        parent_ref := ParentRef}) ->
+    #{current => {frame, Frame}, parent_ref => ParentRef}.
 
 map_real(F, ATA) ->
     contextual_real_to_async_t(fun(SfContext) ->

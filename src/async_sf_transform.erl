@@ -23,7 +23,7 @@ parse_transform(Forms, _Options) ->
         anonymous => 0,
         plans => #{},
         occurrence_plans => #{},
-        block_paths => #{},
+        block_names => #{},
         generated_names => #{},
         scope_stack => []
     },
@@ -125,8 +125,13 @@ format_error({invalid_sf_do, {duplicate_step_name, StepName}}) ->
     io_lib:format("duplicate sf_do step name: ~p", [StepName]);
 format_error({duplicate_block_path, Path}) ->
     io_lib:format("duplicate sf_do block path: ~p", [Path]);
+format_error({duplicate_block, Block}) ->
+    io_lib:format("duplicate sf_do block: ~p", [Block]);
 format_error({generated_function_conflict, Function}) ->
     io_lib:format("sf_do generated function conflicts with ~p/2", [Function]);
+format_error({generated_function_name_too_long, Block, StepName}) ->
+    io_lib:format("sf_do generated function name is too long for ~p/~p",
+        [Block, StepName]);
 format_error({ordering_mismatch, {source_digest, Id}}) ->
     io_lib:format("internal sf_do traversal digest mismatch at occurrence ~p", [Id]);
 format_error({ordering_mismatch, {unexpected_occurrence, Occurrence}}) ->
@@ -245,11 +250,11 @@ collect_sf(Node, Call, State) ->
 collect_valid_sf(Node, Info, Owner, Occurrence, State) ->
     do([
         return
-     || {Path, State1, PathUnique} <- allocate_block_path(Info, State),
+     || {Path, State1, PathUnique} <- allocate_block(Info, State),
         Id = {Owner, Path, Occurrence},
         Plan <- analyze_call(Node, Info, Id, State1),
-        State2 <- allocate_boundary_names(Plan, PathUnique, State1),
-        Plans = maps:put(Id, Plan, maps:get(plans, State2)),
+        {Plan1, State2} <- allocate_boundary_names(Plan, PathUnique, State1),
+        Plans = maps:put(Id, Plan1, maps:get(plans, State2)),
         OccurrencePlans = maps:put(
             {Owner, Occurrence}, Id, maps:get(occurrence_plans, State2)
         ),
@@ -432,9 +437,9 @@ analyze_call(Node, Info, {_Owner, Path, _Occurrence} = Id, State) ->
         StepNamesUnique <- validate_unique_step_names(QualifierPlan),
         Boundaries0 = analyze_boundaries(QualifierPlan, Monad, BoundBefore),
         Boundaries = assign_identities(Boundaries0, Id, maps:get(module, State),
-            maps:get(vsn, State)),
+            maps:get(vsn, State), maps:get(block_name, Info) =/= anonymous),
         return(#{
-            path => Path,
+            block => Path,
             boundaries => Boundaries,
             comprehension_arg => maps:get(comprehension_arg, Info),
             executable_indexes => [
@@ -699,100 +704,98 @@ monad_captures(Monad, Bound) ->
         ordsets:intersection(async_sf_lexical:free_expression(Monad, Bound), Bound)
     ).
 
-assign_identities(Boundaries, Id, Module, Vsn) ->
-    [assign_identity(Boundary, Id, Module, Vsn) || Boundary <- Boundaries].
+assign_identities(Boundaries, Id, Module, Vsn, NamedBlock) ->
+    [assign_identity(Boundary, Id, Module, Vsn, NamedBlock)
+        || Boundary <- Boundaries].
 
 assign_identity(
-    #{step_name := undefined} = Boundary,
-    {Owner, Path, Occurrence},
+    #{step_name := StepName} = Boundary,
+    {_Owner, Block, _Occurrence},
     Module,
-    Vsn
-) ->
-    AsyncId = hash({
-        sf_unnamed_local,
-        ?PROTOCOL,
-        Module,
-        Owner,
-        Path,
-        Occurrence,
-        maps:get(boundary_ordinal, Boundary)
-    }),
-    Function = list_to_atom("$sf_local_" ++ binary_to_list(hex(AsyncId))),
-    complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path);
-assign_identity(#{step_name := StepName} = Boundary, {_Owner, Path, _Occurrence}, Module,
-        Vsn) ->
-    AsyncId = hash({sf_named_async, ?PROTOCOL, Path, StepName}),
-    Function = list_to_atom("$sf_" ++ binary_to_list(hex(AsyncId))),
-    complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path).
+    Vsn,
+    true
+) when StepName =/= undefined ->
+    FunctionText = "$sf_" ++ atom_to_list(Block) ++ "__" ++ atom_to_list(StepName),
+    complete_boundary(Boundary, {named, FunctionText},
+        {?PROTOCOL, Block, StepName}, Module, Vsn, Block);
+assign_identity(Boundary, {_Owner, Block, _Occurrence}, Module, Vsn, _NamedBlock) ->
+    Ordinal = maps:get(boundary_ordinal, Boundary),
+    FunctionText = "$sf_local_" ++ atom_to_list(Block) ++ "__" ++ integer_to_list(Ordinal),
+    complete_boundary(Boundary, {local, FunctionText}, undefined,
+        Module, Vsn, Block).
 
-complete_boundary(Boundary, AsyncId, Function, Module, Vsn, Path) ->
+complete_boundary(Boundary, FunctionPlan, Identity, Module, Vsn, Block) ->
     Boundary#{
-        async_id => AsyncId,
-        function => Function,
-        mfa => {Module, Function, 2},
+        function_plan => FunctionPlan,
+        identity => Identity,
         module => Module,
         vsn => Vsn,
-        path => Path
+        block => Block
     }.
 
 allocate_boundary_names(Plan, true, State) ->
     case maps:get(step_names_unique, Plan) of
         true -> allocate_boundary_names(Plan, State);
-        false -> astranaut_return:return(State)
+        false -> astranaut_return:return({Plan, State})
     end;
 allocate_boundary_names(_Plan, false, State) ->
-    astranaut_return:return(State).
+    astranaut_return:return({_Plan, State}).
 
 allocate_boundary_names(Plan, State) ->
-    astranaut_return:foldl_m(
-        fun(Boundary, StateAcc) ->
-            Function = maps:get(function, Boundary),
+    astranaut_return:lift_m(
+        fun({Boundaries, State1}) ->
+            {Plan#{boundaries => lists:reverse(Boundaries)}, State1}
+        end,
+        astranaut_return:foldl_m(
+        fun(Boundary, {BoundaryAcc, StateAcc}) ->
+            {_, FunctionText} = maps:get(function_plan, Boundary),
             Pos = maps:get(pos, Boundary),
             Existing = maps:get(functions, StateAcc),
             Generated = maps:get(generated_names, StateAcc),
-            Conflict = maps:is_key({Function, 2}, Existing) orelse
-                maps:is_key(Function, Generated),
-            State1 = StateAcc#{
-                generated_names => maps:put(Function, true, Generated)
-            },
-            case Conflict of
-                true ->
-                    source_error_at(
-                        Pos, {generated_function_conflict, Function}, State1
-                    );
+            case length(FunctionText) =< 255 of
                 false ->
-                    astranaut_return:return(State1)
+                    source_error_at(Pos,
+                        {generated_function_name_too_long,
+                            maps:get(block, Boundary), maps:get(step_name, Boundary)},
+                        {[Boundary | BoundaryAcc], StateAcc});
+                true ->
+                    Function = list_to_atom(FunctionText),
+                    Conflict = maps:is_key({Function, 2}, Existing) orelse
+                        maps:is_key(Function, Generated),
+                    Boundary1 = Boundary#{function => Function,
+                        mfa => {maps:get(module, Boundary), Function, 2}},
+                    State1 = StateAcc#{generated_names =>
+                        maps:put(Function, true, Generated)},
+                    Return = {[Boundary1 | BoundaryAcc], State1},
+                    case Conflict of
+                        true -> source_error_at(
+                            Pos, {generated_function_conflict, Function}, Return);
+                        false -> astranaut_return:return(Return)
+                    end
             end
         end,
-        State,
+        {[], State},
         maps:get(boundaries, Plan)
-    ).
+    )).
 
-allocate_block_path(Info, State) ->
-    Parent = current_path(maps:get(block_stack, State)),
+allocate_block(Info, State) ->
     case maps:get(block_name, Info) of
         anonymous ->
             Anonymous = maps:get(anonymous, State),
             {Name, Arity} = maps:get(owner, State),
-            Component = list_to_atom(
-                "-" ++ atom_to_list(Name) ++ "/" ++ integer_to_list(Arity) ++
-                    "-fun-" ++ integer_to_list(Anonymous) ++ "-"
-            ),
-            Path = Parent ++ [Component],
-            register_block_path(Path, State#{anonymous => Anonymous + 1});
+            Locator = list_to_atom("sf_local_" ++ atom_to_list(Name) ++ "_" ++
+                integer_to_list(Arity) ++ "_" ++ integer_to_list(Anonymous)),
+            astranaut_return:return({Locator, State#{anonymous => Anonymous + 1}, true});
         Name ->
-            Path = Parent ++ [Name],
-            register_block_path(Path, State)
+            register_block(Name, State)
     end.
 
-register_block_path(Path, State) ->
-    Paths = maps:get(block_paths, State),
-    State1 = State#{block_paths => maps:put(Path, true, Paths)},
+register_block(Path, State) ->
+    Paths = maps:get(block_names, State),
+    State1 = State#{block_names => maps:put(Path, true, Paths)},
     case maps:is_key(Path, Paths) of
         true ->
-            astranaut_return:error_ok(
-                {duplicate_block_path, Path}, {Path, State1, false}
-            );
+            astranaut_return:error_ok({duplicate_block, Path}, {Path, State1, false});
         false ->
             astranaut_return:return({Path, State1, true})
     end.
@@ -989,33 +992,24 @@ context_ast(Boundary, Pos) ->
     ],
     {map, Pos, [
         {map_field_assoc, Pos, {atom, Pos, protocol}, {integer, Pos, ?PROTOCOL}},
-        {map_field_assoc, Pos, {atom, Pos, block_path}, abstract(maps:get(path, Boundary))},
+        {map_field_assoc, Pos, {atom, Pos, block}, abstract(maps:get(block, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, step_name}, abstract(maps:get(step_name, Boundary))},
-        {map_field_assoc, Pos, {atom, Pos, async_id}, abstract(maps:get(async_id, Boundary))},
+        {map_field_assoc, Pos, {atom, Pos, identity}, abstract(maps:get(identity, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, module}, abstract(maps:get(module, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, vsn}, abstract(maps:get(vsn, Boundary))},
         {map_field_assoc, Pos, {atom, Pos, env}, {map, Pos, EnvFields}}
     ]}.
 
 manifest(Module, Vsn, Plans) ->
-    Blocks = lists:foldl(
-        fun(Plan, Blocks0) ->
-            Path = maps:get(path, Plan),
-            Asyncs = maps:from_list([
-                {maps:get(async_id, Boundary), #{
-                    step_name => maps:get(step_name, Boundary),
-                    mfa => maps:get(mfa, Boundary),
-                    required_captures => maps:get(captures, Boundary)
-                }}
-                || Boundary <- maps:get(boundaries, Plan)
-            ]),
-            maps:put(Path, #{asyncs => Asyncs}, Blocks0)
-        end,
-        #{},
-        Plans
-    ),
-    #{format => 1, protocol => ?PROTOCOL, module => Module, vsn => Vsn,
-        blocks => Blocks}.
+    Frames = lists:sort([
+        #{identity => maps:get(identity, Boundary),
+            step_name => maps:get(step_name, Boundary),
+            mfa => maps:get(mfa, Boundary),
+            required_captures => lists:sort(maps:get(captures, Boundary))}
+        || Plan <- Plans, Boundary <- maps:get(boundaries, Plan)
+    ]),
+    #{format => 1, protocol => ?PROTOCOL, owner => Module, vsn => Vsn,
+        frames => Frames}.
 
 module_vsn(Forms) ->
     case [Vsn || {attribute, _Pos, vsn, Vsn} <- Forms] of
@@ -1109,12 +1103,8 @@ source_warning(Node, Reason, Return) ->
     ).
 
 node_digest(Node) ->
-    hash(erl_parse:map_anno(fun(_Anno) -> 0 end, astranaut_syntax:revert(Node))).
-
-hash(Term) -> crypto:hash(sha256, term_to_binary(Term)).
-
-hex(Binary) ->
-    list_to_binary(lists:flatten([io_lib:format("~2.16.0b", [Byte]) || <<Byte>> <= Binary])).
+    erlang:phash2(erl_parse:map_anno(
+        fun(_Anno) -> 0 end, astranaut_syntax:revert(Node))).
 
 remote_call(Pos, Module, Function, Args) ->
     {call, Pos, {remote, Pos, {atom, Pos, Module}, {atom, Pos, Function}}, Args}.
