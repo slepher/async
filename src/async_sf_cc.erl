@@ -335,13 +335,13 @@ preflight_node_in_store(Ref, Node, Callbacks) ->
 preflight_action_in_store(Key, Value, Callbacks) ->
     case action_preflight(Key, Value, Callbacks) of
         {ok, Decoded} ->
-            case preflight_children_direct(Key, Value, Callbacks) of
-                {ok, _} ->
+            case async_util:find(?CHILDREN(Key), Callbacks) of
+                error ->
                     case preflight_ancestors(parent_ref(Value), Key, Callbacks, #{}, 0) of
                         ok -> {ok, Decoded};
                         Error -> Error
                     end;
-                Error -> Error
+                {ok, _} -> {error, {action_has_children, Key}}
             end;
         error -> {error, {invalid_action, Key}}
     end.
