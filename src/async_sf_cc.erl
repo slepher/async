@@ -295,7 +295,8 @@ invoke_outer(#{mode := async_r_t, callback := Callback, context := Context},
         ok ->
             case apply_exact(Callback, [Outcome, Context]) of
                 {ok, {async_r_t, _} = Effect} ->
-                    async_r_t:local_continuation_context(undefined, Effect, MR);
+                    async_r_t:local_continuation_context(
+                        undefined, normalize_async_effect(Effect), MR);
                 {ok, Other} -> erlang:error({invalid_sf_cc_return, Other});
                 unavailable -> erlang:error({sf_runtime, unavailable_continuation})
             end;
@@ -343,6 +344,9 @@ callback_availability(Callback) ->
 apply_exact(Callback, Args) ->
     try erlang:apply(Callback, Args) of Return -> {ok, Return}
     catch error:{badfun, Callback} -> unavailable end.
+
+normalize_async_effect(Effect) ->
+    async_r_t:async_r_t(async_r_t:run_async_r_t(Effect)).
 
 inspect(MatchFun, Offset, State) when is_function(MatchFun, 1) ->
     {Get, _Set} = async_t:state_callbacks_gs(Offset),
@@ -407,10 +411,7 @@ fail_stable(Summary, Reason, Offset, Results, State) ->
                         {ok, _Value, State2} ->
                             {ok, [#{request_mref => Key, status => forwarded} | Results], State2};
                         {unhandled, State2} ->
-                            {ok, [#{request_mref => Key, status => unhandled} | Results], State2};
-                        {error, Error, State2} ->
-                            {ok, [#{request_mref => Key, status => failed,
-                                error => Error} | Results], State2}
+                            {ok, [#{request_mref => Key, status => unhandled} | Results], State2}
                     end
             end
     end.

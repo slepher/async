@@ -83,6 +83,7 @@
 new(M) ->
     {?MODULE, M}.
 
+-spec async_r_t(inner_async_r_t(S, M, A)) -> async_r_t(S, M, A).
 async_r_t(Inner) ->
     {?MODULE, Inner}.
 
