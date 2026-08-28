@@ -1077,8 +1077,7 @@ handle_reference(MRef, Callbacks, #{type := ReplyType} = Opts) ->
     case match_reference(MRef, Opts) of
         true ->
             case async_sf_cc:route_action(MRef, ReplyType, Callbacks) of
-                {ok, Decoded, NCallbacks} ->
-                    demonitor_ref(MRef, Opts),
+            {ok, Decoded, NCallbacks} ->
                     {ok, Decoded, NCallbacks};
                 error -> error
             end;
@@ -1098,11 +1097,6 @@ match_reference(_, #{ref := all}) ->
     true;
 match_reference(_, #{}) ->
     false.
-
-demonitor_ref(MRef, #{type := reply, ref := monitored_reference}) when is_reference(MRef) ->
-    erlang:demonitor(MRef, [flush]);
-demonitor_ref(_Ref, #{}) ->
-    ok.
 
 execute_callback_a(#{kind := ordinary_action, cc := Callback}, message, A,
         {?MODULE, IM}, _Direction) ->

@@ -47,17 +47,18 @@ register_timer(Key, Timeout, {async_r_t, _} = MR) when is_integer(Timeout) ->
         Callbacks = Get(State),
         case async_util:find(Key, Callbacks) of
             {ok, Value} ->
-                case action_value(Value) of
-                    true ->
-                        case async_util:find(timer_key(Key), Callbacks) of
-                            error ->
+                case preflight_action_in_store(Key, Value, Callbacks) of
+                    {ok, _} ->
+                        case timer_reference(Value, Key, Callbacks) of
+                            undefined ->
                                 Timer = erlang:send_after(Timeout,
                                     self(), {Key, {error, timeout}}),
                                 async_r_t:do_put_state(
                                     Set(put_timer(Key, Timer, Value, Callbacks), State), MR);
-                            {ok, _} -> erlang:error({duplicate_timer, Key})
+                            {ok, _} -> erlang:error({duplicate_timer, Key});
+                            {error, _} -> erlang:error({orphan_timer, Key})
                         end;
-                    false -> erlang:error({orphan_timer, Key})
+                    {error, _} -> erlang:error({orphan_timer, Key})
                 end;
             error -> erlang:error({orphan_timer, Key})
         end
@@ -135,10 +136,19 @@ valid_optional_accumulator(AccRef, Callbacks) ->
             end
     end.
 
-valid_timer_target(_Key, #sf_callback{timer_ref = Timer}, _Callbacks)
-        when Timer =:= undefined; is_reference(Timer) -> ok;
+valid_timer_target(Key, #sf_callback{timer_ref = Timer}, Callbacks)
+        when is_reference(Timer) ->
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
+        error -> ok;
+        {ok, _} -> error
+    end;
+valid_timer_target(Key, #sf_callback{timer_ref = undefined}, Callbacks) ->
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
+        error -> ok;
+        {ok, _} -> error
+    end;
 valid_timer_target(Key, #callback{}, Callbacks) ->
-    case async_util:find(timer_key(Key), Callbacks) of
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
         error -> ok;
         {ok, Timer} when is_reference(Timer) -> ok;
         _ -> error
@@ -181,13 +191,6 @@ expected_kind(node, outer_node) -> true;
 expected_kind(action, stable_action) -> true;
 expected_kind(action, ordinary_action) -> true;
 expected_kind(_, _) -> false.
-
-action_value(Value) ->
-    case async_util:callback_value_kind(Value) of
-        stable_action -> true;
-        ordinary_action -> true;
-        _ -> false
-    end.
 
 valid_key(Key, node) -> is_reference(Key);
 valid_key(Key, action) -> is_reference(Key) orelse is_integer(Key) orelse is_binary(Key).
@@ -332,8 +335,12 @@ preflight_node_in_store(Ref, Node, Callbacks) ->
 preflight_action_in_store(Key, Value, Callbacks) ->
     case action_preflight(Key, Value, Callbacks) of
         {ok, Decoded} ->
-            case preflight_ancestors(parent_ref(Value), Key, Callbacks, #{}, 0) of
-                ok -> {ok, Decoded};
+            case preflight_children_direct(Key, Value, Callbacks) of
+                {ok, _} ->
+                    case preflight_ancestors(parent_ref(Value), Key, Callbacks, #{}, 0) of
+                        ok -> {ok, Decoded};
+                        Error -> Error
+                    end;
                 Error -> Error
             end;
         error -> {error, {invalid_action, Key}}
@@ -504,7 +511,7 @@ cleanup_timer(_Key, #sf_callback{timer_ref = Timer}, _Callbacks)
         when is_reference(Timer) ->
     _ = erlang:cancel_timer(Timer), ok;
 cleanup_timer(Key, #callback{}, Callbacks) ->
-    case async_util:find(timer_key(Key), Callbacks) of
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
         {ok, Timer} when is_reference(Timer) ->
             _ = erlang:cancel_timer(Timer), ok;
         _ -> ok
@@ -535,10 +542,10 @@ remove_orphan_accumulator_ref(AccRef, Callbacks) ->
         false -> async_util:remove(AccRef, Callbacks)
     end.
 
-remove_action_key(Key, #sf_callback{}, Callbacks) ->
-    async_util:remove(timer_key(Key), Callbacks);
+remove_action_key(_Key, #sf_callback{}, Callbacks) ->
+    Callbacks;
 remove_action_key(Key, #callback{}, Callbacks) ->
-    async_util:remove(timer_key(Key), Callbacks);
+    async_util:remove(ordinary_timer_key(Key), Callbacks);
 remove_action_key(_Key, _Value, Callbacks) ->
     Callbacks.
 
@@ -548,12 +555,28 @@ take_action_value(Key, Value, Callbacks) ->
     cleanup_direct_resources(Key, Value, Callbacks),
     Removed.
 
-timer_key(Key) -> {sf_cc_timer, Key}.
+ordinary_timer_key(Key) -> {sf_cc_timer, Key}.
 
 put_timer(Key, Timer, #sf_callback{} = Value, Callbacks) ->
     async_util:store(Key, Value#sf_callback{timer_ref = Timer}, Callbacks);
 put_timer(Key, Timer, #callback{}, Callbacks) ->
-    async_util:store(timer_key(Key), Timer, Callbacks).
+    async_util:store(ordinary_timer_key(Key), Timer, Callbacks).
+
+timer_reference(#sf_callback{timer_ref = Timer}, _Key, _Callbacks)
+        when is_reference(Timer) ->
+    {ok, Timer};
+timer_reference(#sf_callback{timer_ref = undefined}, Key, Callbacks) ->
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
+        error -> undefined;
+        {ok, Timer} when is_reference(Timer) -> {ok, Timer};
+        {ok, _} -> {error, malformed_timer}
+    end;
+timer_reference(#callback{}, Key, Callbacks) ->
+    case async_util:find(ordinary_timer_key(Key), Callbacks) of
+        error -> undefined;
+        {ok, Timer} when is_reference(Timer) -> {ok, Timer};
+        {ok, _} -> {error, malformed_timer}
+    end.
 
 execute_node(#sf_callback{parent_ref = ParentRef}, Outcome, failure, MR) ->
     {ok, forward_failure(ParentRef, Outcome, MR)};
