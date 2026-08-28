@@ -129,8 +129,45 @@ all() ->
         test_async_t_lift_final,
         test_local_acc_ref,
         test_async_t_local_acc_ref,
+        test_sf_linked_outer_regression,
         test_state_callbacks_preserve_error
     ].
+
+%% E-16 additive cross-lifecycle group: one ordinary action and one generated
+%% frame share a public outer runner while local accumulator rebinding remains
+%% independent. Existing timeout/DOWN/parallel/backend cases stay unchanged.
+test_sf_linked_outer_regression(_Config) ->
+    Ordinary = make_ref(), Stable = make_ref(), Local = make_ref(),
+    Action = async_m:par([
+        async_m:local_ref(Local, async_m:promise(Ordinary)),
+        async_sf_do_linked_fixture:suspended(Stable)
+    ]),
+    {[ok, ok], State0} = async_m:run_with_sf_cc(Action,
+        fun ?MODULE:sf_cross_callback/3, self(), #state.callbacks, #state{}),
+    {ok, Summaries0} = async_m:inspect_sf_callbacks(fun(_) -> true end,
+        #state.callbacks, State0),
+    ?assertEqual([false, true], lists:sort([maps:get(stable, S) || S <- Summaries0])),
+    Parents = lists:usort([maps:get(parent_ref, S) || S <- Summaries0]),
+    ?assertEqual(1, length(Parents)),
+    {ordinary, State1} = async_m:run_info({Ordinary, ordinary}, #state.callbacks, State0),
+    {ok, [#{stable := true}]} = async_m:inspect_sf_callbacks(
+        fun(_) -> true end, #state.callbacks, State1),
+    receive
+        {sf_cross_complete, Early, _} -> ct:fail({early_sf_cross_completion, Early})
+    after 0 -> ok end,
+    {{ok, {linked, stable}}, State2} =
+        async_m:run_info({Stable, stable}, #state.callbacks, State1),
+    {ok, []} = async_m:inspect_sf_callbacks(fun(_) -> true end,
+        #state.callbacks, State2),
+    receive
+        {sf_cross_complete, {ok, {linked, stable}}, []} -> ok
+    after 1000 ->
+        ct:fail(missing_sf_cross_stable_completion)
+    end.
+
+sf_cross_callback(Outcome, Pid, #state{} = State) ->
+    Pid ! {sf_cross_complete, Outcome, State#state.acc},
+    State.
 
 %% Test cases starts here.
 %%--------------------------------------------------------------------
@@ -509,7 +546,7 @@ test_async_t_progn_par(_Config) ->
                 end
         }
     ),
-    ?assertEqual({undefined, {error, hello}}, Reply).
+    ?assertEqual({hello_message, {error, hello}}, Reply).
 
 test_async_t_pmap_0(_Config) ->
     MR = async_r_t:new(identity),
@@ -648,7 +685,7 @@ test_async_t_pmap_multiple_messages(Config) ->
             }
         ),
     ?assertEqual(
-        {#{item => done}, undefined},
+        {#{item => done}, [{item, three}, {item, two}, {item, one}]},
         Reply
     ).
 
@@ -750,7 +787,8 @@ test_async_t_pmap(Config) ->
                 end
         }
     ),
-    ?assertEqual({lists:duplicate(6, {error, hello}), undefined}, Reply).
+    ?assertEqual({lists:duplicate(6, {error, hello}),
+        lists:duplicate(6, message)}, Reply).
 
 test_async_t_pmap_with_timeout(Config) ->
     EchoServer = proplists:get_value(echo_server, Config),
@@ -823,7 +861,8 @@ test_async_t_pmap_with_acc(Config) ->
         ]),
         Result
     ),
-    ?assertEqual(undefined, Acc),
+    ?assertEqual({[5,4,3,2,1],
+        [{5,message},{4,message},{3,message},{2,message},{1,message}]}, Acc),
     ok.
 
 test_local_acc_ref(_Config) ->
