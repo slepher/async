@@ -8,7 +8,7 @@
 %%%-------------------------------------------------------------------
 -module(async_t).
 
--export_type([async_t/4]).
+-export_type([async_t/4, info_route/2, missing_callback/0]).
 
 -type async_t(S, R, M, A) :: {async_t, inner_async_t(S, R, M, A)}.
 -type inner_async_t(S, R, M, A) ::
@@ -26,6 +26,15 @@
     | fun((reply_t:reply(A), S) -> any()).
 -type async_t_cc(S, R, M, A) :: fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)).
 -type t(M) :: monad_trans:monad_trans(?MODULE, M).
+-type missing_callback() :: #{
+    type := message | reply,
+    ref := term(),
+    value := term()
+}.
+-type info_route(S, A) ::
+    {handled, A, S}
+    | {not_async, S}
+    | {missing_callback, missing_callback(), S}.
 
 -include_lib("erlando/include/do.hrl").
 -include_lib("erlando/include/gen_fun.hrl").
@@ -113,6 +122,7 @@
     run_cc/3,
     run_with_cc/5,
     handle_info/4,
+    route_info/4,
     run_info/4,
     handle_reply/5,
     run_reply/5,
@@ -170,6 +180,7 @@
         run_cc/3,
         run_with_cc/5,
         handle_info/4,
+        route_info/4,
         run_info/4,
         wait_receive/4,
         map_async/3,
@@ -784,6 +795,9 @@ run_with_cc(X, CC, Offset, State, {?MODULE, _IM} = AT) ->
 run_cc(X, CC, {?MODULE, _IM} = AT) ->
     run_with_descriptor(X, continuation_descriptor(CC), AT).
 
+-spec run_sf_cc(async_t(S, R, M, A),
+    fun((reply_t:reply(A), Context) -> async_r_t:async_r_t(S, M, R)),
+    Context, t(M)) -> async_r_t:async_r_t(S, M, R).
 run_sf_cc(X, Callback, Context, {?MODULE, _IM} = AT) ->
     run_with_descriptor(X, async_sf_cc:new(async_r_t, Callback, Context), AT).
 
@@ -809,8 +823,7 @@ run_with_descriptor(X, Descriptor, {?MODULE, IM} = AT) ->
     monad:'>>'(Registered, Action, MR).
 
 continuation_descriptor(Callback) ->
-    Invoke = fun(Outcome, Next) -> Next(Outcome) end,
-    async_sf_cc:new(async_r_t, Invoke, Callback).
+    async_sf_cc:ordinary_outer_node(Callback).
 
 run_frame_action(Action, Frame, Runner,
         #{runner := _ExistingRunner} = SfContext, {?MODULE, IM} = AT) ->
@@ -912,30 +925,41 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
         end
     ]).
 
--spec handle_info(_Info, integer(), S, M) -> monad:m(M, S).
+-spec handle_info(term(), integer(), S, t(M)) -> monad:m(M, S | unhandled).
 handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
     functor:fmap(fun({_A, NState}) -> NState end, run_info(Info, Offset, State, AT), IM).
 
-run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
+-spec route_info(term(), integer(), S, t(M)) -> monad:m(M, info_route(S, term())).
+route_info(Info, Offset, State, {?MODULE, IM} = AT) ->
     case info_to_reply(Info) of
         {ReplyType, Ref, Reply} ->
             Opts = #{offset => Offset, ref => monitored_reference, type => ReplyType},
-            run_reply(Ref, Reply, State, Opts, AT);
-        unhandled ->
-            %% A is ok, state is unhandled
-            monad:return({ok, unhandled}, IM)
+            route_reply_1(Ref, Reply, State, Opts, AT);
+        not_async ->
+            monad:return({not_async, State}, IM)
     end.
 
--spec handle_reply(any(), _A, S, map(), M) -> monad:m(M, S) when S :: tuple().
+-spec run_info(term(), integer(), S, t(M)) ->
+    monad:m(M, {term(), S} | {ok, unhandled}).
+run_info(Info, Offset, State, {?MODULE, IM} = AT) ->
+    functor:fmap(fun compatibility_info_result/1,
+        route_info(Info, Offset, State, AT), IM).
+
+-spec handle_reply(term(), term(), S, map(), t(M)) ->
+    monad:m(M, S | unhandled) when S :: tuple().
 handle_reply(Ref, Reply, State, Opts, {?MODULE, IM} = AT) when is_map(Opts) ->
     functor:fmap(fun({_A, NState}) -> NState end, run_reply(Ref, Reply, State, Opts, AT), IM).
 
--spec run_reply(any(), any(), S, map(), M) -> monad:m(M, {_A, S}).
+-spec run_reply(term(), term(), S, map(), t(M)) ->
+    monad:m(M, {term(), S} | {ok, unhandled}).
 run_reply(MRef, A, State, Opts, {?MODULE, _IM} = AT) ->
     NOpts = maps:merge(#{type => reply}, Opts),
-    run_reply_1(MRef, A, State, NOpts, AT).
+    {?MODULE, IM} = AT,
+    functor:fmap(fun compatibility_info_result/1,
+        route_reply_1(MRef, A, State, NOpts, AT), IM).
 
-run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MODULE, IM}) ->
+route_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts,
+        {?MODULE, IM}) ->
     {CallbacksG, CallbacksS} = state_callbacks_gs(Offset),
     Callbacks = CallbacksG(State),
     case handle_reference(MRef, Callbacks, Opts) of
@@ -954,12 +978,20 @@ run_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts, {?MOD
                         async_r_t:return(Result, MR)
                     ])
                 end, MR),
-            async_r_t:run_scope(Scoped, {CallbacksG, CallbacksS}, AccRef,
-                NState, MR);
-        error ->
-            %% A is ok, state is unhandled
-            monad:return({ok, unhandled}, IM)
+            functor:fmap(fun({Outcome, NewState}) ->
+                {handled, Outcome, NewState}
+            end, async_r_t:run_scope(Scoped, {CallbacksG, CallbacksS}, AccRef,
+                NState, MR), IM);
+        missing_callback ->
+            Missing = #{type => ReplyType, ref => MRef, value => A},
+            monad:return({missing_callback, Missing, State}, IM);
+        not_async ->
+            monad:return({not_async, State}, IM)
     end.
+
+compatibility_info_result({handled, Outcome, State}) -> {Outcome, State};
+compatibility_info_result({not_async, _State}) -> {ok, unhandled};
+compatibility_info_result({missing_callback, _Missing, _State}) -> {ok, unhandled}.
 
 %%--------------------------------------------------------------------
 %% @doc
@@ -1071,18 +1103,18 @@ info_to_reply({MRef, Reply}) ->
 info_to_reply({'DOWN', MRef, _, _, Reason}) ->
     {reply, MRef, {error, {process_down, Reason}}};
 info_to_reply(_Info) ->
-    unhandled.
+    not_async.
 
 handle_reference(MRef, Callbacks, #{type := ReplyType} = Opts) ->
     case match_reference(MRef, Opts) of
         true ->
             case async_sf_cc:route_action(MRef, ReplyType, Callbacks) of
-            {ok, Decoded, NCallbacks} ->
+                {ok, Decoded, NCallbacks} ->
                     {ok, Decoded, NCallbacks};
-                error -> error
+                missing_callback -> missing_callback
             end;
         false ->
-            error
+            not_async
     end.
 
 match_reference(Ref, #{ref := monitored_reference}) when is_reference(Ref) ->
@@ -1098,14 +1130,15 @@ match_reference(_, #{ref := all}) ->
 match_reference(_, #{}) ->
     false.
 
-execute_callback_a(#{kind := ordinary_action, cc := Callback}, message, A,
+execute_callback_a(#{kind := ordinary_action, cc := Callback,
+        parent_ref := ParentRef}, message, A,
         {?MODULE, IM}, _Direction) ->
-    case async_util:fun_availability(Callback) of
-        ok -> Callback({message, A});
-        {unavailable, _} ->
-            async_r_t:return({error, {sf_runtime, unavailable_continuation}},
-                async_r_t:new(IM));
-        {error, Reason} -> erlang:error(Reason)
+    MR = async_r_t:new(IM),
+    case async_util:apply_available_fun(Callback, [{message, A}]) of
+        {ok, {async_r_t, _} = Effect} -> Effect;
+        {ok, Other} -> erlang:error({invalid_continuation_return, Other});
+        unavailable ->
+            forward_unavailable_action(ParentRef, MR)
     end;
 execute_callback_a(#{kind := stable_action}, message, A,
         {?MODULE, IM}, _Direction) ->
@@ -1113,20 +1146,21 @@ execute_callback_a(#{kind := stable_action}, message, A,
 execute_callback_a(#{kind := ordinary_action, cc := Callback,
         parent_ref := ParentRef}, reply, A, {?MODULE, IM}, _Direction) ->
     MR = async_r_t:new(IM),
-    case async_util:fun_availability(Callback) of
-        ok ->
-            case Callback(A) of
-                {async_r_t, _} = Effect -> Effect;
-                Other -> erlang:error({invalid_continuation_return, Other})
-            end;
-        {unavailable, _} ->
-            async_sf_cc:dispatch_failure(ParentRef,
-                {error, {sf_runtime, unavailable_continuation}}, MR);
-        {error, Reason} -> erlang:error(Reason)
+    case async_util:apply_available_fun(Callback, [A]) of
+        {ok, {async_r_t, _} = Effect} -> Effect;
+        {ok, Other} -> erlang:error({invalid_continuation_return, Other});
+        unavailable ->
+            forward_unavailable_action(ParentRef, MR)
     end;
 execute_callback_a(#{kind := stable_action, frame := Frame,
         parent_ref := ParentRef}, reply, A, {?MODULE, IM}, Direction) ->
     async_sf_runtime:continue(Frame, ParentRef, A, async_r_t:new(IM), Direction).
+
+forward_unavailable_action(none, MR) ->
+    async_r_t:return({error, {sf_runtime, unavailable_continuation}}, MR);
+forward_unavailable_action(ParentRef, MR) ->
+    async_sf_cc:dispatch_failure(ParentRef,
+        {error, {sf_runtime, unavailable_continuation}}, MR).
 
 action_entry(K, #{current := {frame, Frame}, parent_ref := ParentRef,
         runner := K}, AccRef) ->

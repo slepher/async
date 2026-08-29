@@ -129,19 +129,19 @@ undefined
 
 ```erlang
 dispatch_continuation(Ref, Outcome, OffsetOrLens, State) ->
-    {ok, DispatchValue, NewState}
-  | {unhandled, State}
-  | {error, Error, ConsumedState}.
+    {ok, DispatchValue, NewState}.
 ```
 
 每次 dispatch：
 
-1. preflight current node shape和direct cleanup targets；
-2. take node；Ref此后即 consumed；
-3. cancel/demonitor/remove该 node直接拥有的 resources；
-4. 得到 CleanState；
-5. 根据 Outcome/node kind执行下表；
-6. take后的失败不得恢复或重试 Ref。
+1. take node；Ref此后即 consumed；
+2. cancel/demonitor/remove该 node直接拥有的 resources；
+3. 得到 CleanState；
+4. 根据 Outcome/node kind执行下表；
+5. take后的失败不得恢复或重试 Ref。
+
+internal dispatcher只在Action callback已成功路由后调用，因此ContinuationRef缺失是 lifecycle invariant
+failure，直接抛出`{invalid_continuation,{missing_node,Ref}}`。它不得借用external router的`unhandled`。
 
 | Node | success | failure |
 |---|---|---|
@@ -169,7 +169,9 @@ availability check。不得捕获 nested invocation exception。
 exactly-once以每个 node为单位，而不是按重复 root CcRef批量完成：
 
 - node在调用或转发前 take；
-- late reply、duplicate fail、shared-parent second arrival看到 absent并返回 unhandled；
+- late/duplicate external reply由精确router分类为`missing_callback`，legacy API可映射为`unhandled`；
+- batch snapshot中被earlier sibling cleanup删除的action记录`already_removed`；
+- 已成功路由Action后发现ContinuationRef absent直接抛出`invalid_continuation`；
 - callback crash/invalid return不恢复 node；
 - direct `/3` 只看到 current node direct cleanup后的 CleanState。
 
@@ -240,7 +242,7 @@ matcher snapshot/sort/preflight必须在mutation前完成；matcher exception原
 
 commit按selected Ref term order。current node被消费后，failure只dispatch direct `parent_ref`。ordinary
 entry返回`ordinary`且不删除。result status为
-`forwarded | handled | failed | unhandled | ordinary`。shared outer node遵守
+`forwarded | handled | already_removed | ordinary`。shared outer node遵守
 normal exactly-once take，不按root去重。
 
 ## 13. Metadata and Vsn

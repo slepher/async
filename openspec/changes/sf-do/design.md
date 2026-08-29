@@ -248,8 +248,8 @@ ContinuationRef 是 runner engine 的统一 lifecycle primitive，不是只有�
 
 `wait/1` 和 `wait_t/2` MUST 保持 public API、阻塞行为和正常 Outcome，由库内固定 exported external
 completion 把 Outcome 返回既有 wait driver。旧 `run_cc`/`run_with_cc`/`exec_cc`/`run` 和 ordinary
-anonymous Callback forms MUST 保持 source、argument 和 return normalization，通过 ordinary `sf_cc`
-completion descriptor 接入同一 node take/cleanup infrastructure。ordinary final fun 自身不获得 external-fun 的强
+anonymous Callback forms MUST 保持 source、argument 和 return normalization，通过直接保存真实`Cc`的
+`ordinary_outer` node接入同一 node take/cleanup infrastructure。ordinary final fun 自身不获得 external-fun 的强
 upgrade guarantee；需要该保证的用户仍使用显式 sf-cc runner。
 
 stable callback 与 ordinary callback 使用各自明确的 encoding，但都显式保存 direct `parent_ref`。

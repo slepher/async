@@ -253,20 +253,19 @@ dispatch_continuation(Ref, Outcome, State) -> DispatchResult.
 
 commit order：
 
-1. preflight current node shape、executor mode 和 direct cleanup targets；
-2. atomic-with-respect-to-process `take` current node；
-3. cancel/demonitor/remove current node直接拥有的 timer、monitor 和 accumulator resources；
-4. obtain CleanState；
-5. success 时执行 current continuation；failure 时普通 success frame直接 dispatch `parent_ref`；
-6. current invocation 产生可归属 failure 时 dispatch `parent_ref`；
-7. outer callback node 应用 mode-specific result semantics。
+1. atomic-with-respect-to-process `take` current node；
+2. cancel/demonitor/remove current node直接拥有的 timer、monitor 和 accumulator resources；
+3. obtain CleanState；
+4. success 时执行 current continuation；failure 时普通 success frame直接 dispatch `parent_ref`；
+5. current invocation 产生可归属 failure 时 dispatch `parent_ref`；
+6. outer callback node 应用 mode-specific result semantics。
 
 parallel cancellation 如需从 outer node 查找 active children，MUST 使用独立反向索引/ownership metadata；
 不得通过在每个 node 复制 root Ref 实现。
 
-如果 preflight 失败，State 不变且不调用 node。如果 Ref 已缺失，返回 unhandled。如果 take 后 user CC
+Action callback成功路由后若ContinuationRef已缺失，直接抛出`invalid_continuation`。如果 take 后 user CC
 crash、返回非法 shape 或产生外部副作用，Ref 保持 consumed，不 rollback、不 retry。callback/effect
-内部异常原样传播。batch fail 只把预期的 unavailable callback 或 invalid return 记录为 `failed`。
+内部异常原样传播。batch fail 不得把 callback协议错误、invalid return或invalid descriptor改写为status data。
 
 reply/timeout/DOWN path 在执行 continuation 前已知 ActionMRef 和 decoded callback。ordinary business
 Outcome 必须交给 `#callback.cc`，不得仅凭 Outcome shape 绕过它。frame protocol/shape/manifest/MFA failure
@@ -341,12 +340,11 @@ preflight rules：
 - matcher exception 原样传播；非-boolean result 抛出 `{invalid_matcher_return, Value}`；
 - 所有 matcher 必须在任意 mutation 前完成；
 - inspect 永不修改 State；
-- fail 对 selected stable entries 按 RequestMRef/ContinuationRef preflight；ordinary entries 返回
+- fail 对 selected stable entries 按 RequestMRef term order commit；ordinary entries 返回
   `ordinary`且不删除；
 - commit 按 selected Ref term order执行，并向其 direct `parent_ref` 注入 manual failure；
-- node 结果记录 `forwarded | handled | failed | unhandled`；ordinary callback记录`ordinary`；
-- `failed` 不携带 Class、Reason 或 Stacktrace，只表示 invalid descriptor 在 preflight 失败，或预期的
-  unavailable callback/invalid return 在 current node 消费后失败；
+- node 结果记录 `forwarded | handled | already_removed`；ordinary callback记录`ordinary`；
+- callback协议错误、invalid return和invalid descriptor直接抛出；
 - callback/effect 内部异常原样传播并停止本次 commit；此前已经消费的 nodes 不 rollback。
 
 manual Outcome 固定为 `{error, {sf_aborted, Reason}}`。
@@ -360,7 +358,8 @@ shape：
 - intermediate/outer node 不单独表示 external pending action；
 - ActionMRef router 只执行 decoded action entry；
 - internal dispatcher 才能按 ContinuationRef 执行 intermediate/outer node；
-- 命中 accumulator value 返回 unhandled；
+- external key缺失或命中合法的non-action node/accumulator/reverse-index entry返回`missing_callback`；
+  action kind无法解码或非法`other` value直接抛出`invalid_callback_entry`；
 - dictionary map/list/dict backends 保持支持。
 
 ## Failure and Transaction Boundary

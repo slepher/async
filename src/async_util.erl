@@ -13,7 +13,7 @@
 -export([clear/1, merge/2]).
 -export([same_type_state/2, match_state/3, callback_exists/1]).
 -export([decode_callback/1, callback_value_kind/1, to_list/1]).
--export([fun_availability/1]).
+-export([fun_availability/1, apply_available_fun/2]).
 
 -include("async_internal.hrl").
 
@@ -113,13 +113,16 @@ callback_value_kind(#{kind := ordinary_continuation, protocol := 1,
         callback := Callback, parent_ref := ParentRef})
         when is_function(Callback, 1),
             (is_reference(ParentRef) orelse ParentRef =:= none) -> intermediate_node;
+callback_value_kind(#{kind := ordinary_outer, protocol := 1,
+        callback := Callback, parent_ref := none})
+        when is_function(Callback, 1) -> outer_node;
 callback_value_kind(#{kind := sf_cc, protocol := 1, mode := async_r_t,
         callback := Callback, context := _Context, parent_ref := none})
         when is_function(Callback, 2) -> outer_node;
 callback_value_kind(#{kind := sf_cc, protocol := 1, mode := direct_state,
         callback := Callback, context := _Context, parent_ref := none})
         when is_function(Callback, 2); is_function(Callback, 3) -> outer_node;
-callback_value_kind(#{kind := sf_reverse_index, protocol := 1}) -> other;
+callback_value_kind(#{kind := sf_reverse_index, protocol := 1}) -> reverse_index;
 callback_value_kind(Value) when is_tuple(Value), tuple_size(Value) > 0,
         element(1, Value) =:= callback -> other;
 callback_value_kind(Value) when is_map(Value); is_list(Value); is_tuple(Value) -> accumulator;
@@ -150,6 +153,19 @@ fun_availability(Fun) when is_function(Fun) ->
                     {unavailable, MFA};
                 {error, Reason} -> {error, Reason}
             end
+    end.
+
+-spec apply_available_fun(function(), [term()]) -> {ok, term()} | unavailable.
+apply_available_fun(Fun, Args) when is_function(Fun), is_list(Args) ->
+    case fun_availability(Fun) of
+        ok ->
+            try erlang:apply(Fun, Args) of
+                Result -> {ok, Result}
+            catch
+                error:{badfun, BadFun} when BadFun =:= Fun -> unavailable
+            end;
+        {unavailable, _MFA} -> unavailable;
+        {error, Reason} -> erlang:error(Reason)
     end.
 %%--------------------------------------------------------------------
 %% @doc

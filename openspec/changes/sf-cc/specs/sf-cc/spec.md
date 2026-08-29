@@ -249,6 +249,22 @@ value shape 决定 executor，`parent_ref = none` 决定链结束。entry presen
 不得保留 done tombstone。每个 node MUST 只保存一个 direct parent edge，不得复制 root/final Ref；这不删减
 action callback 自身的 accumulator、timer 或其他 resource fields。
 
+### Requirement: External info routing preserves ownership classification
+
+`route_info` MUST 返回以下精确分类之一：
+
+```erlang
+{handled, Outcome, NewState}
+{not_async, State}
+{missing_callback, #{type := message | reply, ref := Ref, value := Value}, State}
+```
+
+`not_async`只表示消息shape或correlation key类型不属于当前async router。合法async key没有对应action，或命中
+合法non-action entry时返回`missing_callback`。命中损坏callback entry时直接抛出`invalid_callback_entry`。
+legacy `run_info`/`handle_info` MAY 为兼容性把`not_async`和`missing_callback`映射为历史`unhandled`。
+`handle_message`接口保持不变，只消费成功路由并恢复continuation后产生的progress message，不处理
+`missing_callback`。
+
 #### Scenario: Immediate Promise leaves no outer node
 
 - **给定**Promise 立即产生 Outcome 而不挂起
@@ -260,14 +276,15 @@ action callback 自身的 accumulator、timer 或其他 resource fields。
 
 - **给定**callbacks store 含 intermediate continuation node
 - **当**external reply router 收到以其 Ref 为 correlation key 的输入
-- **那么**router 返回 unhandled
+- **那么**精确 router 返回 `missing_callback`，legacy compatibility API仍可返回`unhandled`
 - **并且**只有 internal dispatcher 可执行该 node
 
 ### Requirement: Dispatch consumes and cleans one node before invocation
 
 所有 normal/failure paths MUST 调用统一 `dispatch_continuation(Ref, Outcome, State)` 语义原语。runtime
-MUST 在执行 current node前完成 preflight、take 和该 node直接拥有的 timer、monitor、accumulator
-lifecycle cleanup。callback `/3` MUST 接收所得 CleanState。Ref 已缺失时 MUST 返回 unhandled。
+MUST 在执行 current node前完成 take 和该 node直接拥有的 timer、monitor、accumulator lifecycle cleanup。
+callback `/3` MUST 接收所得 CleanState。Action callback已经成功路由后，ContinuationRef 缺失 MUST
+抛出`{invalid_continuation,{missing_node,Ref}}`，不得降级为public `unhandled`。
 
 #### Scenario: Direct callback sees CleanState
 
@@ -287,8 +304,9 @@ lifecycle cleanup。callback `/3` MUST 接收所得 CleanState。Ref 已缺失�
 
 runtime MUST 在调用或转发 current node 前消费其 Ref，且任何调用后失败 MUST NOT 恢复或重试该 Ref。
 outer callback crash、invalid return、外部副作用、重复 fail 或迟到 reply MUST NOT 恢复 node 或自动 retry。
-callback/effect 内部 exception MUST 原样传播。batch fail path MUST NOT 捕获任意业务异常；它只可将
-预期的 unavailable final callback、invalid return 或 invalid descriptor 汇总为 `cc_failed`。
+callback/effect 内部 exception MUST 原样传播。batch fail path MUST NOT 捕获任意业务异常。被earlier
+sibling cleanup删除的selected action记录为`already_removed`；callback协议错误、invalid return或invalid
+descriptor MUST 直接抛出，不得汇总为status data。
 
 #### Scenario: Callback replies then crashes
 
@@ -301,7 +319,8 @@ callback/effect 内部 exception MUST 原样传播。batch fail path MUST NOT �
 
 - **给定**Promise 已成功消费 current node
 - **当**同一 ActionMRef 的迟到 reply 到达
-- **那么**router 返回 unhandled
+- **那么**精确 router 返回包含type、Ref和value的`missing_callback`
+- **并且**legacy compatibility API仍可返回`unhandled`
 - **并且**不得产生第二次 completion
 
 ### Requirement: Message does not consume action or continuation node
@@ -440,7 +459,7 @@ Matcher exception MUST 原样传播；non-boolean return MUST 抛出 `{invalid_m
 `fail_sf_callbacks/4` MUST 以 `{error, {sf_aborted, Reason}}` 注入选中的 stable callback/node，并按selected
 Ref term order commit。failure MUST 先进入 selected node 的 direct `parent_ref`，不得定位 root。ordinary
 callback MUST 返回`ordinary`且不删除；它的`parent_ref`只用于current `cc` availability fallback。
-result status MUST 是 `forwarded | handled | failed | unhandled | ordinary`。
+result status MUST 是 `forwarded | handled | already_removed | ordinary`。
 callback/effect 内部 exception MUST 原样传播并停止 commit；已经消费的 nodes 不回滚。
 
 #### Scenario: Two selected callbacks share an outer node
@@ -448,7 +467,8 @@ callback/effect 内部 exception MUST 原样传播并停止 commit；已经消�
 - **给定**Matcher 选中两个 direct `parent_ref` 指向同一 outer node 的内部 callbacks
 - **当**主动失败
 - **那么**每个 selected current node只被消费一次
-- **并且**共享 outer node也遵守一次性 take，重复到达返回 unhandled
+- **并且**共享 outer node也遵守一次性 take；被第一次cleanup删除的后续selected action返回
+  `already_removed`
 
 #### Scenario: Selected ordinary callback remains pending
 

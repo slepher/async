@@ -2,6 +2,15 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-28 — precise async routing and availability boundary（未提交）
+
+- async info routing新增精确分类：`handled | not_async | missing_callback`；legacy `run_info`/`handle_info`
+  继续兼容历史`unhandled`。
+- external ActionMRef缺失不再与internal ContinuationRef缺失混用：前者是`missing_callback`，后者直接抛出
+  `invalid_continuation`；active-fail sibling cleanup使用`already_removed`。
+- ordinary outer continuation直接保存真实callback，不再藏在通用`sf_cc` context wrapper后；purge导致的
+  term-exact current-fun `badfun`规范化为`sf_runtime unavailable_continuation`并只forward direct parent。
+
 ## 2026-08-28 — unified ContinuationRef chain（未实现）
 
 - stable frame inspection只暴露Protocol/Block/StepName/MFA identity metadata；删除BlockPath与AsyncId投影，

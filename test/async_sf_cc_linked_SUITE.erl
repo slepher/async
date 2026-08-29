@@ -47,7 +47,7 @@ all_runners_suspended(_Config) ->
     ?assertEqual(immediate, async_m:wait_t(async_m:pure_return(immediate), #{})).
 
 %% R11/R19: sibling stable actions share one direct parent. The first selected
-%% failure forwards once; cleanup makes the sibling unhandled in the same commit.
+%% failure forwards once; cleanup marks the sibling already removed in the same commit.
 shared_parent_exactly_once(_Config) ->
     A = make_ref(), B = make_ref(), Token = make_ref(),
     {[ok, ok], State0} = async_m:run_with_sf_cc(async_m:par([
@@ -63,7 +63,8 @@ shared_parent_exactly_once(_Config) ->
         shared_abort, #state.callbacks, State0),
     ?assertEqual([maps:get(request_mref, First), maps:get(request_mref, Second)],
         [maps:get(request_mref, R) || R <- Results]),
-    ?assertEqual([forwarded, unhandled], [maps:get(status, R) || R <- Results]),
+    ?assertEqual([forwarded, already_removed],
+        [maps:get(status, R) || R <- Results]),
     ?assertEqual([], summaries(State1)),
     assert_received({linked_callback, Token,
         {error, {sf_aborted, shared_abort}}, #{}}),

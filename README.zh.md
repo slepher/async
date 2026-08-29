@@ -527,6 +527,9 @@ Result = identity:run(ResultMonad).
 - `lift_final_reply/1` 只把 final reply 提升为值；message 继续向外传播。
 - `with_message/2`、`with_final/2`、`with_all/2` 在不同 reply 边界附加处理器。
 - `handle_message/2` 使用 callback/continuation 消费 message。
+- `route_info/3` 区分 `{handled, Outcome, State}`、`{not_async, State}` 和
+  `{missing_callback, Metadata, State}`；现有 `run_info/3`、`handle_info/3` 保留历史
+  `unhandled` 兼容行为。
 - `pass/0` 有意从运行时层返回，不产生 final `async_t` reply。
 - `par/1` 是底层接口：只能有一个分支产生 final reply，其他分支必须发送
   message 或使用 `pass/0`。

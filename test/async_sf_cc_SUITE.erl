@@ -9,7 +9,8 @@
 suite() -> [{timetrap, {seconds, 45}}].
 all() -> [runner_modes_and_context, public_outer_lifecycle,
     message_reply_timeout_down, inspection_privacy_and_backends,
-    matcher_atomicity, active_failure_statuses, exception_boundaries].
+    matcher_atomicity, active_failure_statuses, info_routing_boundaries,
+    upgrade_badfun_forwarding, exception_boundaries].
 init_per_suite(Config) -> async:start(), Config.
 end_per_suite(_Config) -> ok.
 init_per_testcase(_Case, Config) -> flush_mailbox(), Config.
@@ -166,6 +167,73 @@ active_failure_statuses(_Config) ->
     {ordinary_done, Ordinary1} = info({OrdinaryRef, ordinary_done}, Ordinary0),
     ?assertEqual([], summaries(Ordinary1)),
     assert_received({fail_ordinary, ordinary_done, fail_ordinary, empty}).
+
+%% A non-async message, a missing action callback, and a broken continuation
+%% are three distinct routing outcomes. The legacy run_info API retains its
+%% historical unhandled result for the first two cases.
+info_routing_boundaries(_Config) ->
+    State0 = #state{},
+    {not_async, State0} = async_m:route_info(application_message,
+        #state.callbacks, State0),
+    MissingRef = make_ref(),
+    {missing_callback,
+        #{type := reply, ref := MissingRef, value := late}, State0} =
+        async_m:route_info({MissingRef, late}, #state.callbacks, State0),
+    {missing_callback,
+        #{type := message, ref := MissingRef, value := progress}, State0} =
+        async_m:route_info({message, MissingRef, progress},
+            #state.callbacks, State0),
+    {ok, unhandled} = async_m:run_info({MissingRef, late},
+        #state.callbacks, State0),
+
+    InvalidRef = make_ref(),
+    InvalidState = State0#state{callbacks = #{InvalidRef => invalid}},
+    ?assertError({invalid_callback_entry, InvalidRef},
+        async_m:route_info({InvalidRef, reply},
+            #state.callbacks, InvalidState)),
+
+    ActionRef = make_ref(),
+    {ok, PendingState} = run(async_m:promise(ActionRef), missing_parent),
+    [#{parent_ref := ParentRef}] = summaries(PendingState),
+    {missing_callback,
+        #{type := reply, ref := ParentRef, value := not_an_action},
+        PendingState} = async_m:route_info({ParentRef, not_an_action},
+            #state.callbacks, PendingState),
+    BrokenCallbacks = async_util:remove(
+        ParentRef, PendingState#state.callbacks),
+    BrokenState = PendingState#state{callbacks = BrokenCallbacks},
+    ?assertError({invalid_continuation, {missing_node, ParentRef}},
+        info({ActionRef, reply}, BrokenState)),
+    assert_not_received(missing_parent).
+
+%% A purged local fun is an unavailable current continuation, not a callback
+%% body exception. It becomes an sf_runtime failure and moves one parent only.
+upgrade_badfun_forwarding(_Config) ->
+    Module = async_upgrade_badfun_fixture,
+    Ref = make_ref(),
+    {ok, State0} = async_m:run_with_cc(async_m:promise(Ref), Module:cc(),
+        #state.callbacks, #state{}),
+    {Module, OriginalBinary, OriginalPath} = code:get_object_code(Module),
+    Forms = [
+        {attribute, 1, module, Module},
+        {attribute, 2, export, [{replacement, 0}]},
+        {function, 3, replacement, 0,
+            [{clause, 3, [], [], [{atom, 3, ok}]}]}
+    ],
+    {ok, Module, ReplacementBinary} = compile:forms(Forms, [binary]),
+    try
+        {module, Module} = code:load_binary(
+            Module, "async_upgrade_badfun_fixture_replacement", ReplacementBinary),
+        _ = code:purge(Module),
+        {{error, {sf_runtime, unavailable_continuation}}, State1} =
+            info({Ref, reply}, State0),
+        ?assertEqual([], summaries(State1))
+    after
+        code:purge(Module),
+        code:delete(Module),
+        {module, Module} = code:load_binary(
+            Module, OriginalPath, OriginalBinary)
+    end.
 
 %% R13/R16: business exceptions retain class/reason.
 exception_boundaries(_Config) ->

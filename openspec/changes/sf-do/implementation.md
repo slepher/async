@@ -240,7 +240,8 @@ generated function owner、Promise 传递路径和 outer continuation不得进�
 所有 public runners MUST 委托同一个 ContinuationRef execution core。`sf-cc` 定义
 `run_sf_cc/3`、`run_with_sf_cc/5` 和 `exec_sf_cc/5` 的 explicit external-fun contract；现有
 `wait/1`、`wait_t/2`、`run_cc/2`、`run_with_cc/4`、`exec_cc/4` 和 `run/4` 保持 public contract，
-但作为 compatibility facades 注册同一种 outer callback node并使用 library wait completion或 ordinary completion descriptor。
+但作为 compatibility facades 注册同一种 outer callback node并使用 library wait completion或直接保存真实
+`Cc`的`ordinary_outer` node。
 `sf-do` MUST NOT 另行冻结接受完整 SfCc descriptor 的 public runner；现有 `run_sf_frame/4` 若在过渡
 实现中保留，只能是待移除/适配的 internal compatibility path。
 

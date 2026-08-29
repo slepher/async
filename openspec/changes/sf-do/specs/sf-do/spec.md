@@ -606,8 +606,8 @@ Ref；ordinary callback不得被推断为 stable frame。node cleanup ordering �
 
 wait、ordinary callback 和 sf-cc runners 新启动的 Promise MUST 注册统一 ContinuationRef node，且 MUST 保持 ordinary
 public API 的正常可观察合同。`wait/1`、`wait_t/2` MUST 由 library-owned completion 接入。ordinary
-anonymous callback API MUST 继续接受原 source forms、参数和 return normalization，并通过 ordinary
-`sf_cc` descriptor 接入同一 node lifecycle；只有 explicit external callback 获得 final callback 自身的
+anonymous callback API MUST 继续接受原 source forms、参数和 return normalization，并通过直接保存真实
+`Cc`的`ordinary_outer` node接入同一 node lifecycle；只有 explicit external callback 获得 final callback 自身的
 跨升级保证。
 
 #### Scenario: Existing wait call receives an outer node

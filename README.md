@@ -543,6 +543,9 @@ Result = identity:run(ResultMonad).
 - `with_message/2`, `with_final/2`, and `with_all/2` attach handlers at
   different reply boundaries.
 - `handle_message/2` consumes messages with a callback/continuation.
+- `route_info/3` distinguishes `{handled, Outcome, State}`, `{not_async, State}`,
+  and `{missing_callback, Metadata, State}`. Existing `run_info/3` and
+  `handle_info/3` retain their historical `unhandled` compatibility behavior.
 - `pass/0` deliberately returns from the runtime layer without producing a
   final `async_t` reply.
 - `par/1` is low level: only one branch may produce a final reply; other

@@ -2,6 +2,13 @@
 
 <!-- NEXT_CHANGE: 在此标记下方、分隔线上方追加后续变更，最新内容置顶。 -->
 
+## 2026-08-28 — ordinary outer availability representation（未提交）
+
+- ordinary runner的最外层completion改为直接保存真实`Cc`的`ordinary_outer` node，不再把`Cc`藏在通用
+  `sf_cc` descriptor context和永久可用wrapper后。
+- old-code purge使该current stored fun精确产生`error:{badfun,Cc}`时，沿既有availability合同转换为
+  `{error,{sf_runtime,unavailable_continuation}}`；callback内部/downstream异常仍原样传播。
+
 ## 2026-08-28 — linked continuation contract（未实现）
 
 - named frame identity收敛为`{Protocol, Block, StepName}`；BlockName在module内全局唯一，lexical parent、

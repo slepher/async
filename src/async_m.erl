@@ -35,7 +35,7 @@
 -export([run_sf_frame/4]).
 -export([run_sf_cc/3, run_with_sf_cc/5, exec_sf_cc/5]).
 -export([inspect_sf_callbacks/3, fail_sf_callbacks/4]).
--export([handle_info/3]).
+-export([handle_info/3, route_info/3]).
 -export([promise/2]).
 -export([callback_to_cc/1]).
 -export([map_promises/2]).
@@ -211,6 +211,10 @@ run_sf_frame(Async,
 run_sf_frame(_Async, SfCc, _Offset, _State) ->
     erlang:error({invalid_sf_cc, SfCc}).
 
+-spec run_sf_cc(async_t:async_t(S, R, identity, A),
+    fun((reply_t:reply(A), Context) ->
+        async_r_t:async_r_t(S, identity, R)), Context) ->
+    async_r_t:async_r_t(S, identity, R).
 run_sf_cc(Async, Callback, Context) ->
     async_t:run_sf_cc(Async, Callback, Context, async_t:new(identity)).
 
@@ -222,9 +226,15 @@ exec_sf_cc(Async, Callback, Context, Offset, State) ->
     identity:run(async_t:exec_sf_cc(
         Async, Callback, Context, Offset, State, async_t:new(identity))).
 
+-spec handle_info(term(), integer(), S) -> S | unhandled.
 handle_info(Info, Offset, State) ->
     {_Outcome, NewState} = run_info(Info, Offset, State),
     NewState.
+
+-spec route_info(term(), integer(), S) -> async_t:info_route(S, term()).
+route_info(Info, Offset, State) ->
+    identity:run(async_t:route_info(
+        Info, Offset, State, async_t:new(identity))).
 
 inspect_sf_callbacks(MatchFun, Offset, State) ->
     async_sf_cc:inspect(MatchFun, Offset, State).
