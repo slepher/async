@@ -287,13 +287,23 @@ migration_failure(#{module := Module, identity := Identity,
         migration_stored_vsn := StoredVsn,
         migration_current_vsn := CurrentVsn}, Reason) ->
     {incompatible_frame, #{module => Module, stored_vsn => StoredVsn,
-        current_vsn => CurrentVsn, identity => Identity, reason => Reason}}.
+        current_vsn => CurrentVsn, identity => Identity,
+        reason => normalize_migration_reason(Reason)}}.
 
 migration_failure_result(#{module := Module, vsn := StoredVsn,
         identity := Identity}, CurrentVsn, Reason, Direction) ->
     target_failure(Direction,
         {incompatible_frame, #{module => Module, stored_vsn => StoredVsn,
-            current_vsn => CurrentVsn, identity => Identity, reason => Reason}}).
+            current_vsn => CurrentVsn, identity => Identity,
+            reason => normalize_migration_reason(Reason)}}).
+
+normalize_migration_reason(no_compatible_plan) -> no_compatible_plan;
+normalize_migration_reason(invalid_historical_frame) -> invalid_historical_frame;
+normalize_migration_reason(converter_failed) -> converter_failed;
+normalize_migration_reason(invalid_converter_result) -> invalid_converter_result;
+normalize_migration_reason(incompatible_outcome) -> incompatible_outcome;
+normalize_migration_reason(incompatible_env) -> incompatible_env;
+normalize_migration_reason(_) -> invalid_converter_result.
 
 current_mfa_callable(Module, {Module, Function, 2}) when is_atom(Function) ->
     erlang:function_exported(Module, Function, 2);
