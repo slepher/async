@@ -539,6 +539,91 @@ Result = identity:run(ResultMonad).
 违反“单 final reply”不变量可能导致 continuation 被调用多次、内部计数未清理，
 或聚合过早完成。
 
+## sf-migrate：reply-time 兼容性
+
+`sf-migrate` 用于让命名的 `sf_do` step 跨 module 版本继续执行。声明必须位于
+包含该 `sf_do` block 的同一个 FrameOwner module；保存 callback 的 StateHolder
+不复制声明，也不参与 migration。FrameOwner 必须声明显式的 literal module
+`-vsn`：
+
+```erlang
+-vsn({1, 2, 0}).
+
+sf_do_code_change(SourceVsn, SourceBlock) ->
+    case {SourceVsn, SourceBlock} of
+        {{1, 1, 0}, old_flow} ->
+            sf_migrate(
+                {1, 1, 0},
+                [async_m ||
+                    load_user,
+                    User <- old_user_step(),
+                    finish(User)],
+                #{from => old_flow, to => current_flow,
+                  steps => #{load_user => #{to => fetch_user}}});
+        _ -> unhandled
+    end.
+```
+
+`sf_do_code_change/2` 是普通 Erlang 路由：用精确的 source Vsn 和 historical
+block 配合 clause、guard 或 `case`；不支持的 source 返回 `unhandled`。
+`sf_migrate/3` 的 historical 参数必须是完整且命名的 `sf_do` comprehension，
+包括 qualifier、命名 step、pattern、tail 和 capture。partial block、匿名
+block、推断版本和版本排序都不支持。每个 source Vsn/block 只能有一个精确声明；
+多个历史版本必须写成多个精确分支。
+
+step mapping 只按名称匹配。`from`、`to` 是 literal block name，每个 `steps`
+的 key 是 literal old step name；其 value 是包含 literal target `to` name 和可选
+`convert` MFA 的 descriptor。匹配不会使用 index、Offset、bind variable、value、
+action 内容或生成的 function name：
+
+```erlang
+#{from => old_flow, to => current_flow,
+  steps => #{load_user => #{to => fetch_user,
+                            convert => {user_codec, to_current, 2}}}}
+```
+
+没有 `convert` 时，只有在 normalized Outcome shape 兼容，且 current 所需的每个
+capture 都存在于 old capture 集合时，才允许 raw forwarding。Saved Env 可以有
+额外 key。业务值或 Env 需要转换时，提供外部 converter：
+
+```erlang
+-spec user_codec:to_current(term(), map()) ->
+    {ok, term(), map()} | {error, term()}.
+```
+
+它接收实际的 old Outcome 和 Env，并返回新的 Outcome 与包含全部 current required
+capture 的 atom-key map。显式 converter 优先于同名的 automatic inheritance，即使
+名称完全相同也一样。converter 返回 `{error, Reason}` 或非法结果会变成脱敏的
+migration failure；converter 自身抛出的 exception 仍遵循普通 user-code exception
+语义。如果保留业务 `Reason` 到 failure Outcome，它可能被该 Outcome 的消费者看到。
+
+resolution 只在已保存 node 收到 reply 时发生。runtime 在 upgrade 和 downgrade
+两种方向都使用实际加载的 FrameOwner current manifest：先尝试精确 source 声明；
+router 缺失、返回 `unhandled` 或没有该 step mapping 时，再回退到按命名 identity
+和 capture subset 的 automatic compatibility。已选中的显式 mapping 若转换失败，
+不会静默回退。无法兼容时，failure 沿当前 node 的 direct parent 返回为
+`{error, {sf_runtime, {incompatible_frame, Info}}}`；`Info` 只包含有界的 module、
+stored/current Vsn、identity 和安全 reason，不包含 Env、Outcome、State、callback
+value 或 function。
+
+两种方向使用同一套规则。downgrade 没有 reverse phase：不会扫描 callback store、
+提前 fail callback、查找 target Vsn、调用 reverse converter 或创建替代 callback。
+B 创建的兼容 frame 降回 A 后，会把原始 Outcome 传给 A，并忽略额外 Env；不兼容 frame
+只在 reply 到达时失败。因此，只有在 pending frame 不再需要旧 interface，或已经确认
+current declaration/automatic compatibility 后，才适合 purge old code。`sf-migrate`
+不改变 OTP appup/relup 顺序，也不增加 dependency declaration。
+
+### sf-migrate 排错
+
+- `sf_migrate_requires_explicit_vsn`：添加 literal module `-vsn`。
+- `invalid_sf_migrate_syntax` 或 `invalid_sf_migrate_placement`：把完整的 historical
+  命名 comprehension 作为 `sf_do_code_change/2` 返回表达式。
+- `sf_migration_converter_required`：添加 `convert/2`；raw forwarding 无法证明
+  Outcome 或 required capture 兼容。
+- `incompatible_frame`：检查 source Vsn/block、命名 step、required capture 和
+  converter 结果。该 failure 发生在 reply-time，不表示 application upgrade 或
+  downgrade 被拒绝。
+
 ## 开发
 
 ```shell
