@@ -25,14 +25,17 @@ continue(Frame, ParentRef, Input, {async_r_t, _} = MR, Direction) ->
                 {ok, {async_t, _} = Action} -> run_remainder(Action, ParentRef, MR);
                 {ok, {sf_migration_failure, Reason}}
                         when map_get(resolution, Resolved) =:= migration ->
-                    structural_failure(Reason, ParentRef, MR);
+                    structural_failure(migration_failure(Resolved, Reason),
+                        ParentRef, MR);
                 {ok, _Other} when map_get(resolution, Resolved) =:= migration ->
                     structural_failure(
-                        {incompatible_frame, invalid_migration_bridge}, ParentRef, MR);
+                        migration_failure(Resolved, invalid_converter_result),
+                        ParentRef, MR);
                 {ok, Other} -> structural_failure({invalid_frame_return, Other}, ParentRef, MR);
                 unavailable when map_get(resolution, Resolved) =:= migration ->
                     structural_failure(
-                        {incompatible_frame, invalid_migration_bridge}, ParentRef, MR);
+                        migration_failure(Resolved, invalid_historical_frame),
+                        ParentRef, MR);
                 unavailable -> structural_failure(unavailable_continuation, ParentRef, MR)
             end;
         {error, Reason} -> structural_failure(Reason, ParentRef, MR)
@@ -137,15 +140,23 @@ resolve_automatic(#{protocol := 1, block := Block, step_name := StepName,
 resolve_migration(#{module := Module, vsn := StoredVsn, block := StoredBlock} = Frame,
         #{vsn := CurrentVsn, frames := Entries}, Direction) ->
     case erlang:function_exported(Module, sf_do_code_change, 2) of
-        false -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+        false -> resolve_migration_fallback(Frame, Entries, CurrentVsn, Direction);
         true ->
             case Module:sf_do_code_change(StoredVsn, StoredBlock) of
-                unhandled -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+                unhandled -> resolve_migration_fallback(Frame, Entries,
+                    CurrentVsn, Direction);
                 Plan when is_map(Plan) ->
                     resolve_migration_plan(Frame, Plan, CurrentVsn, Entries, Direction);
-                _Other -> target_failure(Direction,
-                    {incompatible_frame, invalid_migration_plan})
+                _Other -> migration_failure_result(Frame, CurrentVsn,
+                    no_compatible_plan, Direction)
             end
+    end.
+
+resolve_migration_fallback(Frame, Entries, CurrentVsn, Direction) ->
+    case resolve_automatic(Frame, Entries, CurrentVsn, Direction) of
+        {ok, _} = Ok -> Ok;
+        {error, _} -> migration_failure_result(Frame, CurrentVsn,
+            no_compatible_plan, Direction)
     end.
 
 resolve_migration_plan(#{module := Module, vsn := StoredVsn,
@@ -155,13 +166,14 @@ resolve_migration_plan(#{module := Module, vsn := StoredVsn,
             Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) of
         {ok, Steps} ->
             case maps:find(StoredStep, Steps) of
-                error -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+                error -> resolve_migration_fallback(Frame, Entries,
+                    CurrentVsn, Direction);
                 {ok, StepPlan} ->
                     resolve_mapped_step(Frame, StepPlan, CurrentVsn, Entries,
                         Direction)
             end;
-        {error, _Reason} -> target_failure(Direction,
-            {incompatible_frame, invalid_migration_plan})
+        {error, _Reason} -> migration_failure_result(Frame, CurrentVsn,
+            no_compatible_plan, Direction)
     end.
 
 valid_migration_plan(Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) ->
@@ -233,12 +245,14 @@ resolve_mapped_step(#{identity := Identity, mfa := StoredMFA,
     case valid_required_captures(Required, Env)
             andalso current_mfa_callable(Module, {Module, BridgeFunction, 2}) of
         true -> {ok, Frame#{vsn := CurrentVsn,
-            mfa := {Module, BridgeFunction, 2}, resolution => migration}};
-        false -> target_failure(Direction,
-            {incompatible_frame, invalid_migration_plan})
+            mfa := {Module, BridgeFunction, 2}, resolution => migration,
+            migration_stored_vsn => maps:get(vsn, Frame),
+            migration_current_vsn => CurrentVsn}};
+        false -> migration_failure_result(Frame, CurrentVsn,
+            invalid_historical_frame, Direction)
     end;
-resolve_mapped_step(_Frame, _StepPlan, _CurrentVsn, _Entries, Direction) ->
-    target_failure(Direction, {incompatible_frame, invalid_migration_plan}).
+resolve_mapped_step(Frame, _StepPlan, CurrentVsn, _Entries, Direction) ->
+    migration_failure_result(Frame, CurrentVsn, invalid_historical_frame, Direction).
 
 find_entry(undefined, StoredMFA, undefined, StoredVsn, CurrentVsn, Entries, resume)
         when StoredVsn =:= CurrentVsn ->
@@ -268,6 +282,18 @@ valid_capture_names(Required) ->
 valid_converter_mfa({Module, Function, 2})
         when is_atom(Module), is_atom(Function) -> true;
 valid_converter_mfa(_MFA) -> false.
+
+migration_failure(#{module := Module, identity := Identity,
+        migration_stored_vsn := StoredVsn,
+        migration_current_vsn := CurrentVsn}, Reason) ->
+    {incompatible_frame, #{module => Module, stored_vsn => StoredVsn,
+        current_vsn => CurrentVsn, identity => Identity, reason => Reason}}.
+
+migration_failure_result(#{module := Module, vsn := StoredVsn,
+        identity := Identity}, CurrentVsn, Reason, Direction) ->
+    target_failure(Direction,
+        {incompatible_frame, #{module => Module, stored_vsn => StoredVsn,
+            current_vsn => CurrentVsn, identity => Identity, reason => Reason}}).
 
 current_mfa_callable(Module, {Module, Function, 2}) when is_atom(Function) ->
     erlang:function_exported(Module, Function, 2);

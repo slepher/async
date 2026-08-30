@@ -219,7 +219,7 @@ build_mapping_bridge(Node, OldVsn, OldBlock, _CurrentBlock, OldStep, _CurrentSte
                 bridge_mfa => BridgeMFA,
                 converter_mfa => Converter
             },
-            Form = converter_bridge(Bridge, Converter, CurrentBoundary),
+            Form = converter_bridge(Bridge, Converter, OldBoundary, CurrentBoundary),
             State1 = State#{
                 generated_names => maps:put(Bridge, true, Generated),
                 migration_generated => maps:get(migration_generated, State) ++ [Form]
@@ -355,13 +355,15 @@ raw_bridge(Name, TargetBoundary) ->
     {function, Pos, Name, 2,
         [{clause, Pos, [Input, Env], [], [TargetCall]}]}.
 
-converter_bridge(Name, {ConverterModule, ConverterFunction, 2}, TargetBoundary) ->
+converter_bridge(Name, {ConverterModule, ConverterFunction, 2}, OldBoundary,
+        TargetBoundary) ->
     Pos = maps:get(pos, TargetBoundary),
-    Used0 = target_generated_names(TargetBoundary),
+    Used0 = ordsets:union(target_generated_names(OldBoundary),
+        target_generated_names(TargetBoundary)),
     {InputName, Used1} = allocate_generated_name('__SfConverterInput', Used0),
     {EnvName, Used2} = allocate_generated_name('__SfConverterEnv', Used1),
     {OutcomeName, Used3} = allocate_generated_name('__SfConverterOutcome', Used2),
-    {NewEnvName, _Used4} = allocate_generated_name('__SfConverterNewEnv', Used3),
+    {NewEnvName, Used4} = allocate_generated_name('__SfConverterNewEnv', Used3),
     Input = {var, Pos, InputName},
     Env = {var, Pos, EnvName},
     NewOutcome = {var, Pos, OutcomeName},
@@ -371,16 +373,18 @@ converter_bridge(Name, {ConverterModule, ConverterFunction, 2}, TargetBoundary) 
     TargetCall = remote_call(Pos, maps:get(module, TargetBoundary),
         maps:get(function, TargetBoundary), [NewOutcome, NewEnv]),
     Success = converter_target_validation(TargetBoundary, NewOutcome, NewEnv,
-        TargetCall, Used3),
-    Body = [{'case', Pos, ConverterCall, [
+        TargetCall, Used4),
+    Converted = [{'case', Pos, ConverterCall, [
         {clause, Pos,
             [{tuple, Pos, [{atom, Pos, ok}, NewOutcome, NewEnv]}], [], Success},
         {clause, Pos,
             [{tuple, Pos, [{atom, Pos, error}, {var, Pos, '_'}]}], [],
-            migration_failure(converter_rejected)},
+            migration_failure(converter_failed)},
         {clause, Pos, [{var, Pos, '_'}], [],
             migration_failure(invalid_converter_result)}
     ]}],
+    Body = boundary_validation(OldBoundary, Input, Env,
+        invalid_historical_frame, invalid_historical_frame, Converted, Used4),
     {function, Pos, Name, 2,
         [{clause, Pos, [Input, Env], [], Body}]}.
 
@@ -392,15 +396,19 @@ target_generated_names(#{pattern := Pattern, captures := Captures}) ->
 
 converter_target_validation(TargetBoundary, NewOutcome, NewEnv, TargetCall,
         Used) ->
-    Pos = maps:get(pos, TargetBoundary),
-    Captures = maps:get(captures, TargetBoundary),
-    EnvValidation = env_validation(Pos, NewEnv, Captures),
-    TargetValidation = target_outcome_validation(
-        TargetBoundary, NewOutcome, NewEnv, TargetCall, Used
+    boundary_validation(TargetBoundary, NewOutcome, NewEnv,
+        incompatible_env, incompatible_outcome, [TargetCall], Used).
+
+boundary_validation(Boundary, Outcome, Env, EnvFailure, OutcomeFailure,
+        Success, Used) ->
+    Pos = maps:get(pos, Boundary),
+    EnvValidation = env_validation(Pos, Env, maps:get(captures, Boundary)),
+    OutcomeValidation = target_outcome_validation(
+        Boundary, Outcome, Env, OutcomeFailure, Success, Used
     ),
     [{'case', Pos, EnvValidation, [
-        {clause, Pos, [{atom, Pos, true}], [], TargetValidation},
-        {clause, Pos, [{var, Pos, '_'}], [], migration_failure(incompatible_env)}
+        {clause, Pos, [{atom, Pos, true}], [], OutcomeValidation},
+        {clause, Pos, [{var, Pos, '_'}], [], migration_failure(EnvFailure)}
     ]}].
 
 env_validation(Pos, Env, Required) ->
@@ -416,10 +424,10 @@ env_validation(Pos, Env, Required) ->
     ],
     andalso_expr([IsMap, AtomKeys | RequiredChecks]).
 
-target_outcome_validation(#{pattern := undefined}, _Outcome, _Env, TargetCall,
-        _Used) ->
-    [TargetCall];
-target_outcome_validation(Boundary, Outcome, Env, TargetCall, Used) ->
+target_outcome_validation(#{pattern := undefined}, _Outcome, _Env, _Failure,
+        Success, _Used) ->
+    Success;
+target_outcome_validation(Boundary, Outcome, Env, Failure, Success, Used) ->
     Pos = maps:get(pos, Boundary),
     Pattern = maps:get(pattern, Boundary),
     Captures = ordsets:from_list(maps:get(captures, Boundary)),
@@ -436,9 +444,9 @@ target_outcome_validation(Boundary, Outcome, Env, TargetCall, Used) ->
             remote_call(Pos, maps, get, [{atom, Pos, Capture}, Env])}
      || Capture <- maps:get(captures, Boundary)],
     Restore ++ [{'case', Pos, Outcome, [
-        {clause, Pos, [MatchPattern], [], [TargetCall]},
+        {clause, Pos, [MatchPattern], [], Success},
         {clause, Pos, [{var, Pos, '_'}], [],
-            migration_failure(incompatible_outcome)}
+            migration_failure(Failure)}
     ]}].
 
 andalso_expr([]) -> {atom, 0, true};
@@ -447,8 +455,7 @@ andalso_expr([Expr | Tail]) ->
     {op, element(2, Expr), 'andalso', Expr, andalso_expr(Tail)}.
 
 migration_failure(Info) ->
-    [{tuple, 0, [{atom, 0, sf_migration_failure},
-        {tuple, 0, [{atom, 0, incompatible_frame}, {atom, 0, Info}]}]}].
+    [{tuple, 0, [{atom, 0, sf_migration_failure}, {atom, 0, Info}]}].
 
 replace_migrations(Forms, Replacements) ->
     replace_migration_term(Forms, Replacements).
