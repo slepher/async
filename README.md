@@ -556,6 +556,99 @@ Result = identity:run(ResultMonad).
 Violating the single-final-reply invariant can invoke a continuation more than
 once, leave internal counters behind, or complete an aggregate too early.
 
+## sf-migrate: reply-time compatibility
+
+`sf-migrate` extends named `sf_do` steps across module versions. The declaration
+belongs to the same FrameOwner module that contains the `sf_do` block; the
+StateHolder that stores callbacks does not copy it or participate in migration.
+The FrameOwner must declare an explicit literal module `-vsn`:
+
+```erlang
+-vsn({1, 2, 0}).
+
+sf_do_code_change(SourceVsn, SourceBlock) ->
+    case {SourceVsn, SourceBlock} of
+        {{1, 1, 0}, old_flow} ->
+            sf_migrate(
+                {1, 1, 0},
+                [async_m ||
+                    load_user,
+                    User <- old_user_step(),
+                    finish(User)],
+                #{from => old_flow, to => current_flow,
+                  steps => #{load_user => #{to => fetch_user}}});
+        _ -> unhandled
+    end.
+```
+
+`sf_do_code_change/2` is ordinary Erlang routing: use exact source Vsn and
+historical block clauses, guards, or `case`; unsupported sources return
+`unhandled`. The `sf_migrate/3` historical argument must be a complete named
+`sf_do` comprehension, including its qualifiers, named steps, patterns, tail,
+and captures. Partial blocks, unnamed blocks, inferred versions, and version
+ordering are not supported. Use one exact declaration per source Vsn/block;
+multiple historical versions require multiple exact clauses.
+
+Step mappings are name-only. `from`, `to`, and each `steps` key/value must be
+literal names; matching never uses indexes, offsets, bind variables, values,
+action contents, or generated function names:
+
+```erlang
+#{from => old_flow, to => current_flow,
+  steps => #{load_user => #{to => fetch_user,
+                            convert => {user_codec, to_current, 2}}}}
+```
+
+Without `convert`, raw forwarding is allowed only when the normalized Outcome
+shape is compatible and every current required capture was present in the old
+capture set. Saved Env may contain extra keys. When business values or Env need
+conversion, provide the external converter:
+
+```erlang
+-spec user_codec:to_current(term(), map()) ->
+    {ok, term(), map()} | {error, term()}.
+```
+
+It receives the actual old Outcome and Env and must return both the new Outcome
+and an atom-key map containing all current required captures. An explicit
+converter wins over automatic same-name inheritance, even when names match.
+Converter `{error, Reason}` and invalid output become sanitized migration
+failures; exceptions raised by converter code retain normal user-code exception
+semantics. If a business `Reason` is retained in the failure Outcome, it may be
+visible to that Outcome's consumers.
+
+Resolution happens only when the stored node receives its reply. The runtime
+uses the loaded FrameOwner's current manifest for both directions, tries the
+exact source declaration first, then falls back to automatic named identity
+and capture-subset compatibility when the router is absent, returns
+`unhandled`, or has no mapping for that step. A selected explicit mapping does
+not silently fall back if its conversion is invalid. Incompatibility is routed
+to the current node's direct parent as
+`{error, {sf_runtime, {incompatible_frame, Info}}}`; `Info` is bounded to
+module, stored/current Vsn, identity, and a safe reason, with no Env, Outcome,
+State, callback value, or function.
+
+The same rules apply on upgrade and downgrade. Downgrade has no reverse phase:
+it does not scan callback stores, fail callbacks eagerly, discover a target
+Vsn, call a reverse converter, or create a replacement callback. A compatible
+B-created frame resumes on A with the original Outcome and any extra Env
+ignored; an incompatible frame fails only when its reply arrives. Purging old
+code is therefore safe only after pending frames no longer need that old
+interface, or after their current declaration/automatic compatibility has been
+verified. `sf-migrate` does not change OTP appup/relup order or add dependency
+declarations.
+
+### sf-migrate troubleshooting
+
+- `sf_migrate_requires_explicit_vsn`: add a literal module `-vsn`.
+- `invalid_sf_migrate_syntax` or `invalid_sf_migrate_placement`: use a complete
+  historical named comprehension as a return expression of `sf_do_code_change/2`.
+- `sf_migration_converter_required`: add `convert/2`; raw forwarding cannot
+  prove Outcome or required-capture compatibility.
+- `incompatible_frame`: inspect the source Vsn/block, named step, required
+  captures, and converter result. The failure is reply-time and does not mean
+  the application upgrade or downgrade was rejected.
+
 ## Development
 
 ```shell
