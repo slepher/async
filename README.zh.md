@@ -571,9 +571,10 @@ block 配合 clause、guard 或 `case`；不支持的 source 返回 `unhandled`�
 block、推断版本和版本排序都不支持。每个 source Vsn/block 只能有一个精确声明；
 多个历史版本必须写成多个精确分支。
 
-step mapping 只按名称匹配。`from`、`to` 以及 `steps` 的每个 key/value 都必须是
-literal name；匹配不会使用 index、Offset、bind variable、value、action 内容
-或生成的 function name：
+step mapping 只按名称匹配。`from`、`to` 是 literal block name，每个 `steps`
+的 key 是 literal old step name；其 value 是包含 literal target `to` name 和可选
+`convert` MFA 的 descriptor。匹配不会使用 index、Offset、bind variable、value、
+action 内容或生成的 function name：
 
 ```erlang
 #{from => old_flow, to => current_flow,

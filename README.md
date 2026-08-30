@@ -589,9 +589,11 @@ and captures. Partial blocks, unnamed blocks, inferred versions, and version
 ordering are not supported. Use one exact declaration per source Vsn/block;
 multiple historical versions require multiple exact clauses.
 
-Step mappings are name-only. `from`, `to`, and each `steps` key/value must be
-literal names; matching never uses indexes, offsets, bind variables, values,
-action contents, or generated function names:
+Step mappings are name-only. `from` and `to` are literal block names; each
+`steps` key is a literal old step name and its value is a descriptor with a
+literal target `to` name and optional `convert` MFA. Matching never uses
+indexes, offsets, bind variables, values, action contents, or generated
+function names:
 
 ```erlang
 #{from => old_flow, to => current_flow,
