@@ -27,10 +27,12 @@ continue(Frame, ParentRef, Input, {async_r_t, _} = MR, Direction) ->
                         when map_get(resolution, Resolved) =:= migration ->
                     structural_failure(Reason, ParentRef, MR);
                 {ok, _Other} when map_get(resolution, Resolved) =:= migration ->
-                    structural_failure(invalid_migration_bridge, ParentRef, MR);
+                    structural_failure(
+                        {incompatible_frame, invalid_migration_bridge}, ParentRef, MR);
                 {ok, Other} -> structural_failure({invalid_frame_return, Other}, ParentRef, MR);
                 unavailable when map_get(resolution, Resolved) =:= migration ->
-                    structural_failure(invalid_migration_bridge, ParentRef, MR);
+                    structural_failure(
+                        {incompatible_frame, invalid_migration_bridge}, ParentRef, MR);
                 unavailable -> structural_failure(unavailable_continuation, ParentRef, MR)
             end;
         {error, Reason} -> structural_failure(Reason, ParentRef, MR)
@@ -142,7 +144,7 @@ resolve_migration(#{module := Module, vsn := StoredVsn, block := StoredBlock} = 
                 Plan when is_map(Plan) ->
                     resolve_migration_plan(Frame, Plan, CurrentVsn, Entries, Direction);
                 _Other -> target_failure(Direction,
-                    {invalid_migration_plan, invalid_return})
+                    {incompatible_frame, invalid_migration_plan})
             end
     end.
 
@@ -158,8 +160,8 @@ resolve_migration_plan(#{module := Module, vsn := StoredVsn,
                     resolve_mapped_step(Frame, StepPlan, CurrentVsn, Entries,
                         Direction)
             end;
-        {error, Reason} -> target_failure(Direction,
-            {invalid_migration_plan, Reason})
+        {error, _Reason} -> target_failure(Direction,
+            {incompatible_frame, invalid_migration_plan})
     end.
 
 valid_migration_plan(Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) ->
@@ -180,7 +182,7 @@ valid_migration_plan(Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) 
     end.
 
 valid_step_plan(Step, StepPlan, Module, StoredBlock, TargetBlock, Entries)
-        when is_atom(Step), is_map(StepPlan), map_size(StepPlan) =:= 5 ->
+        when is_atom(Step), is_map(StepPlan) ->
     case StepPlan of
         #{source_identity := {1, StoredBlock, Step},
             source_mfa := {Module, SourceFunction, 2},
@@ -188,13 +190,28 @@ valid_step_plan(Step, StepPlan, Module, StoredBlock, TargetBlock, Entries)
             target_identity := {1, TargetBlock, TargetStep} = TargetIdentity,
             bridge_mfa := {Module, BridgeFunction, 2}}
                 when is_atom(SourceFunction), is_atom(TargetStep),
-                    is_atom(BridgeFunction) ->
-            valid_capture_names(SourceRequired)
-                andalso valid_target_identity(TargetIdentity, Module, Entries);
+                    is_atom(BridgeFunction), map_size(StepPlan) =:= 5 ->
+            valid_step_plan_fields(SourceRequired, TargetIdentity,
+                Module, Entries);
+        #{source_identity := {1, StoredBlock, Step},
+            source_mfa := {Module, SourceFunction, 2},
+            source_required_captures := SourceRequired,
+            target_identity := {1, TargetBlock, TargetStep} = TargetIdentity,
+            bridge_mfa := {Module, BridgeFunction, 2},
+            converter_mfa := Converter}
+                when is_atom(SourceFunction), is_atom(TargetStep),
+                    is_atom(BridgeFunction), map_size(StepPlan) =:= 6 ->
+            valid_converter_mfa(Converter) andalso
+                valid_step_plan_fields(SourceRequired, TargetIdentity,
+                    Module, Entries);
         _ -> false
     end;
 valid_step_plan(_Step, _StepPlan, _Module, _StoredBlock, _TargetBlock, _Entries) ->
     false.
+
+valid_step_plan_fields(SourceRequired, TargetIdentity, Module, Entries) ->
+    valid_capture_names(SourceRequired)
+        andalso valid_target_identity(TargetIdentity, Module, Entries).
 
 valid_target_identity(Identity, Module, Entries) ->
     case find_unique(fun
@@ -218,10 +235,10 @@ resolve_mapped_step(#{identity := Identity, mfa := StoredMFA,
         true -> {ok, Frame#{vsn := CurrentVsn,
             mfa := {Module, BridgeFunction, 2}, resolution => migration}};
         false -> target_failure(Direction,
-            {invalid_migration_plan, missing_capture_or_bridge})
+            {incompatible_frame, invalid_migration_plan})
     end;
 resolve_mapped_step(_Frame, _StepPlan, _CurrentVsn, _Entries, Direction) ->
-    target_failure(Direction, {invalid_migration_plan, source_mismatch}).
+    target_failure(Direction, {incompatible_frame, invalid_migration_plan}).
 
 find_entry(undefined, StoredMFA, undefined, StoredVsn, CurrentVsn, Entries, resume)
         when StoredVsn =:= CurrentVsn ->
@@ -247,6 +264,10 @@ valid_required_captures(Required, Env) ->
 valid_capture_names(Required) ->
     is_list(Required) andalso Required =:= lists:usort(Required)
         andalso lists:all(fun is_atom/1, Required).
+
+valid_converter_mfa({Module, Function, 2})
+        when is_atom(Module), is_atom(Function) -> true;
+valid_converter_mfa(_MFA) -> false.
 
 current_mfa_callable(Module, {Module, Function, 2}) when is_atom(Function) ->
     erlang:function_exported(Module, Function, 2);
