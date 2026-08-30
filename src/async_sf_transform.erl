@@ -136,21 +136,21 @@ build_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, Target,
             named_boundary(OldStep, OldBoundaries)} of
         {false, _, _} -> source_error(Node, invalid_sf_migrate_syntax,
             {StepPlans, State});
-        {_, {converter, MFA}, _} -> source_error(Node,
+        {_, {invalid_converter, MFA}, _} -> source_error(Node,
             {invalid_sf_migration_converter, MFA}, {StepPlans, State});
         {_, error, _} -> source_error(Node, invalid_sf_migrate_syntax,
             {StepPlans, State});
         {_, _, error} -> source_error(Node,
             {sf_step_not_found, OldBlock, OldStep}, {StepPlans, State});
-        {true, {ok, CurrentStep}, {ok, OldBoundary}} ->
+        {true, {ok, CurrentStep, Mode}, {ok, OldBoundary}} ->
             case named_boundary(CurrentStep, maps:get(boundaries, CurrentPlan)) of
                 error -> source_error(Node,
                     {sf_step_not_found, CurrentBlock, CurrentStep},
                     {StepPlans, State});
                 {ok, CurrentBoundary} ->
-                    build_raw_mapping(Node, OldVsn, OldBlock, CurrentBlock,
-                        OldStep, CurrentStep, OldBoundary, CurrentBoundary,
-                        StepPlans, State)
+                    build_mapping_bridge(Node, OldVsn, OldBlock, CurrentBlock,
+                        OldStep, CurrentStep, Mode, OldBoundary,
+                        CurrentBoundary, StepPlans, State)
             end
     end.
 
@@ -196,6 +196,39 @@ build_raw_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, CurrentStep,
             end
     end.
 
+build_mapping_bridge(Node, OldVsn, OldBlock, CurrentBlock, OldStep, CurrentStep,
+        none, OldBoundary, CurrentBoundary, StepPlans, State) ->
+    build_raw_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, CurrentStep,
+        OldBoundary, CurrentBoundary, StepPlans, State);
+build_mapping_bridge(Node, OldVsn, OldBlock, _CurrentBlock, OldStep, _CurrentStep,
+        {converter, Converter}, OldBoundary, CurrentBoundary, StepPlans, State) ->
+    Bridge = bridge_name(OldVsn, OldBlock, OldStep),
+    Existing = maps:get(functions, State),
+    Generated = maps:get(generated_names, State),
+    case maps:is_key({Bridge, 2}, Existing) orelse maps:is_key(Bridge, Generated) of
+        true -> source_error(Node,
+            {sf_migration_generated_collision, Bridge}, {StepPlans, State});
+        false ->
+            Module = maps:get(module, State),
+            BridgeMFA = {Module, Bridge, 2},
+            StepPlan = #{
+                source_identity => maps:get(identity, OldBoundary),
+                source_mfa => maps:get(mfa, OldBoundary),
+                source_required_captures => lists:sort(maps:get(captures, OldBoundary)),
+                target_identity => maps:get(identity, CurrentBoundary),
+                bridge_mfa => BridgeMFA,
+                converter_mfa => Converter
+            },
+            Form = converter_bridge(Bridge, Converter, OldBoundary, CurrentBoundary),
+            State1 = State#{
+                generated_names => maps:put(Bridge, true, Generated),
+                migration_generated => maps:get(migration_generated, State) ++ [Form]
+            },
+            astranaut_return:return(
+                {maps:put(OldStep, StepPlan, StepPlans), State1}
+            )
+    end.
+
 parse_migration(Node) ->
     case erl_syntax:application_arguments(Node) of
         [OldVsnNode, Comprehension, SpecNode] ->
@@ -217,11 +250,20 @@ parse_migration(Node) ->
 
 raw_target(Target) when is_map(Target) ->
     case {map_size(Target), lists:sort(maps:keys(Target)), Target} of
-        {1, [to], #{to := Step}} when is_atom(Step) -> {ok, Step};
-        {2, [convert, to], #{convert := MFA}} -> {converter, MFA};
+        {1, [to], #{to := Step}} when is_atom(Step) -> {ok, Step, none};
+        {2, [convert, to], #{convert := MFA, to := Step}}
+                when is_atom(Step) ->
+            case valid_converter_mfa(MFA) of
+                true -> {ok, Step, {converter, MFA}};
+                false -> {invalid_converter, MFA}
+            end;
         _ -> error
     end;
 raw_target(_Target) -> error.
+
+valid_converter_mfa({Module, Function, 2})
+        when is_atom(Module), is_atom(Function) -> true;
+valid_converter_mfa(_MFA) -> false.
 
 literal_term(Node) ->
     try {ok, erl_parse:normalise(astranaut_syntax:revert(Node))}
@@ -312,6 +354,108 @@ raw_bridge(Name, TargetBoundary) ->
         maps:get(function, TargetBoundary), [Input, Env]),
     {function, Pos, Name, 2,
         [{clause, Pos, [Input, Env], [], [TargetCall]}]}.
+
+converter_bridge(Name, {ConverterModule, ConverterFunction, 2}, OldBoundary,
+        TargetBoundary) ->
+    Pos = maps:get(pos, TargetBoundary),
+    Used0 = ordsets:union(target_generated_names(OldBoundary),
+        target_generated_names(TargetBoundary)),
+    {InputName, Used1} = allocate_generated_name('__SfConverterInput', Used0),
+    {EnvName, Used2} = allocate_generated_name('__SfConverterEnv', Used1),
+    {OutcomeName, Used3} = allocate_generated_name('__SfConverterOutcome', Used2),
+    {NewEnvName, Used4} = allocate_generated_name('__SfConverterNewEnv', Used3),
+    Input = {var, Pos, InputName},
+    Env = {var, Pos, EnvName},
+    NewOutcome = {var, Pos, OutcomeName},
+    NewEnv = {var, Pos, NewEnvName},
+    ConverterCall = remote_call(Pos, ConverterModule, ConverterFunction,
+        [Input, Env]),
+    TargetCall = remote_call(Pos, maps:get(module, TargetBoundary),
+        maps:get(function, TargetBoundary), [NewOutcome, NewEnv]),
+    Success = converter_target_validation(TargetBoundary, NewOutcome, NewEnv,
+        TargetCall, Used4),
+    Converted = [{'case', Pos, ConverterCall, [
+        {clause, Pos,
+            [{tuple, Pos, [{atom, Pos, ok}, NewOutcome, NewEnv]}], [], Success},
+        {clause, Pos,
+            [{tuple, Pos, [{atom, Pos, error}, {var, Pos, '_'}]}], [],
+            migration_failure(converter_failed)},
+        {clause, Pos, [{var, Pos, '_'}], [],
+            migration_failure(invalid_converter_result)}
+    ]}],
+    Body = boundary_validation(OldBoundary, Input, Env,
+        invalid_historical_frame, invalid_historical_frame, Converted, Used4),
+    {function, Pos, Name, 2,
+        [{clause, Pos, [Input, Env], [], Body}]}.
+
+target_generated_names(#{pattern := undefined, captures := Captures}) ->
+    ordsets:from_list(Captures);
+target_generated_names(#{pattern := Pattern, captures := Captures}) ->
+    ordsets:union(ordsets:from_list(Captures),
+        ordsets:from_list(syntax_variables(Pattern))).
+
+converter_target_validation(TargetBoundary, NewOutcome, NewEnv, TargetCall,
+        Used) ->
+    boundary_validation(TargetBoundary, NewOutcome, NewEnv,
+        incompatible_env, incompatible_outcome, [TargetCall], Used).
+
+boundary_validation(Boundary, Outcome, Env, EnvFailure, OutcomeFailure,
+        Success, Used) ->
+    Pos = maps:get(pos, Boundary),
+    EnvValidation = env_validation(Pos, Env, maps:get(captures, Boundary)),
+    OutcomeValidation = target_outcome_validation(
+        Boundary, Outcome, Env, OutcomeFailure, Success, Used
+    ),
+    [{'case', Pos, EnvValidation, [
+        {clause, Pos, [{atom, Pos, true}], [], OutcomeValidation},
+        {clause, Pos, [{var, Pos, '_'}], [], migration_failure(EnvFailure)}
+    ]}].
+
+env_validation(Pos, Env, Required) ->
+    IsMap = remote_call(Pos, erlang, is_map, [Env]),
+    AtomKeys = remote_call(Pos, lists, all, [
+        {'fun', Pos, {function, {atom, Pos, erlang},
+            {atom, Pos, is_atom}, {integer, Pos, 1}}},
+        remote_call(Pos, maps, keys, [Env])
+    ]),
+    RequiredChecks = [
+        remote_call(Pos, maps, is_key, [{atom, Pos, Name}, Env])
+        || Name <- Required
+    ],
+    andalso_expr([IsMap, AtomKeys | RequiredChecks]).
+
+target_outcome_validation(#{pattern := undefined}, _Outcome, _Env, _Failure,
+        Success, _Used) ->
+    Success;
+target_outcome_validation(Boundary, Outcome, Env, Failure, Success, Used) ->
+    Pos = maps:get(pos, Boundary),
+    Pattern = maps:get(pattern, Boundary),
+    Captures = ordsets:from_list(maps:get(captures, Boundary)),
+    PatternBindings = async_sf_lexical:pattern_new_bindings(
+        Pattern, fresh, ordsets:new()
+    ),
+    Shadowed = ordsets:intersection(Captures, PatternBindings),
+    {Aliases, _Used1} = allocate_capture_aliases(Shadowed, Used, #{}),
+    MatchPattern = async_sf_lexical:rename_pattern_references(
+        Pattern, fresh, Captures, Aliases
+    ),
+    Restore = [
+        {match, Pos, {var, Pos, maps:get(Capture, Aliases, Capture)},
+            remote_call(Pos, maps, get, [{atom, Pos, Capture}, Env])}
+     || Capture <- maps:get(captures, Boundary)],
+    Restore ++ [{'case', Pos, Outcome, [
+        {clause, Pos, [MatchPattern], [], Success},
+        {clause, Pos, [{var, Pos, '_'}], [],
+            migration_failure(Failure)}
+    ]}].
+
+andalso_expr([]) -> {atom, 0, true};
+andalso_expr([Expr]) -> Expr;
+andalso_expr([Expr | Tail]) ->
+    {op, element(2, Expr), 'andalso', Expr, andalso_expr(Tail)}.
+
+migration_failure(Info) ->
+    [{tuple, 0, [{atom, 0, sf_migration_failure}, {atom, 0, Info}]}].
 
 replace_migrations(Forms, Replacements) ->
     replace_migration_term(Forms, Replacements).
@@ -504,7 +648,7 @@ format_error({sf_current_block_not_found, Block}) ->
 format_error({sf_step_not_found, Block, Step}) ->
     io_lib:format("sf_do step not found: ~p/~p", [Block, Step]);
 format_error({invalid_sf_migration_converter, MFA}) ->
-    io_lib:format("sf_migrate converter is unavailable in raw migration: ~p", [MFA]);
+    io_lib:format("invalid sf_migrate converter MFA: ~p", [MFA]);
 format_error({sf_migration_converter_required, OldBlock, OldStep,
         CurrentBlock, CurrentStep}) ->
     io_lib:format("sf_migrate converter required for ~p/~p -> ~p/~p",
