@@ -25,18 +25,25 @@ parse_transform(Forms, _Options) ->
         occurrence_plans => #{},
         block_names => #{},
         generated_names => #{},
-        scope_stack => []
+        scope_stack => [],
+        migrations => [],
+        migration_sources => #{},
+        migration_replacements => #{},
+        migration_generated => []
     },
     astranaut_return:to_compiler(
         do([
             return
-         || Collect <- astranaut_return:fail_on_error(
+         || Collect0Result <- astranaut_return:fail_on_error(
                 astranaut:reduce(
                     fun collect/3,
                     Collect0,
                     Forms,
                     #{formatter => ?MODULE, traverse => all}
                 )
+            ),
+            Collect <- astranaut_return:fail_on_error(
+                collect_migrations(Forms, Collect0Result)
             ),
             rewrite_module(Forms, Collect)
         ])
@@ -53,7 +60,320 @@ collect_node(Node) ->
         #{parent => astranaut_syntax:type(Node)}, Node
     ).
 
+collect_migrations(Forms, State) ->
+    astranaut_return:foldl_m(
+        fun collect_migration/2, State, migration_calls(Forms)
+    ).
+
+collect_migration(#{valid := false, node := Node}, State) ->
+    source_error(Node, invalid_sf_migrate_placement, State);
+collect_migration(#{node := Node}, State) ->
+    case maps:get(vsn, State) of
+        undefined ->
+            source_error(Node, sf_migrate_requires_explicit_vsn, State);
+        CurrentVsn ->
+            case parse_migration(Node) of
+                {ok, OldVsn, Comprehension, OldBlock, CurrentBlock, Steps} ->
+                    collect_valid_migration(Node, OldVsn, Comprehension,
+                        OldBlock, CurrentBlock, Steps, CurrentVsn, State);
+                {error, Reason} -> source_error(Node, Reason, State)
+            end
+    end.
+
+collect_valid_migration(Node, OldVsn, Comprehension, OldBlock, CurrentBlock,
+        Steps, CurrentVsn, State) ->
+    Source = {OldVsn, OldBlock},
+    Sources = maps:get(migration_sources, State),
+    DuplicateReturn = State#{migration_sources => maps:put(Source, true, Sources)},
+    case maps:is_key(Source, Sources) of
+        true ->
+            source_error(Node,
+                {duplicate_sf_migration_source, OldVsn, OldBlock},
+                DuplicateReturn);
+        false ->
+            case {historical_boundaries(Comprehension, OldBlock, State),
+                    current_plan(CurrentBlock, State)} of
+                {{ok, OldBoundaries}, {ok, CurrentPlan}} ->
+                    build_migration(Node, OldVsn, OldBlock, CurrentBlock,
+                        Steps, CurrentVsn, OldBoundaries, CurrentPlan,
+                        DuplicateReturn);
+                {{error, Reason}, _} -> source_error(Node, Reason, DuplicateReturn);
+                {_, error} -> source_error(Node,
+                    {sf_current_block_not_found, CurrentBlock}, DuplicateReturn)
+            end
+    end.
+
+build_migration(Node, OldVsn, OldBlock, CurrentBlock, Steps, CurrentVsn,
+        OldBoundaries, CurrentPlan, State) ->
+    Module = maps:get(module, State),
+    Initial = {#{}, State},
+    MappingsReturn = astranaut_return:foldl_m(
+        fun({OldStep, Target}, {StepPlans, StateAcc}) ->
+            build_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, Target,
+                OldBoundaries, CurrentPlan, StepPlans, StateAcc)
+        end,
+        Initial,
+        maps:to_list(Steps)
+    ),
+    astranaut_return:lift_m(
+        fun({StepPlans, State1}) ->
+            Plan = #{kind => sf_migration_plan, format => 1, owner => Module,
+                source_vsn => OldVsn, source_block => OldBlock,
+                target_vsn => CurrentVsn, target_block => CurrentBlock,
+                steps => StepPlans},
+            Digest = node_digest(Node),
+            Replacements = maps:put(Digest, abstract(Plan),
+                maps:get(migration_replacements, State1)),
+            State1#{migrations => [Plan | maps:get(migrations, State1)],
+                migration_replacements => Replacements}
+        end,
+        MappingsReturn
+    ).
+
+build_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, Target,
+        OldBoundaries, CurrentPlan, StepPlans, State) ->
+    case {is_atom(OldStep), raw_target(Target),
+            named_boundary(OldStep, OldBoundaries)} of
+        {false, _, _} -> source_error(Node, invalid_sf_migrate_syntax,
+            {StepPlans, State});
+        {_, {converter, MFA}, _} -> source_error(Node,
+            {invalid_sf_migration_converter, MFA}, {StepPlans, State});
+        {_, error, _} -> source_error(Node, invalid_sf_migrate_syntax,
+            {StepPlans, State});
+        {_, _, error} -> source_error(Node,
+            {sf_step_not_found, OldBlock, OldStep}, {StepPlans, State});
+        {true, {ok, CurrentStep}, {ok, OldBoundary}} ->
+            case named_boundary(CurrentStep, maps:get(boundaries, CurrentPlan)) of
+                error -> source_error(Node,
+                    {sf_step_not_found, CurrentBlock, CurrentStep},
+                    {StepPlans, State});
+                {ok, CurrentBoundary} ->
+                    build_raw_mapping(Node, OldVsn, OldBlock, CurrentBlock,
+                        OldStep, CurrentStep, OldBoundary, CurrentBoundary,
+                        StepPlans, State)
+            end
+    end.
+
+build_raw_mapping(Node, OldVsn, OldBlock, CurrentBlock, OldStep, CurrentStep,
+        OldBoundary, CurrentBoundary, StepPlans, State) ->
+    SourceCaptures = lists:sort(maps:get(captures, OldBoundary)),
+    TargetCaptures = lists:sort(maps:get(captures, CurrentBoundary)),
+    Compatible = maps:get(outcome_shape, OldBoundary) =:=
+            maps:get(outcome_shape, CurrentBoundary)
+        andalso ordsets:is_subset(TargetCaptures, SourceCaptures),
+    case Compatible of
+        false -> source_error(Node,
+            {sf_migration_converter_required, OldBlock, OldStep,
+                CurrentBlock, CurrentStep}, {StepPlans, State});
+        true ->
+            Bridge = bridge_name(OldVsn, OldBlock, OldStep),
+            Existing = maps:get(functions, State),
+            Generated = maps:get(generated_names, State),
+            case maps:is_key({Bridge, 2}, Existing) orelse
+                    maps:is_key(Bridge, Generated) of
+                true -> source_error(Node,
+                    {sf_migration_generated_collision, Bridge},
+                    {StepPlans, State});
+                false ->
+                    Module = maps:get(module, State),
+                    BridgeMFA = {Module, Bridge, 2},
+                    StepPlan = #{
+                        source_identity => maps:get(identity, OldBoundary),
+                        source_mfa => maps:get(mfa, OldBoundary),
+                        source_required_captures => SourceCaptures,
+                        target_identity => maps:get(identity, CurrentBoundary),
+                        bridge_mfa => BridgeMFA
+                    },
+                    Form = raw_bridge(Bridge, CurrentBoundary),
+                    State1 = State#{
+                        generated_names => maps:put(Bridge, true, Generated),
+                        migration_generated =>
+                            maps:get(migration_generated, State) ++ [Form]
+                    },
+                    astranaut_return:return(
+                        {maps:put(OldStep, StepPlan, StepPlans), State1}
+                    )
+            end
+    end.
+
+parse_migration(Node) ->
+    case erl_syntax:application_arguments(Node) of
+        [OldVsnNode, Comprehension, SpecNode] ->
+            case {literal_term(OldVsnNode), literal_term(SpecNode)} of
+                {{ok, OldVsn}, {ok, Spec}} when is_map(Spec), map_size(Spec) =:= 3 ->
+                    case {lists:sort(maps:keys(Spec)), Spec} of
+                        {[from, steps, to],
+                                #{from := OldBlock, to := CurrentBlock,
+                                    steps := Steps}}
+                                when is_atom(OldBlock), is_atom(CurrentBlock),
+                                    is_map(Steps) ->
+                            {ok, OldVsn, Comprehension, OldBlock, CurrentBlock, Steps};
+                        _ -> {error, invalid_sf_migrate_syntax}
+                    end;
+                _ -> {error, invalid_sf_migrate_syntax}
+            end;
+        _ -> {error, invalid_sf_migrate_syntax}
+    end.
+
+raw_target(Target) when is_map(Target) ->
+    case {map_size(Target), lists:sort(maps:keys(Target)), Target} of
+        {1, [to], #{to := Step}} when is_atom(Step) -> {ok, Step};
+        {2, [convert, to], #{convert := MFA}} -> {converter, MFA};
+        _ -> error
+    end;
+raw_target(_Target) -> error.
+
+literal_term(Node) ->
+    try {ok, erl_parse:normalise(astranaut_syntax:revert(Node))}
+    catch error:badarg -> error
+    end.
+
+historical_boundaries(Comprehension, OldBlock, State) ->
+    Validation = astranaut_return:bind(
+        validate_sf_comprehension(Comprehension, OldBlock, 2),
+        fun({ok, Info}) ->
+            Qualifiers = maps:get(qualifiers, Info),
+            Bound = async_sf_lexical:free_expression(
+                Comprehension, syntax_variables(Comprehension)
+            ),
+            do([
+                return
+             || QualifierPlan <- pair_step_markers(Qualifiers),
+                true <- validate_unique_step_names(QualifierPlan),
+                Boundaries0 = analyze_boundaries(
+                    QualifierPlan, maps:get(monad, Info), Bound
+                ),
+                Boundaries1 = assign_identities(Boundaries0,
+                    {{sf_do_code_change, 2}, OldBlock, 0},
+                    maps:get(module, State), maps:get(vsn, State), true),
+                return(complete_historical_boundaries(Boundaries1))
+            ])
+        end
+    ),
+    case astranaut_return:has_error(Validation) of
+        true -> {error, invalid_sf_migrate_syntax};
+        false ->
+            case astranaut_return:run(Validation) of
+                {just, {ok, Boundaries}} ->
+                    case lists:all(fun(B) ->
+                            is_atom(maps:get(step_name, B, undefined))
+                        end, Boundaries) of
+                        true -> {ok, Boundaries};
+                        false -> {error, {sf_historical_block_not_named, OldBlock}}
+                    end;
+                _ -> {error, invalid_sf_migrate_syntax}
+            end
+    end.
+
+complete_historical_boundaries(Boundaries) ->
+    case lists:all(fun(Boundary) ->
+            {_, Text} = maps:get(function_plan, Boundary),
+            length(Text) =< 255
+        end, Boundaries) of
+        true -> {ok, [
+            begin
+                {_, Text} = maps:get(function_plan, Boundary),
+                Function = list_to_atom(Text),
+                Boundary#{function => Function,
+                    mfa => {maps:get(module, Boundary), Function, 2}}
+            end
+         || Boundary <- Boundaries]};
+        false -> error
+    end.
+
+current_plan(Block, State) ->
+    case [Plan || Plan <- maps:values(maps:get(plans, State)),
+            maps:get(named, Plan, false), maps:get(block, Plan) =:= Block] of
+        [Plan] -> {ok, Plan};
+        _ -> error
+    end.
+
+named_boundary(Step, Boundaries) when is_atom(Step) ->
+    case [Boundary || Boundary <- Boundaries,
+            maps:get(step_name, Boundary, undefined) =:= Step,
+            maps:get(identity, Boundary, undefined) =/= undefined] of
+        [Boundary] -> {ok, Boundary};
+        _ -> error
+    end;
+named_boundary(_Step, _Boundaries) -> error.
+
+bridge_name(OldVsn, OldBlock, OldStep) ->
+    Id = erlang:phash2({OldVsn, OldBlock, OldStep}, 16#100000000),
+    list_to_atom("$sf_migrate__" ++ integer_to_list(Id)).
+
+raw_bridge(Name, TargetBoundary) ->
+    Pos = maps:get(pos, TargetBoundary),
+    Used0 = ordsets:from_list(maps:get(captures, TargetBoundary)),
+    {InputName, Used1} = allocate_generated_name('__SfBridgeInput', Used0),
+    {EnvName, _Used2} = allocate_generated_name('__SfBridgeEnv', Used1),
+    Input = {var, Pos, InputName},
+    Env = {var, Pos, EnvName},
+    TargetCall = remote_call(Pos, maps:get(module, TargetBoundary),
+        maps:get(function, TargetBoundary), [Input, Env]),
+    {function, Pos, Name, 2,
+        [{clause, Pos, [Input, Env], [], [TargetCall]}]}.
+
+replace_migrations(Forms, Replacements) ->
+    replace_migration_term(Forms, Replacements).
+
+replace_migration_term(Term, Replacements) when is_list(Term) ->
+    [replace_migration_term(Item, Replacements) || Item <- Term];
+replace_migration_term({call, _Pos, {atom, _AtomPos, sf_migrate}, _Args} = Call,
+        Replacements) ->
+    maps:get(node_digest(Call), Replacements, Call);
+replace_migration_term(Term, Replacements) when is_tuple(Term) ->
+    list_to_tuple([replace_migration_term(Item, Replacements)
+        || Item <- tuple_to_list(Term)]);
+replace_migration_term(Term, _Replacements) -> Term.
+
+migration_calls(Forms) ->
+    lists:append([migration_calls_form(Form) || Form <- Forms]).
+
+migration_calls_form({function, _Pos, Name, Arity, Clauses}) ->
+    Router = {Name, Arity} =:= {sf_do_code_change, 2},
+    lists:append([migration_calls_clause(Clause, Router) || Clause <- Clauses]);
+migration_calls_form(_Form) -> [].
+
+migration_calls_clause({clause, _Pos, Patterns, Guards, Body}, Tail) ->
+    migration_calls_term(Patterns, false) ++
+        migration_calls_term(Guards, false) ++ migration_calls_body(Body, Tail).
+
+migration_calls_body([], _Tail) -> [];
+migration_calls_body([Expression], Tail) -> migration_calls_term(Expression, Tail);
+migration_calls_body([Expression | Tail], ReturnTail) ->
+    migration_calls_term(Expression, false) ++ migration_calls_body(Tail, ReturnTail).
+
+migration_calls_term({call, _Pos, {atom, _AtomPos, sf_migrate}, Args} = Node, Tail) ->
+    [#{node => Node, valid => Tail} | migration_calls_term(Args, false)];
+migration_calls_term({'case', _Pos, Expression, Clauses}, Tail) ->
+    migration_calls_term(Expression, false) ++
+        lists:append([migration_calls_clause(Clause, Tail) || Clause <- Clauses]);
+migration_calls_term({'if', _Pos, Clauses}, Tail) ->
+    lists:append([migration_calls_clause(Clause, Tail) || Clause <- Clauses]);
+migration_calls_term({'receive', _Pos, Clauses}, Tail) ->
+    lists:append([migration_calls_clause(Clause, Tail) || Clause <- Clauses]);
+migration_calls_term({'receive', _Pos, Clauses, Timeout, Body}, Tail) ->
+    lists:append([migration_calls_clause(Clause, Tail) || Clause <- Clauses]) ++
+        migration_calls_term(Timeout, false) ++ migration_calls_body(Body, Tail);
+migration_calls_term({'try', _Pos, Expressions, Clauses, CatchClauses, After}, Tail) ->
+    TryTail = Tail andalso Clauses =:= [],
+    migration_calls_body(Expressions, TryTail) ++
+        lists:append([migration_calls_clause(Clause, Tail) || Clause <- Clauses]) ++
+        lists:append([migration_calls_clause(Clause, Tail) || Clause <- CatchClauses]) ++
+        migration_calls_term(After, false);
+migration_calls_term({block, _Pos, Expressions}, Tail) ->
+    migration_calls_body(Expressions, Tail);
+migration_calls_term(Terms, _Tail) when is_list(Terms) ->
+    lists:append([migration_calls_term(Term, false) || Term <- Terms]);
+migration_calls_term(Term, _Tail) when is_tuple(Term) ->
+    lists:append([migration_calls_term(Item, false)
+        || Item <- tuple_to_list(Term)]);
+migration_calls_term(_Term, _Tail) -> [].
+
 rewrite_module(Forms, Collect) ->
+    Forms1 = replace_migrations(
+        Forms, maps:get(migration_replacements, Collect)
+    ),
     Rewrite0 = #{
         owner => undefined,
         block_stack => [],
@@ -69,7 +389,7 @@ rewrite_module(Forms, Collect) ->
             astranaut:mapfold(
                 fun rewrite/3,
                 Rewrite0,
-                Forms,
+                Forms1,
                 #{formatter => ?MODULE, normalize => true, traverse => all}
             )
         ),
@@ -80,13 +400,19 @@ rewrite_module(Forms, Collect) ->
 finish_rewrite(RewrittenForms, Rewrite, Collect) ->
     case rewrite_complete(Rewrite) of
         ok ->
-            Generated = lists:reverse(maps:get(generated, Rewrite)),
+            Generated = lists:reverse(maps:get(generated, Rewrite)) ++
+                maps:get(migration_generated, Collect),
             Manifest = manifest(
                 maps:get(module, Collect), maps:get(vsn, Collect),
                 maps:values(maps:get(plans, Collect))
             ),
             ManifestForms = manifest_forms(Manifest),
-            GeneratedExport = {attribute, 0, export, [
+            RouterExport = case maps:is_key(
+                    {sf_do_code_change, 2}, maps:get(functions, Collect)) of
+                true -> [{sf_do_code_change, 2}];
+                false -> []
+            end,
+            GeneratedExport = {attribute, 0, export, RouterExport ++ [
                 {Name, Arity} || {function, _, Name, Arity, _} <- Generated
             ]},
             astranaut_return:return(
@@ -162,7 +488,29 @@ format_error(
         ]
     );
 format_error(unnamed_sf_action) ->
-    "unnamed non-final sf_do action is non-migratable; add a literal atom step marker immediately before it".
+    "unnamed non-final sf_do action is non-migratable; add a literal atom step marker immediately before it";
+format_error(sf_migrate_requires_explicit_vsn) ->
+    "sf_migrate requires an explicit module -vsn attribute";
+format_error(invalid_sf_migrate_syntax) ->
+    "invalid sf_migrate literal or historical sf_do syntax";
+format_error(invalid_sf_migrate_placement) ->
+    "sf_migrate is only valid as a return expression of sf_do_code_change/2";
+format_error({duplicate_sf_migration_source, Vsn, Block}) ->
+    io_lib:format("duplicate sf_migrate source: ~p/~p", [Vsn, Block]);
+format_error({sf_historical_block_not_named, Block}) ->
+    io_lib:format("historical sf_do block or step is not named: ~p", [Block]);
+format_error({sf_current_block_not_found, Block}) ->
+    io_lib:format("current sf_do block not found: ~p", [Block]);
+format_error({sf_step_not_found, Block, Step}) ->
+    io_lib:format("sf_do step not found: ~p/~p", [Block, Step]);
+format_error({invalid_sf_migration_converter, MFA}) ->
+    io_lib:format("sf_migrate converter is unavailable in raw migration: ~p", [MFA]);
+format_error({sf_migration_converter_required, OldBlock, OldStep,
+        CurrentBlock, CurrentStep}) ->
+    io_lib:format("sf_migrate converter required for ~p/~p -> ~p/~p",
+        [OldBlock, OldStep, CurrentBlock, CurrentStep]);
+format_error({sf_migration_generated_collision, Function}) ->
+    io_lib:format("sf_migrate generated bridge conflicts with ~p/2", [Function]).
 
 collect(Node, State, #{step := pre} = Attr) ->
     case astranaut_syntax:type(Node) of
@@ -202,12 +550,18 @@ collect(Node, State, #{step := pre} = Attr) ->
                 )
             );
         application ->
-            case sf_call(Node) of
-                false -> collect_return(Node, State);
+            case {sf_call(Node), migration_call(Node)} of
+                {false, true} ->
+                    astranaut:walk_return(#{
+                        return => Node,
+                        state => State,
+                        continue => true
+                    });
+                {false, false} -> collect_return(Node, State);
                 Call ->
                     astranaut_return:lift_m(
                         fun(State1) -> collect_return(Node, State1) end,
-                        collect_sf(Node, Call, State)
+                        collect_sf(Node, element(1, Call), State)
                     )
             end;
         _ ->
@@ -440,6 +794,7 @@ analyze_call(Node, Info, {_Owner, Path, _Occurrence} = Id, State) ->
             maps:get(vsn, State), maps:get(block_name, Info) =/= anonymous),
         return(#{
             block => Path,
+            named => maps:get(block_name, Info) =/= anonymous,
             boundaries => Boundaries,
             comprehension_arg => maps:get(comprehension_arg, Info),
             executable_indexes => [
@@ -658,6 +1013,8 @@ analyze_boundaries([Entry | Tail], Monad, Bound, ExecutableIndex, Acc) ->
                 step_name => maps:get(step_name, Entry),
                 captures => Captures,
                 monad_captures => monad_captures(Monad, Bound),
+                pattern => Pattern,
+                outcome_shape => normalized_pattern(Pattern, Bound),
                 pos => astranaut_syntax:get_pos(Qualifier)
             },
             Fresh = async_sf_lexical:pattern_new_bindings(
@@ -674,6 +1031,8 @@ analyze_boundaries([Entry | Tail], Monad, Bound, ExecutableIndex, Acc) ->
                 step_name => maps:get(step_name, Entry),
                 captures => Captures,
                 monad_captures => monad_captures(Monad, Bound),
+                pattern => undefined,
+                outcome_shape => then,
                 pos => astranaut_syntax:get_pos(Qualifier)
             },
             analyze_boundaries(Tail, Monad, Bound, ExecutableIndex + 1, [Boundary | Acc])
@@ -1054,6 +1413,9 @@ sf_call(Node) ->
         _ -> false
     end.
 
+migration_call(Node) ->
+    local_call_name(Node) =:= sf_migrate.
+
 local_call_name(Node) ->
     case astranaut_syntax:type(Node) of
         application ->
@@ -1115,3 +1477,37 @@ source_functions(Forms) ->
 
 syntax_variables(Node) ->
     sets:to_list(erl_syntax_lib:variables(Node)).
+
+normalized_pattern(Pattern, Bound) ->
+    Raw = erl_parse:map_anno(
+        fun(_Anno) -> 0 end, astranaut_syntax:revert(Pattern)
+    ),
+    {Shape, _Names, _Next} = normalize_pattern_term(Raw, Bound, #{}, 0),
+    Shape.
+
+normalize_pattern_term({var, _Anno, '_'}, _Bound, Names, Next) ->
+    {wildcard, Names, Next};
+normalize_pattern_term({var, _Anno, Name}, Bound, Names, Next) ->
+    case ordsets:is_element(Name, Bound) of
+        true -> {{capture, Name}, Names, Next};
+        false ->
+            case maps:find(Name, Names) of
+                {ok, Id} -> {{binder, Id}, Names, Next};
+                error -> {{binder, Next}, maps:put(Name, Next, Names), Next + 1}
+            end
+    end;
+normalize_pattern_term(Term, Bound, Names, Next) when is_tuple(Term) ->
+    {Items, Names1, Next1} = normalize_pattern_terms(
+        tuple_to_list(Term), Bound, Names, Next, []
+    ),
+    {list_to_tuple(Items), Names1, Next1};
+normalize_pattern_term(Term, Bound, Names, Next) when is_list(Term) ->
+    normalize_pattern_terms(Term, Bound, Names, Next, []);
+normalize_pattern_term(Term, _Bound, Names, Next) ->
+    {Term, Names, Next}.
+
+normalize_pattern_terms([Term | Tail], Bound, Names, Next, Acc) ->
+    {Term1, Names1, Next1} = normalize_pattern_term(Term, Bound, Names, Next),
+    normalize_pattern_terms(Tail, Bound, Names1, Next1, [Term1 | Acc]);
+normalize_pattern_terms([], _Bound, Names, Next, Acc) ->
+    {lists:reverse(Acc), Names, Next}.

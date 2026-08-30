@@ -20,10 +20,17 @@ new_frame(MFA, Context) -> erlang:error({invalid_frame_context, MFA, Context}).
 
 continue(Frame, ParentRef, Input, {async_r_t, _} = MR, Direction) ->
     case resolve_frame(Frame, Direction) of
-        {ok, #{mfa := {Module, Function, 2}, env := Env}} ->
+        {ok, #{mfa := {Module, Function, 2}, env := Env} = Resolved} ->
             case invoke_frame(Module, Function, Input, Env) of
                 {ok, {async_t, _} = Action} -> run_remainder(Action, ParentRef, MR);
+                {ok, {sf_migration_failure, Reason}}
+                        when map_get(resolution, Resolved) =:= migration ->
+                    structural_failure(Reason, ParentRef, MR);
+                {ok, _Other} when map_get(resolution, Resolved) =:= migration ->
+                    structural_failure(invalid_migration_bridge, ParentRef, MR);
                 {ok, Other} -> structural_failure({invalid_frame_return, Other}, ParentRef, MR);
+                unavailable when map_get(resolution, Resolved) =:= migration ->
+                    structural_failure(invalid_migration_bridge, ParentRef, MR);
                 unavailable -> structural_failure(unavailable_continuation, ParentRef, MR)
             end;
         {error, Reason} -> structural_failure(Reason, ParentRef, MR)
@@ -95,9 +102,22 @@ current_manifest(Module, MFA) ->
 
 resolve_manifest_frame(#{protocol := 1, block := Block, step_name := StepName,
         identity := Identity, module := Module, vsn := StoredVsn,
-        mfa := StoredMFA, env := Env} = Frame,
+        mfa := _StoredMFA, env := _Env} = Frame,
         #{format := 1, protocol := 1, owner := Module, vsn := CurrentVsn,
-            frames := Entries}, Direction) when is_list(Entries) ->
+            frames := Entries} = Manifest, Direction) when is_list(Entries) ->
+    case StoredVsn =:= CurrentVsn of
+        true -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+        false when is_atom(Block), is_atom(StepName),
+                Identity =:= {1, Block, StepName} ->
+            resolve_migration(Frame, Manifest, Direction);
+        false -> resolve_automatic(Frame, Entries, CurrentVsn, Direction)
+    end;
+resolve_manifest_frame(#{mfa := MFA}, _Manifest, Direction) ->
+    target_failure(Direction, {missing_manifest_or_mfa, MFA}).
+
+resolve_automatic(#{protocol := 1, block := Block, step_name := StepName,
+        identity := Identity, module := Module, vsn := StoredVsn,
+        mfa := StoredMFA, env := Env} = Frame, Entries, CurrentVsn, Direction) ->
     case find_entry(Identity, StoredMFA, StepName, StoredVsn, CurrentVsn, Entries,
             Direction) of
         {ok, #{identity := Identity, mfa := CurrentMFA,
@@ -105,14 +125,103 @@ resolve_manifest_frame(#{protocol := 1, block := Block, step_name := StepName,
             case valid_required_captures(Required, Env)
                     andalso current_mfa_callable(Module, CurrentMFA) of
                 true -> {ok, Frame#{vsn := CurrentVsn, mfa := CurrentMFA,
-                    block := Block}};
+                    block := Block, resolution => automatic}};
                 false -> target_failure(Direction,
                     {incompatible_frame, {missing_capture_or_mfa, CurrentMFA}})
             end;
         error -> target_failure(Direction, {missing_manifest_or_mfa, StoredMFA})
+    end.
+
+resolve_migration(#{module := Module, vsn := StoredVsn, block := StoredBlock} = Frame,
+        #{vsn := CurrentVsn, frames := Entries}, Direction) ->
+    case erlang:function_exported(Module, sf_do_code_change, 2) of
+        false -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+        true ->
+            case Module:sf_do_code_change(StoredVsn, StoredBlock) of
+                unhandled -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+                Plan when is_map(Plan) ->
+                    resolve_migration_plan(Frame, Plan, CurrentVsn, Entries, Direction);
+                _Other -> target_failure(Direction,
+                    {invalid_migration_plan, invalid_return})
+            end
+    end.
+
+resolve_migration_plan(#{module := Module, vsn := StoredVsn,
+        block := StoredBlock, step_name := StoredStep} = Frame,
+        Plan, CurrentVsn, Entries, Direction) ->
+    case valid_migration_plan(
+            Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) of
+        {ok, Steps} ->
+            case maps:find(StoredStep, Steps) of
+                error -> resolve_automatic(Frame, Entries, CurrentVsn, Direction);
+                {ok, StepPlan} ->
+                    resolve_mapped_step(Frame, StepPlan, CurrentVsn, Entries,
+                        Direction)
+            end;
+        {error, Reason} -> target_failure(Direction,
+            {invalid_migration_plan, Reason})
+    end.
+
+valid_migration_plan(Plan, Module, StoredVsn, StoredBlock, CurrentVsn, Entries) ->
+    case Plan of
+        #{kind := sf_migration_plan, format := 1, owner := Module,
+            source_vsn := StoredVsn, source_block := StoredBlock,
+            target_vsn := CurrentVsn, target_block := TargetBlock,
+            steps := Steps} when map_size(Plan) =:= 8, is_atom(TargetBlock),
+                is_map(Steps) ->
+            case lists:all(fun({Step, StepPlan}) ->
+                    valid_step_plan(Step, StepPlan, Module, StoredBlock,
+                        TargetBlock, Entries)
+                end, maps:to_list(Steps)) of
+                true -> {ok, Steps};
+                false -> {error, invalid_steps}
+            end;
+        _ -> {error, metadata_mismatch}
+    end.
+
+valid_step_plan(Step, StepPlan, Module, StoredBlock, TargetBlock, Entries)
+        when is_atom(Step), is_map(StepPlan), map_size(StepPlan) =:= 5 ->
+    case StepPlan of
+        #{source_identity := {1, StoredBlock, Step},
+            source_mfa := {Module, SourceFunction, 2},
+            source_required_captures := SourceRequired,
+            target_identity := {1, TargetBlock, TargetStep} = TargetIdentity,
+            bridge_mfa := {Module, BridgeFunction, 2}}
+                when is_atom(SourceFunction), is_atom(TargetStep),
+                    is_atom(BridgeFunction) ->
+            valid_capture_names(SourceRequired)
+                andalso valid_target_identity(TargetIdentity, Module, Entries);
+        _ -> false
     end;
-resolve_manifest_frame(#{mfa := MFA}, _Manifest, Direction) ->
-    target_failure(Direction, {missing_manifest_or_mfa, MFA}).
+valid_step_plan(_Step, _StepPlan, _Module, _StoredBlock, _TargetBlock, _Entries) ->
+    false.
+
+valid_target_identity(Identity, Module, Entries) ->
+    case find_unique(fun
+            (#{identity := Identity0, mfa := MFA, required_captures := Required})
+                    when Identity0 =:= Identity, is_list(Required) ->
+                valid_capture_names(Required) andalso current_mfa_callable(Module, MFA);
+            (_) -> false
+        end, Entries) of
+        {ok, _} -> true;
+        error -> false
+    end.
+
+resolve_mapped_step(#{identity := Identity, mfa := StoredMFA,
+        env := Env} = Frame,
+        #{source_identity := Identity, source_mfa := StoredMFA,
+            source_required_captures := Required,
+            bridge_mfa := {Module, BridgeFunction, 2}}, CurrentVsn, _Entries,
+        Direction) ->
+    case valid_required_captures(Required, Env)
+            andalso current_mfa_callable(Module, {Module, BridgeFunction, 2}) of
+        true -> {ok, Frame#{vsn := CurrentVsn,
+            mfa := {Module, BridgeFunction, 2}, resolution => migration}};
+        false -> target_failure(Direction,
+            {invalid_migration_plan, missing_capture_or_bridge})
+    end;
+resolve_mapped_step(_Frame, _StepPlan, _CurrentVsn, _Entries, Direction) ->
+    target_failure(Direction, {invalid_migration_plan, source_mismatch}).
 
 find_entry(undefined, StoredMFA, undefined, StoredVsn, CurrentVsn, Entries, resume)
         when StoredVsn =:= CurrentVsn ->
@@ -132,9 +241,12 @@ find_unique(Predicate, Entries) ->
     end.
 
 valid_required_captures(Required, Env) ->
-    Required =:= lists:usort(Required)
-        andalso lists:all(fun(Name) -> is_atom(Name) andalso maps:is_key(Name, Env) end,
-            Required).
+    valid_capture_names(Required)
+        andalso lists:all(fun(Name) -> maps:is_key(Name, Env) end, Required).
+
+valid_capture_names(Required) ->
+    is_list(Required) andalso Required =:= lists:usort(Required)
+        andalso lists:all(fun is_atom/1, Required).
 
 current_mfa_callable(Module, {Module, Function, 2}) when is_atom(Function) ->
     erlang:function_exported(Module, Function, 2);
