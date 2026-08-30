@@ -1,169 +1,83 @@
 # Tasks
 
-当前 master 只把已完成的 `sf-do` 作为依赖基线；旧 sf-migrate 产品实现已经 revert，其他
-worktree/branch 的实现仅可作为历史证据，不得据此勾选本文件。每个 task 是可独立实现、
-测试、review 和 commit 的纵向公开行为切片，不按 parser/manifest/runtime 内部阶段拆分。
-
-2026-08-28 mechanism sync：本文早期任务中的 completion target、terminal notification 和只枚举 external
-pending callback 的措辞被“Linked ContinuationRef integration”取代；现有 unchecked 状态不表示新机制已实现。
+当前master只有已完成的sf-do/sf-cc基础能力，尚无sf-migrate产品实现。任务只实现本次闭合后的
+reply-time one-way bridge；旧文档中的eager State migration与downgrade plan不再是候选实现。
 
 ## Dependency gate
 
-- [ ] `sf-do` 的 identity 协议已实现并冻结：`sf_do/1,2` 使用 inline atom marker，named identity
-  只使用 Protocol + Block + StepName；unnamed frame warning、普通执行可用、migration failure；
-  Action/index/continuation/capture/lexical parent不参与identity，相同named Protocol/Block/StepName/MFA
-  默认自动继承但允许显式Env-only migration，不同identity默认directional `incompatible_frame`。
-- [ ] `sf-do` named MFA直接使用`'$sf_<block>__<step>'/2`，manifest不含AsyncId/hash；migration按
-  Block/StepName直接索引并复用编译期collision diagnostics。
-- [x] 当前 master 不含 sf-migrate 产品实现；开始 Task 1 前只运行 dependency baseline，
-  不把 baseline 或最终命令验证建立为独立产品 task。
+- [x] sf-do named identity固定为`{Protocol,Block,StepName}`，Vsn不进入identity。
+- [x] sf-do current manifest提供owner/Vsn、generated MFA与required capture keys。
+- [x] sf-cc使用完整`#sf_callback{frame,acc_ref,parent_ref,timer_ref}`和direct parent_ref routing。
+- [x] runtime已经按每个frame owner做lazy current-manifest resolution，并允许target required Env subset。
 
-## Task 1 — 可用的 upgrade migration
+## Task 1 — Exact historical declaration and raw bridge
 
-**目标：** 用户可声明完整 historical block，把 pending historical frame 显式迁移或
-current-refresh 到 current stable function，并获得最终 abort-only result/error contract。
+**目标：** current FrameOwner能为一个exact old module Vsn保留完整old block，并把renamed old Step
+原样转发到current Step，不扫描State或改写frame。
 
-**依赖：** dependency gate。Task 1 不支持 down execution 或 State-aware context；在后续
-task 完成前，相关字段必须被明确拒绝，不能静默接受后失效。
+- [ ] 在`async_sf_transform`识别`sf_do_code_change/2`返回路径中的
+  `sf_migrate(OldVsn, CompleteOldBody, #{from=>OldBlock,...})`；存在时自动export router。
+- [ ] migration-enabled owner缺少显式`-vsn`时编译失败；OldVsn使用exact literal term，不做coercion。
+- [ ] 复用sf-do frontend分析完整historical named block；不生成old workflow functions，不支持partial/
+  unnamed block。
+- [ ] 实现literal `#{to=>CurrentBlock,steps=>#{OldStep=>#{to=>CurrentStep}}}`，按StepName精确解析；
+  拒绝index/Offset/content/generated atom和duplicate source declaration。
+- [ ] 无converter时验证normalized Outcome shape相容且target required captures是old captures子集。
+- [ ] 生成opaque plan和version-specific bridge；bridge原样转发Outcome/Env到current generated Step。
+- [ ] 在`async_sf_runtime`中按exact StoredVsn/StoredBlock调用router；explicit mapped Step优先，plan未映射
+  Step时回退现有automatic resolution。
+- [ ] 验证成功路径不写callback/frame、不重发request、不重跑old qualifier，并继续原direct parent_ref。
+- [ ] 添加exact Vsn、multiple case branches、Block/Step rename、raw bridge、unknown source、compile
+  diagnostics和purged-old-code测试。
 
-- [ ] 在 `async_sf_transform` 中实现 inline-marker `sf_migrate/2` declaration、
-  explicit/anonymous-path transition、exact version anchors、StepName selectors 和 current/historical
-  cross-validation；historical block 只生成 metadata。
-- [ ] 只支持 `sf_migrate([Monad || ...], Spec)` historical block，复用 sf-do 的 inline marker
-  parser/warnings，并只实现 `{step,StepName}` selector；unnamed historical boundary 不可映射。
-- [ ] 采用最终 directional format-1 manifest schema并原子更新 compiler/runtime；Task 1
-  生成 `plans.up` 和空 `plans.down`，只接受 `directions.up`。不兼容旧 flat draft，也不
-  增加 format/protocol 版本。
-- [ ] 只有存在 declaration 时生成/export migration manifest；用户同名 function 必须得到
-  compile-time collision diagnostic。
-- [ ] 保持 `async_m:migrate_sf_callbacks/4` 为薄 facade，在独立 `async_sf_migration` 中实现
-  manifest/target-state/frame preflight、historical mapping、same-ABI reuse、runtime Env
-  mismatch、current-anchor refresh 和一次 target callbacks setter commit。
-- [ ] 相同Protocol/BlockName/StepName/MFA默认automatic inheritance；若resolved source version存在
-  directional `migrate_env`，允许 same-identity Env-only plan 先生成 TargetEnv并保持 identity/MFA。
-  不同Block/Step identity没有plan时不得fuzzy match。
-- [ ] current-anchor 必须在 `steps => []` 或无 historical mapping 时独立工作；upgrade source
-  未锚定时 entry 原样 unhandled。
-- [ ] terminal policy 只允许 abort；删除 replacement/replaced 路径。实现固定
-  source/target result fields、structured error stage/reason、入口 TargetState + 空 error
-  Results、精确 `{error,{async_aborted,{sf_migration,Info}}}` notification wire format。
-- [ ] ABI 不同且 up migrator 缺失时允许编译，并在实际 frame 上进入 runtime mismatch；
-  migrator failure/local-fun result 使用同一 policy path。
-- [ ] 复用既有 State merge、stable-term、completion 和 map lookup；不得把 orchestration
-  并入 `async_sf_runtime` 或复制 helper。
-- [ ] 添加 declaration/anchor/selector/current-refresh、manifest collision/conditional export、
-  same-ABI/migrator、abort/forced-abort、notification failure、deterministic order、mixed
-  callbacks、pending request continuity、purge 和 structured error/result behavior tests。
-- [ ] 添加 Block/StepName rename、相同 named step automatic inheritance、Action/index changes
-  不影响 identity、same-identity capture rename/同名 value 转换，以及缺少显式 mapping 默认失败的 tests。
-- [ ] 同步 README：upgrade declaration/options、current refresh、result/error 与排错。
+**独立验收：** A版本pending renamed Step在B加载并purge A后，通过B内声明的完整A block直接进入B
+current Step；StateHolder和callback store没有migration写操作。
 
-**独立验收：** 仅使用 `directions.up` 的应用能完成真实 pending-frame upgrade；Task 1
-commit 不包含半成品 down frame、State context 或 replacement compatibility seam。
+## Task 2 — Handwritten Outcome/Env converter and failure contract
 
-## Task 2 — StepName-only selector surface
+**目标：** mapping可由用户同时转换Outcome与Env，expected incompatibility按sf-cc linked failure语义返回。
 
-**目标：** migration 只通过 source 显式 StepName 定位 historical/current boundary，不维护第二套
-index/content/name matching 机制。
+- [ ] 支持可选`convert => {M,F,2}`，固定返回
+  `{ok,NewOutcome,NewEnv}|{error,Reason}`；不增加State/app context。
+- [ ] 生成target Outcome shape validator和Env validator；NewEnv必须是atom-key map并包含target required
+  captures，extra keys允许。
+- [ ] same-identity explicit converter必须优先于automatic inheritance；匹配plan失败不得silent fallback。
+- [ ] converter `{error,Reason}`、invalid return、incompatible Outcome/Env形成sanitized
+  `{error,{sf_runtime,{incompatible_frame,Info}}}`并沿direct parent_ref传播。
+- [ ] converter自身`error`/`exit`/`throw`保持sf-cc user exception口径，不被吞并。
+- [ ] 添加Outcome-only、Env-only、同时转换、same-identity value conversion、missing converter、invalid
+  output、converter error/exception和failure-handler tests。
 
-**依赖：** Task 1。该 task 不改变 runtime migration protocol，可与 Task 3 的设计并行，
-但若修改同一 transform 文件必须串行集成。
+**独立验收：** old callback内容保持不变；actual reply到达时bridge完成old `(Outcome,Env)`到current
+`(Outcome,Env)`的用户定义转换，失败只影响当前linked callback。
 
-- [ ] historical/current block建立StepName → boundary metadata table；old/new selector分别精确解析。
-- [ ] index、bind name、content 和 Offset selector 均在编译期作为 unsupported syntax 拒绝。
-- [ ] manifest/runtime 只消费 resolved StepName，不保存或重算 selector AST。
-- [ ] 添加 StepName found/missing/duplicate/rename 与所有 fuzzy selector rejection tests，并同步
-  README selector 表。
+## Task 3 — Downgrade and integration boundary
 
-**独立验收：** 所有 selector 错误均在编译期确定，Action/index 变化不会改变同名 step 的解析。
+**目标：** 证明无需down migration：兼容frame在actual old target上直接恢复，不兼容frame在reply-time
+failure，appdown阶段零sf-migrate副作用。
 
-## Task 3 — OTP-ordered downgrade migration
+- [ ] 添加A→B→A测试：升级前A callback保留并在A恢复；B没有新callback时不发生任何fail。
+- [ ] 添加B-created frame降到A测试：相同identity且B SavedEnv只增加captures时直接恢复并忽略extra；
+  B删除A所需capture时structured failure。
+- [ ] 验证down Outcome原样传入A Step，不调用reverse converter、不生成candidate、不读取target Vsn。
+- [ ] 验证StateHolder `code_change({down,...})`不调用sf-migrate或`fail_sf_callbacks/4`，appdown不因pending
+  incompatible callback被阻止。
+- [ ] 添加multi-owner linked nodes、ordinary/stable mixed callbacks和partial release window tests。
+- [ ] 搜索并确保无`migrate_sf_callbacks/4`、State offset、release_handler hook、version registry、
+  `sf_migration_dependencies`或dependency graph residue。
+- [ ] 同步README公开surface：declaration、router、converter、automatic compatibility、down boundary、
+  failure与troubleshooting。
+- [ ] 运行`rebar3 compile`、EUnit、Common Test、xref、dialyzer与
+  `openspec validate sf-migrate --strict`。
 
-**目标：** v4 current module 在 OTP 加载 v3 前，把 pending current frame 原子迁移为可由
-v3 接管的 historical frame，或按显式 policy abort；失败阻止 code rollback。
+**独立验收：** upgrade converter与双向automatic compatibility均通过真实callback测试；appdown没有
+eager migration路径，所有公开文档与实现一致。
 
-**依赖：** Task 1。Task 2 非必需；本 task 使用 `{step,StepName}` selectors。
+## Deferred
 
-- [ ] 固定 old=historical/new=current；启用 `directions.down`，up/down 使用独立 plan 与
-  Env migrator，绝不推断逆函数。
-- [ ] historical metadata 保存 target runtime BlockName/StepName/MFA/CaptureAbi；down plan 以
-  NewStep 为 source。只构造 historical frame，不生成或提前调用 historical function。
-- [ ] historical target的Protocol/BlockName/StepName/MFA与source相同时默认automatic inheritance；存在
-  explicit down Env migrator 时执行 same-identity Env-only plan，不同时才要求 boundary mapping 或
-  terminal policy。
-- [ ] 实现 `{down,TargetVsn}` 方向、historical target anchor、current source validation 和
-  target historical State layout/offset；应用先完成业务 State downgrade并保留 callbacks。
-- [ ] 在 mutation 前预检所有 source frames、down plans、historical targets 和 target offset；
-  missing migrator 是 runtime mismatch，missing plan/target 无 policy 时是 structured error。
-- [ ] downgrade 默认不得 implicit abort。只有显式 policy abort 后才可继续；成功后不得残留
-  current/new stable frame。
-- [ ] runtime migration failure 返回入口 TargetState与空 Results；timer/monitor cancellation、
-  notification 和 frame commit 延迟到整个调用可提交。记录用户 callback 外部副作用不在
-  rollback 保证内并要求其 side-effect-free。
-- [ ] 添加真实 OTP-order v4→v3 integration：v4 `code_change({down,V3},...)`、v3 target offset、
-  old MFA 延迟执行、unknown target、missing plan、invalid historical target、explicit abort、
-  多 entry late failure 原子性和 anonymous↔named transition。
-- [ ] 同步 README：appup/downgrade 顺序、target State/offset、directional migrators 和错误处理。
+以下不属于本initiative，不建立placeholder实现：
 
-**独立验收：** 一个没有 State-aware capture 的应用可真实 downgrade；任一不可处理 entry
-均在旧 module load 前失败，且 runtime 管理的 State/frame/lifecycle side effects 为零。
-
-## Task 4 — Directional State-aware Env context
-
-**目标：** Env migrator 可显式读取该方向 source frame 捕获的 State和入口 target-layout
-State snapshot，不由 runtime 猜测或自动转换 State。
-
-**依赖：** Task 3。
-
-- [ ] 实现 declaration/step-level `state`、`up_state`、`down_state`；shorthand、继承、重复和
-  conflict 规则与最终 contract 一致，不按 version 分支、不跨 declaration 传播。
-- [ ] up_state 在 historical source layout、down_state 在 current source layout 编译期验证；
-  没有该方向 State capture 时 context 精确为 `#{env=>SourceEnv}`。
-- [ ] 有 effective capture 时提供 `source_state` 与固定 `current_state` snapshot；同次调用的
-  所有 migrator 看到 API 第四参数入口原值。
-- [ ] runtime 不自动 appup/appdown State，不使用 working/policy State替代 snapshot，也不把
-  current_state 隐式写入 TargetEnv；缺 key、异常返回和 unstable TargetEnv 进入 mismatch。
-- [ ] 添加 shorthand、不同 directional names、declaration inheritance/repeat/conflict、
-  source-layout validation、up/down contexts、multi-entry snapshot、缺 key 和不隐式写回测试。
-- [ ] 同步 README：State fields、source_state/current_state 方向语义和应用转换职责。
-
-**独立验收：** up/down State-aware migration 均通过公开 context 行为测试；关闭 State
-directive 时 Task 1/3 的 context 与行为 bit-for-bit 不变。
-
-## Optional follow-up — fun-valued Env regeneration
-
-本节不属于当前 initiative final acceptance gate。
-
-- [ ] 可选：允许 explicit directional Env migrator 返回由 target code 新生成的 anonymous/local
-  fun，同时保持 same-identity/boundary-mapping 的既有 identity 与 callback lifecycle 规则。
-- [ ] 可选：记录并测试 old fun 不会在 State 中自动清除、source body 相同不构成兼容、old code
-  purge 后不得调用旧 fun，以及每次相关 upgrade/downgrade 都重新生成 target-version fun。
-- [ ] 未实现该能力时，base runtime 可以 `unstable_capture` 拒绝 local-fun TargetEnv；用户文档应
-  推荐 external MFA/data descriptor。
-
-## Linked ContinuationRef integration（2026-08-28，未实现）
-
-- [ ] migration enumeration覆盖 callbacks store中所有完整
-  `#sf_callback{frame,acc_ref,parent_ref,timer_ref}` values，包括ActionMRef current
-  nodes和internal ContinuationRef outer nodes；ordinary `#callback{cc,acc_ref,parent_ref,...}` 保持隔离。
-- [ ] up/down/current-refresh只替换每个 node.frame，bit-for-bit保留 key、parent_ref、request、AccRef、
-  timer_ref、monitor和其他resource metadata；不得递归改写内嵌父链。
-- [ ] mismatch/forced-abort不定位root/final Ref；消费current node后把规定 failure Outcome dispatch给
-  direct parent_ref，普通 success frame跳过，显式 failure handler可消费。
-- [ ] downgrade preflight覆盖所有stable nodes和引用边；API-level error不得提交部分 frame、取消资源或
-  dispatch failure。
-- [ ] result reason把`notification`改为`dispatch => forwarded | handled | unhandled | {failed,term()}`。
-- [ ] 添加deep nested/case、multi-module、internal outer node、ordinary mixed store、parent_ref preservation、
-  one-hop failure、handler consumption、atomic downgrade和orphan-index integration tests。
-
-## Initiative final acceptance
-
-以下是 initiative 完成门，不建立 command-only task：
-
-- [ ] `proposal.md`、`design.md`、`implementation.md`、spec、tasks 和 README 的 API、
-  result/error、abort wire format、manifest schema 与完成状态一致。
-- [ ] direct/local 历史实现中只移植公开行为测试，不引入私有 helper/结构组合矩阵。
-- [ ] `rebar3 compile`、EUnit、Common Test、xref 和 migration integration suites 通过。
-- [ ] `rebar3 dialyzer` 不新增 sf-migrate warning；不得用宽泛类型或 suppress 隐藏问题。
-- [ ] `openspec validate sf-migrate --strict` 通过。
-- [ ] 所有最终 artifacts staged 后运行 `git diff --cached --check` 并通过。
+- whole-project dependency/cycle warning Rebar plugin；
+- automatic appup/relup ordering；
+- reverse/down Outcome或Env converter；
+- async runtime自身`#sf_callback{}` encoding migration。

@@ -1,523 +1,278 @@
 # sf-migrate Implementation Contract
 
-本变更必须在 `sf-do` 实现和测试通过后开始。实现直接消费 `sf-do` 定义的 frame、
-`#sf_callback{}`、current manifest 和 `async_sf_transform`，不得复制这些协议。
+本实现直接扩展已完成的 sf-do/sf-cc。不得复制 frame record、current manifest、callback decoder、
+ContinuationRef router或 lifecycle cleanup。
 
 ## 0. Responsibility Boundary
 
-`sf-do` 已负责 named frame 的 exact automatic inheritance：有 inline StepName 的 frame 使用
-protocol、Block 和 StepName；unnamed frame 在 migration 中直接 incompatible。
-Protocol/Block/StepName/MFA未变时 pending frame 默认不经本 API 直接进入目标 continuation。实现 MUST NOT
-为该路径生成或要求无操作 migration plan；但显式 directional `migrate_env` MUST 可生成
-same-identity Env-only plan。
+`async_sf_transform` owns：
 
-`sf-migrate` 处理上述 identity 变化导致 source/target Block/Step不同的 boundary mapping，也处理
-显式配置 `migrate_env` 的 same-identity Env-only mapping。不同identity没有mapping时 MUST
-默认失败；compiler/runtime MUST NOT 用 index 接近、AST/capture 相似度、bind name 或 runtime
-value 猜测 target。CaptureAbi 和 Env 只用于构造目标执行环境，不得改写 automatic identity rule；
-same-identity plan 必须保持Protocol/Block/StepName/MFA。
+- `sf_do_code_change/2` 中 `sf_migrate/3` special form discovery；
+- complete historical `sf_do/2` analysis；
+- exact source Vsn/block与Step mapping validation；
+- Outcome/Env shape derivation；
+- opaque plan与bridge generation。
 
-## 1. Input Contract
+`async_sf_runtime` owns：
 
-```erlang
-sf_migrate(
-    [async_m || HistoricalQualifiers],
-    #{
-        transition => {BlockRefA, BlockRefB},
-        block => HistoricalBlockKey,
-        versions => [VersionTerm],
-        current_versions => [VersionTerm],          %% optional
-        state => StateCaptureName,                  %% optional shorthand
-        up_state => StateCaptureName,               %% optional
-        down_state => StateCaptureName,             %% optional
-        steps => [StepMapping],
-        on_mismatch => {Module, Function, 3}         %% optional
-    }
-).
-```
+- per-frame current owner/manifest resolution；
+- exact plan request/validation；
+- explicit bridge优先和automatic compatibility fallback；
+- expected incompatibility的structured failure。
 
-```erlang
--type block_ref() :: atom() | {Function :: atom(), Arity :: non_neg_integer(), N :: non_neg_integer()}.
-```
+`async_sf_cc` 继续独占：
 
-`StepMapping` 只允许 map：
+- `#sf_callback{}` decode/take；
+- direct `parent_ref` routing；
+- timer、monitor、accumulator与node cleanup；
+- failure handler和user exception语义。
+
+StateHolder、`async_m:fail_sf_callbacks/4` 与任何 State offset API 不参与 sf-migrate。
+
+## 1. Accepted Source Surface
+
+migration-enabled FrameOwner MUST 有一个显式 module `-vsn` attribute，并定义
+`sf_do_code_change/2`。transform MUST 自动 export该 function；用户重复 export允许，重复 function
+definition仍按 Erlang现有规则报错。
+
+`sf_do_code_change/2` 是普通 Erlang function。transform只特殊处理其返回路径内的：
 
 ```erlang
-#{
-    old => step_selector(),
-    new => step_selector(),
-    state => undefined | atom(),       %% optional shorthand
-    up_state => undefined | atom(),    %% optional
-    down_state => undefined | atom(),  %% optional
-    directions => #{
-        up => direction_config(),
-        down => direction_config()
-    }
-}.
-
--type direction_config() :: #{migrate_env => undefined | {module(), atom(), 1}}.
-
--type step_selector() ::
-    {step, atom()}.
+sf_migrate(OldModuleVsn, OldComprehension, Spec)
 ```
 
 要求：
 
-- historical block 必须是完整、非空、Monad 为 `async_m` 的 do block，只接受 `sf_migrate/2`；
-- historical StepName 使用与 `sf_do` 相同的 inline literal atom marker grammar；marker 不执行，
-  duplicate/invalid placement 报 error，unnamed boundary warning 且不进入 selector table；historical
-  runtime BlockName 从 transition endpoint 取得；
-- `transition` 两端中必须恰有一个解析到 current manifest；
-- 匿名 `{F, A, N}` 必须解析为对应non-migratable local locator，不得接受generated function atom或hash；
-- `block` 在该 name 内唯一且不能使用保留 atom `current`；
-- `versions` 必须非空；
-- `current_versions` 可省略，并且同一 name 的 declarations 合并；
-- version term 使用 exact equality；
-- old/new selector 的版本角色固定：old 属于 historical block，new 属于 current block；
-- `directions` 至少包含 up/down 之一；up 表示 old → new，down 表示 new → old；
-- 每个方向独立提供 `migrate_env`；不得接受方向不明的 plain step-level `migrate_env`；
-- selector 只接受 `{step,StepName}`，并必须在对应 historical/current block 中存在；
-- mapping old selector 不得重复；
-- resolved old/new Protocol/Block/StepName/MFA都相同、且所有 enabled direction 均无
-  `migrate_env` 时报 `redundant_sf_migration_mapping`；至少一个方向有 migrator 时生成 Env-only plan；
-  same-identity mapping 只为含 migrator 的 direction 生成 plan，其他 direction 不生成 no-op plan；
-- declaration 和 step 的 `state`、`up_state`、`down_state` 若存在必须是 literal atom；
-  `state => S` 展开为两个 directional values，显式 directional value 与 S 不同时报
-  `sf_state_capture_conflict`；
-- declaration directional state 是所有 step 的 default；step 只能继承或重复同方向值，
-  不得覆盖为不同值。default 不按 versions 分支，也不跨 declarations 传播；
-- effective up_state 必须属于 resolved old step capture layout；effective down_state 必须
-  属于 resolved new step capture layout；
-- `migrate_env` 和 `on_mismatch` 必须是 literal external MFA。
+- `OldModuleVsn` 是 literal Erlang term；
+- `OldComprehension` 是完整合法 sf-do comprehension；
+- `Spec` 是 literal map；
+- `Spec` keys精确为 `from`、`to` 与 `steps`；
+- `from` 是 historical named block atom；
+- `to` 是 current named block atom；
+- `steps` 是 `#{OldStepName => TargetSpec}`；
+- `TargetSpec` keys精确为 `to` 和可选 `convert`；
+- `TargetSpec.to` 是 current StepName atom；
+- `convert` 是可 external-call 的 `{Module, Function, 2}` literal MFA。
 
-CaptureAbi 不同且 enabled direction 未配置 `migrate_env` 不是 compile error。compiler 必须
-保留 `migrate_env => undefined`；真正运行中的旧 frame/Env 不可由新版 compiler 访问，
-runtime 才把该情况归为 `capture_abi_mismatch` 并进入 directional mismatch policy。
+第一版不接受 list/tuple shorthand、version list、directions、state、transition、on_mismatch、index、
+Offset、content selector、anonymous block或generated function atom。
 
-declaration 只用于编译 metadata，transform 后不得残留运行时 `sf_migrate/2` 调用。
+`sf_migrate/3` 在其他 function、非返回expression或嵌套为普通参数时 MUST 报
+`invalid_sf_migrate_placement`，避免运行时误调用不存在的普通 function。
 
-## 2. Transform Extension
+每个 `{OldModuleVsn, Spec.from}` 只能声明一次；同一 declaration 中 old Step map key天然唯一，
+多个 old Step不得映射到同一个 target限制不成立，因为多个历史边界可以合法汇合到同一 current Step。
 
-在 `async_sf_transform` 中增加阶段：
+最低诊断集合：
+
+- `sf_migrate_requires_explicit_vsn`；
+- `invalid_sf_migrate_syntax`；
+- `invalid_sf_migrate_placement`；
+- `duplicate_sf_migration_source`；
+- `sf_historical_block_not_named`；
+- `sf_current_block_not_found`；
+- `sf_step_not_found`；
+- `invalid_sf_migration_converter`；
+- `sf_migration_converter_required`；
+- `sf_migration_generated_collision`。
+
+所有 diagnostic payload必须是Vsn/Block/Step/MFA等有界metadata，不得包含完整 historical AST。
+
+## 2. Shared Historical Analysis
+
+historical `sf_do` 必须复用 current sf-do 的 qualifier、inline StepName、pattern、capture和tail
+analysis frontend。它只产生 frozen boundary metadata，不生成old workflow functions、exports、requests
+或executable qualifiers。
+
+每个 historical named boundary至少冻结：
+
+```erlang
+#{
+    identity => {1, OldBlock, OldStep},
+    outcome_shape => OldOutcomeShape,
+    required_captures => OldCaptureNames,
+    historical_mfa => {Owner, OldGeneratedFunction, 2}
+}
+```
+
+`historical_mfa` 仅用于验证actual stored frame来自声明的old boundary；新 module不得生成或调用该
+old continuation body。
+
+current target metadata必须从本次current sf-do frozen plans/current manifest source生成，不得从用户
+Spec复制。target不存在、unnamed或generated MFA collision均在编译期失败。
+
+## 3. Raw Forwarding Versus Converter
+
+未配置 converter时，compiler MUST 证明：
 
 ```text
-collect current sf_do
-  -> build current BlockPlans
-  -> collect sf_migrate
-  -> analyze historical complete blocks with shared analyzer
-  -> merge/check version anchors
-  -> resolve selectors
-  -> normalize shorthand/default directional state
-  -> cross-check direction allowlists, capture ABI and MFA declarations
-  -> generate both manifests and current stable functions
+normalized OldOutcomeShape =:= normalized NewOutcomeShape
+and TargetRequiredCaptures is_subset_of OldCaptureNames
 ```
 
-historical analysis 必须复用 `sf-do` 的 qualifier boundary、inline marker parser、named Block/Step identity和
-CaptureLayout。CaptureAbi 直接使用排序后的 capture-name atom list。historical plan 不生成
-function/export，也不建立 Action canonicalizer、source index 或 content digest。
+Outcome normalization只归一化pattern annotation和variable binder名称，不做term type inference、AST
+相似度或业务等价推断。无法证明时必须要求converter，不得把问题推迟到old code purge后。
 
-`async_m:migrate_sf_callbacks/4` 必须保持薄 facade。manifest preflight、entry migration、
-mismatch 和 commit orchestration 保持在独立 `async_sf_migration`，并复用现有
-`async_t:state_callbacks_gs`、`async_util:same_type_state`、
-`async_sf_runtime:stable_term/1` 与 `async_sf_runtime:complete/2`。不得复制这些能力或把
-migration 大段并入 `async_sf_runtime`。
+配置 converter时，无论identity/capture shape是否相同都必须生成并使用converter bridge；这允许
+same-identity value语义转换。compiler只验证MFA形式，不执行converter。
 
-## 3. Selector Resolution
-
-shared analyzer 必须为 historical/current block 的 named boundaries 建立唯一StepName → boundary metadata table。
-`{step, StepName}` 直接选择对应BlockPlan中的boundary；它不依赖 Action AST、source index、
-bind variable name 或 qualifier kind，也不接受 Offset。缺失时报 `sf_step_not_found`，重复名称在
-block StepNames validation 阶段报错。
-
-解析结果必须在编译期固定为 `{HistoricalBlockKey, OldStep}` 和 current
-`{CurrentBlock, NewStep}`。up plan 以historical Block/OldStep为source，down plan以current
-Block/NewStep为source；runtime 不解析源级
-selector，也不因 direction 反转 old/new 的版本角色。runtime 不按 AST/index/name 猜测 target。
-
-错误：
-
-- `sf_current_block_not_found`；
-- `sf_transition_endpoint_mismatch`；
-- `duplicate_sf_historical_block`；
-- `sf_version_anchor_conflict`；
-- `sf_step_not_found`；
-- `invalid_sf_step_names`；
-- `unknown_sf_step_record`；
-- `sf_step_name_count_mismatch`；
-- `sf_state_capture_conflict`；
-- `invalid_sf_state_capture`；
-- `invalid_sf_migration_direction`；
-- `duplicate_sf_step_mapping`；
-- `invalid_sf_migration_mfa`；
-- `invalid_sf_migrate_syntax`。
-
-## 4. Generated Manifest
-
-固定导出：
+converter contract：
 
 ```erlang
--export(['$async_sf_migration_manifest'/0]).
+-spec convert(term(), map()) ->
+    {ok, term(), map()} | {error, term()}.
 ```
 
-该 export/function 只在存在 migration declaration 时生成。用户 module 已定义
-`'$async_sf_migration_manifest'/0` 时必须报告明确 collision diagnostic。
+runtime必须验证NewEnv是atom-key map、包含current target全部required captures，并用generated target
+Outcome matcher验证NewOutcome。Source/Target Env extra keys允许。
 
-manifest 顶层必须包含：
+converter返回`{error, Reason}`是designed migration failure；其他return是
+`invalid_converter_result`。converter自身`error`/`exit`/`throw`按sf-cc既有user exception规则传播，
+不得伪装为incompatible frame。
+
+## 4. Generated Plan and Bridge
+
+每个 `sf_migrate/3` expression编译为opaque plan value。用户只能原样return，不能依赖其term shape。
+runtime内部至少需要等价metadata：
 
 ```erlang
 #{
+    kind => sf_migration_plan,
     format => 1,
-    protocol => 1,
-    module => Module,
-    sources => #{SourceBlockName => CurrentBlockName},
-    blocks => #{BlockName => BlockMigration}
-}.
-```
-
-每个 `BlockMigration`：
-
-```erlang
-#{
-    anchors => #{VersionTerm => current | HistoricalBlockKey},
-    historical => #{
-        HistoricalBlockKey => #{
-            endpoint => HistoricalRuntimeBlockName,
-            steps => #{HistoricalStepName => #{
-                mfa => {Module, HistoricalStepFunction, 2},
-                capture_abi => OldAbi
-            }}
+    owner => Owner,
+    source_vsn => OldModuleVsn,
+    source_block => OldBlock,
+    target_vsn => CurrentModuleVsn,
+    target_block => CurrentBlock,
+    steps => #{
+        OldStep => #{
+            source_identity => {1, OldBlock, OldStep},
+            source_required_captures => OldCaptureNames,
+            target_identity => {1, CurrentBlock, CurrentStep},
+            bridge_mfa => {Owner, BridgeFunction, 2}
         }
-    },
-    plans => #{
-        up => #{
-            {HistoricalBlockKey, OldStep} => #{
-                target_step => NewStep,
-                source_capture_abi => OldAbi,
-                target_capture_abi => NewAbi,
-                source_state_capture => undefined | UpStateCaptureName,
-                migrate_env => undefined | {M, F, 1}
-            }
-        },
-        down => #{
-            {HistoricalBlockKey, NewStep} => #{
-                target_block => HistoricalRuntimeBlockName,
-                target_step => OldStep,
-                target_mfa => {Module, HistoricalStepFunction, 2},
-                source_capture_abi => NewAbi,
-                target_capture_abi => OldAbi,
-                source_state_capture => undefined | DownStateCaptureName,
-                migrate_env => undefined | {M, F, 1}
-            }
-        }
-    },
-    on_mismatch => undefined | {M, F, 3}
+    }
 }.
 ```
 
-up target MFA/ABI 在 runtime 从 `'$async_sf_manifest'/0` 按CurrentBlock/NewStep获取。down 在 old module
-加载前执行，target block/MFA/ABI 必须来自 historical metadata；runtime 只构造 frame，
-不得调用 historical target MFA。
+该shape是compiler/runtime内部contract，不是公开API；完整OldBlock AST、Outcome/Env runtime values和
+converter fun不得放入plan。converter只保存external MFA。
 
-功能尚未发布；本节 directional schema 直接定义唯一的 `format => 1, protocol => 1`。
-旧开发草案 flat plan 不受支持，不增加版本、不生成兼容 reader，transform/runtime 同时切换。
+BridgeFunction必须version-specific或由唯一PlanId命名，避免多个source Vsn共享old identity时碰撞。
+用户已有同名function时compile-time collision，不得覆盖。
 
-## 5. Runtime API
+bridge `/2`：
 
-```erlang
--spec async_m:migrate_sf_callbacks(
-    module(), DirectionVsn :: term(), TargetOffset :: integer(), TargetState
-) ->
-    {ok, State, [migration_result()]}
-  | {unhandled, State, [migration_result()]}
-  | {error, error_info(), TargetState, []}.
-```
+1. 验证actual OldOutcome/OldEnv符合source boundary；
+2. converter存在则调用，否则原样使用；
+3. 验证NewOutcome/NewEnv符合current target；
+4. external-call current generated Step MFA；
+5. 返回current Step产生的`{async_t,_}`，或内部tagged designed failure供runtime转发。
 
-entry processing result 至少包含：
+bridge不得返回replacement frame、更新callback store、dispatch parent或执行old Step body。
 
-```erlang
-#{
-    ref => Ref,
-    direction => up | down,
-    version => SourceVsn | TargetVsn,
-    source_block => SourceBlock,
-    source_step => SourceStep,
-    target_block => TargetBlock | undefined,
-    target_step => TargetStep | undefined,
-    status => migrated | already_current | aborted | unhandled,
-    reason => mapped
-            | current_anchor
-            | no_declaration
-            | unanchored_upgrade_source
-            | #{
-                  mismatch => mismatch_reason(),
-                  policy => explicit | forced,
-                  dispatch => forwarded | handled | unhandled | {failed, term()}
-              }
-}.
-```
+## 5. Runtime Resolution Algorithm
 
-source fields 总是入口 frame；target fields 总是 committed/intended frame，无法解析时为
-`undefined`。current refresh 两组 fields 相同。不得保留语义随路径变化的 `block` field。
+在`async_sf_runtime:continue/5`的现有per-owner resolution boundary中实现，输入仍是单个stored frame、
+direct ParentRef、Outcome和MR。不得新增whole-State facade。
 
-`error_info()` 固定为：
+一次resolution使用同一个current manifest snapshot：
 
-```erlang
-#{
-    stage => manifest_preflight
-           | target_state_preflight
-           | frame_preflight
-           | migration_processing
-           | state_commit,
-    reason => {missing_manifest, current | migration}
-            | {invalid_manifest, current | migration, term()}
-            | {module_mismatch, current | migration, module(), term()}
-            | {invalid_target_offset, term()}
-            | invalid_callbacks_map
-            | {unanchored_downgrade_target, term()}
-            | {invalid_source_frame, term()}
-            | down_step_not_mapped
-            | {invalid_historical_target, term()}
-            | {unhandled_downgrade_mismatch, mismatch_reason()}
-            | {state_commit_failed, term()},
-    direction => up | down,
-    version => SourceVsn | TargetVsn,
-    ref => term() | undefined,
-    source_block => atom() | undefined,
-    source_step => atom() | undefined,
-    target_block => atom() | undefined,
-    target_step => atom() | undefined
-}.
-```
+1. 按sf-do现有规则验证stored frame并加载`Frame.module`；
+2. 调用current `'$async_sf_manifest'/0`并验证owner/protocol/format；
+3. `StoredVsn =:= CurrentVsn`时只走现有same-version path，不调用router；
+4. Vsn不同时，若current Owner export `sf_do_code_change/2`，调用
+   `Owner:sf_do_code_change(StoredVsn, StoredBlock)`；
+5. 返回opaque plan时，验证plan owner/source Vsn/source Block/target Vsn均与本次frame和manifest一致；
+6. plan显式包含StoredStep时，验证stored identity、source required Env并调用bridge；
+7. router缺失、返回`unhandled`或plan没有StoredStep时，执行sf-do automatic named resolution；
+8. automatic path要求相同`{Protocol,Block,StepName}`、current MFA存在且
+   `CurrentRequiredCaptures ⊆ maps:keys(SavedEnv)`；
+9. 两条路径均不可用时，通过现有`structural_failure/3`交给direct ParentRef。
 
-manifest/target-state/frame/processing/commit failure 必须分别使用
-`manifest_preflight`、`target_state_preflight`、`frame_preflight`、
-`migration_processing`、`state_commit` stage。error 返回的 TargetState 必须与 API 第四
-参数逐项相同且 Results 必须是 `[]`。按 callbacks key 的 Erlang term order 报第一个
-error。reason detail 可以带定位 key/offset/MFA/ABI，但不得复制完整 State、Env 或
-callbacks map。
+显式mapping优先于automatic path。plan已匹配StoredStep但plan/bridge验证失败时不得静默退回automatic
+path，因为用户已明确要求该source step转换。
 
-ordinary callback、non-stable continuation descriptor和 accumulator values 不需要出现在 Results。若至少一个 stable entry 的
-frame 被 migrated/refreshed/aborted，返回 `ok`；若所有 stable entries 都未
-处理，返回 `unhandled`。
+router返回其他term属于invalid plan。router自身exception按普通external user code exception传播。
 
-`DirectionVsn = SourceVsn | {down, TargetVsn}`，完全遵循 OTP `code_change/3`：upgrade
-普通 Vsn 是 source old version；downgrade tuple 中 Vsn 是 target old version。dynamic
-callback upgrade 在较新 module 加载后执行，downgrade 在旧 module 加载前由较新 module
-执行。
+## 6. No Stored-Frame Mutation
 
-## 6. Runtime Algorithm
+sf-migrate不得调用callbacks getter/setter，不得枚举ActionMRef或ContinuationRef，也不得写回
+`#sf_callback.frame`。bridge只在node已被sf-cc正常take并收到Outcome后运行。
 
-enumeration MUST include every complete
-`#sf_callback{frame,acc_ref,parent_ref,timer_ref}` value regardless of whether its key
-is an external ActionMRef or internal ContinuationRef。ordinary `#callback{cc,acc_ref,parent_ref,...}`、
-ordinary/outer descriptor nodes和accumulator data保持不变。
+因此以下数据继续完全由sf-cc管理：
 
-开始写 State 前必须验证：
+- callback map key；
+- `parent_ref`；
+- `acc_ref`；
+- `timer_ref`、monitor和request；
+- outer/internal continuation nodes；
+- ordinary callback entries。
 
-- offset getter/setter 可用；
-- module 导出的两个 manifest 格式、protocol 和 module 一致；
-- up plan 的 current target 存在且 MFA/ABI 符合 schema；
-- down plan 的 current source 存在，且每个 pending stable node 有完整 historical target
-  Block/StepName/MFA/ABI schema 或可用的显式 failure policy；
-- API 第四参数已采用 target State layout，TargetOffset 可读写其中的 callbacks map。
+每个outer stable node将来轮到执行时，再根据自己的FrameOwner/Vsn独立resolve。
 
-upgrade deterministic enumeration 中的每个 stable node使用 partial record pattern
-`#sf_callback{frame = SourceFrame, parent_ref = ParentRef}`；该写法只选择迁移所需字段，不代表 record 只有
-两个字段。完整 entry 还包含 `acc_ref`、`timer_ref` 及 shared header
-扩展的 resource metadata：
+## 7. Downgrade
 
-1. 首先用 current manifest 检查 source Protocol/BlockName/StepName/MFA。若目标仍有相同identity，且
-   resolved source version 存在该方向的 same-identity Env-only plan，则调用其 `migrate_env`，只以
-   TargetEnv 重建相同 identity/MFA 的 frame；若无该 plan，则属于 `sf-do` automatic path，Env 原样；
-2. 否则从 SourceFrame 读取 historical BlockName、OldStep、OldAbi；
-3. 通过 `sources` 将 historical BlockName 解析到 current BlockName，再查找 config；
-   没有则 unhandled；
-4. exact lookup SourceVsn anchor；没有则 unhandled；
-5. anchor 为 `current` 时，对 current manifest验证Protocol/Block/StepName，使用manifest MFA重建
-   frame，Env 不变；该路径不查询或要求 historical step mapping，`steps => []` 也必须工作；
-6. historical anchor 时，验证 OldStep/OldAbi 属于该 historical block；
-7. 查找 up plan `{HistoricalBlock, OldStep}`；
-8. ABI 相同且无 up migrator 时复用 Env，否则按 effective up_state 构造 context 并调用
-   migrator；
-9. 从 current manifest 读取 target Block/StepName/MFA/ABI，构造并验证 NewFrame；
-10. 只更新 node 的 `frame` field；`ParentRef` bit-for-bit 保留。
+本实现不增加appdown入口。StateHolder的`code_change({down,...})`不得因sf-migrate扫描或fail
+callbacks。
 
-downgrade deterministic enumeration 对同一完整 stable record使用相同 partial field projection：
+FrameOwner降级后仍执行步骤5的current-manifest resolution：
 
-1. `{down, TargetVsn}` exact lookup historical target anchor；未锚定时 preflight error；
-2. 从 SourceFrame 读取 current BlockName、NewStep、NewAbi，并对 current manifest 验证；
-3. 若 historical endpoint 的Protocol/Block/StepName/MFA与source identity相同，且存在该方向的
-   same-identity Env-only plan，则调用其 `migrate_env` 并保持 identity/MFA；若无该 plan，该 entry
-   是 automatic inheritance，Env 原样；
-4. 否则查找 down plan `{HistoricalBlock, NewStep}`；没有 plan 时进入显式 mismatch policy，
-   未配置 policy 则 preflight error；
-5. ABI 相同且无 down migrator 时复用 Env，否则按 effective down_state 构造 context 并调用；
-6. 从 historical metadata 读取 OldBlockName、OldStep、OldMFA、OldAbi；
-7. 构造 old/historical frame，但不调用 OldMFA；
-8. 只更新 node 的 `frame` field；`ParentRef` bit-for-bit 保留。
+- identity相同且target required Env是saved Env keys子集：直接恢复；
+- extra SavedEnv fields忽略；
+- Outcome原样传入target Step；
+- 其他情况structured incompatible failure。
 
-以下 field 必须 bit-for-bit 保留：`parent_ref`、`acc_ref`、`timer_ref` 和其他 request/resource metadata。
-map key、monitor 和已发 request 不变。runtime 不得递归改写 callback value中的父链；
-outer stable frame作为独立 node由同一次 enumeration处理。
+不调用较新module converter，不读取old code slot，不构造down candidate，不反转source→current bridge。
+core runtime不比较Vsn大小，因此也不把任意term解释为版本顺序。
 
-## 7. Env Migrator
+## 8. Failure Shape
 
-frame Env 必须是 `#{CaptureNameAtom => Value}` map。CaptureAbi 直接是排序后的 CaptureNameAtom
-list，不得另做 SHA/digest。每个 direction 独立选择 migrator，
-其输入为：
+expected failure reason必须归一化为：
 
 ```erlang
-M:F(#{env := SourceEnv} = MigrationContext) ->
-    {ok, TargetEnv} | {error, Reason}.
+{incompatible_frame, #{
+    module := module(),
+    stored_vsn := term(),
+    current_vsn := term(),
+    identity := term(),
+    reason := no_compatible_plan
+            | invalid_historical_frame
+            | converter_failed
+            | invalid_converter_result
+            | incompatible_outcome
+            | incompatible_env
+}}
 ```
 
-API 入口必须在任何 working-state mutation 前保存
-`StatePassedToMigrateSfCallbacks = State`。当前方向没有 effective State capture 时，
-MigrationContext 必须精确为 `#{env => SourceEnv}`，不得包含 State fields。
+然后复用`async_sf_runtime:structural_failure/3`形成
+`{error,{sf_runtime,Reason}}`并交给direct parent。Info不得包含Env、Outcome、State、callback map或fun。
 
-plan 包含该方向归一化后的 `source_state_capture => StateCaptureName` 时，MigrationContext
-必须额外包含：
+missing current manifest/MFA、unsupported protocol和corrupt frame继续沿用sf-do既有structural failure，
+不重分类为migration declaration error。
 
-```erlang
-#{
-    env => SourceEnv,
-    source_state => maps:get(StateCaptureName, SourceEnv),
-    current_state => StatePassedToMigrateSfCallbacks
-}.
-```
+## 9. Release Ordering
 
-up 使用 effective up_state 从 historical/old SourceEnv 提取 source_state；down 使用
-effective down_state 从 current/new SourceEnv 提取。`current_state` 必须是传给
-`migrate_sf_callbacks/4` 的第四个参数原值，而不是 callbacks-cleared LogicalState、working
-State 或 mismatch callback 更新后的 State；同次调用的所有 migrator 使用同一个值。
+不生成`-sf_migration_dependencies`，不建立module graph，也不更改appup/relup。单module parse transform
+无法知道某个Promise最终在哪个module定义。partial release窗口中callback若遇到暂时不兼容的current
+owner，可以structured failure；application upgrade/downgrade本身不因此被sf-migrate阻止。
 
-runtime 只自动提供 context，不自动修改、升级或写回其中任一 State，也不隐式把
-`current_state` 放入 TargetEnv。若 runtime 收到缺失 StateCaptureName 的畸形 SourceEnv，则进入
-`env_migration_failed` mismatch。runtime catch migrator 的 `error`/`exit`/`throw` 并转成
-同一 mismatch。TargetEnv 必须是 capture-name atom map；migrator 不得直接修改 callbacks map。
-
-anonymous/local fun SHOULD NOT 出现在 Env。base implementation MAY 继续以 `unstable_capture`
-拒绝包含 local fun 的 TargetEnv；当前 implementation gate 不要求识别或重新生成它。optional
-follow-up 若支持 fun-valued capture，MUST 只接受 explicit migrator 在 target code 中重新生成的 fun，
-并由应用在每次可能 purge defining code 的 upgrade/downgrade 重复迁移。不得自动复用 SourceEnv
-中的旧 fun，也不得以 source body 未变化作为兼容证据。
-
-ABI 不同且当前方向 `migrate_env => undefined` 时同样进入 runtime
-`capture_abi_mismatch`；compiler 不得提前拒绝该 declaration。
-显式 migrator 在 ABI 相同或不同、boundary identity相同或不同的plan上都必须执行；same-identity plan
-只替换 Env，Protocol/BlockName/StepName/MFA 必须保持 bit-for-bit 不变。
-
-## 8. Mismatch Callback and Forced Abort
-
-```erlang
-M:F(Info, LogicalState, ParentRef) ->
-    {abort, NewLogicalState}.
-```
-
-Info 使用与 result 相同的 endpoint 语义：
-
-```erlang
-#{
-    module => Module,
-    direction => up | down,
-    version => SourceVsn | TargetVsn,
-    anchor => HistoricalBlock | undefined,
-    source_block => SourceBlock,
-    source_step => SourceStep,
-    source_capture_abi => SourceAbi,
-    target_block => TargetBlock | undefined,
-    target_step => TargetStep | undefined,
-    callback_ref => Ref,
-    reason => mismatch_reason()
-}.
-```
-
-`mismatch_reason()` 固定为 `historical_async_not_found | step_not_mapped |
-capture_abi_mismatch | env_migration_failed | unstable_capture |
-current_async_not_found | current_capture_abi_mismatch |
-unanchored_downgrade_target | invalid_historical_target`。
-
-runtime 向 callback 提供 callbacks field 已清空的 logical State；返回后用
-`async_r_t` 同等的 merge 规则把 working callback map 放回 State。callback 不得通过
-State 直接增删 callback entries。downgrade callback 收到的是应用传入的 target historical
-layout LogicalState，不是 source current layout。
-
-callback 的任何异常或除 `{abort, NewLogicalState}` 外的返回都转为 forced abort。callback
-不得构造 replacement frame；新 frame 只能来自 manifest 中的 explicit migration plan。
-
-upgrade 未配置 callback 时沿用 forced abort。downgrade 未配置 callback 时，missing down
-plan、未锚定 target 或无效 historical target 必须返回 error，阻止 OTP 加载旧 module；
-只有显式 callback 返回 abort，才允许删除该 pending operation 后继续 downgrade。
-
-forced abort：
-
-- 从 working map 删除 entry；
-- cancel explicit timer；
-- demonitor reference when applicable；
-- 通过 original direct `parent_ref` dispatch
-  `{error, {async_aborted, {sf_migration, Info}}}`；
-- 不调用 OldFrame、NewFrame或ordinary action `cc`；linked chain中的显式 failure handler MAY 消费 Outcome，
-  普通 success frame MUST 跳过。
-
-## 9. State Commit
-
-manifest/target-offset 基础验证失败时不得修改 State。downgrade 还必须在 mutation 前预检
-target anchor、所有 current source frames、down plans 和 historical target metadata。
-通过预检后，runtime 在 working map 上逐项处理，并在结束时通过 target callbacks setter
-一次提交。
-
-per-entry mismatch 是业务配置处理结果，不回滚其他成功 entry。mismatch callback 的
-NewLogicalState 按 deterministic callbacks key order 串行传递。文档和测试必须固定该
-排序，避免 map iteration order 影响 State。
-
-failure dispatch 在对应 entry 已从 working map 移除后执行。dispatch 结果记录在 aborted result 的
-`reason.dispatch`，失败不得把 stale frame 放回 callbacks。
-
-如果 Env migrator/policy 的 runtime failure 升级为 API-level error，必须丢弃全部 working
-State 和 results，返回入口 TargetState 与 `[]`；timer/monitor cancellation、completion
-failure dispatch 和 frame commit 必须延迟到确认整个调用可提交之后。用户 migrator/policy
-自己的外部副作用不在 rollback 保证内，文档应要求它们保持 side-effect-free。
-
-downgrade 成功返回后，callback map 中不得残留属于 current/new module 的 stable frame；
-每个 pending frame 必须已变成 historical target frame或已由显式 policy abort。任何
-preflight error 都必须使 `code_change/3` 返回 error，从而利用 OTP 对 dynamic callback
-downgrade“先 code_change、后加载旧 module”的顺序阻止代码回退。
+未来Rebar plugin可以独立做whole-project warning，但不得成为本change correctness依赖。
 
 ## 10. Required Tests
 
-- v1/v2 -> block_1、v3 -> block_2、v4 -> current；
-- exact version term，无 atom/binary coercion；
-- conflicting anchors 编译失败；
-- full historical block 只生成 metadata，不生成 executable functions；
-- old/new `{step,StepName}` 分别在 historical/current block 精确解析；缺失 step 编译失败；
-- index、bind name、content 和 Offset selector 均作为 unsupported syntax 编译失败；
-- omitted mapping 对不同Block/Step identity导致`step_not_mapped`，不会fuzzy match；相同
-  Protocol/Block/StepName属于`sf-do` automatic path，不是migration identity-map；
-- upgrade unanchored source 保持 unhandled；downgrade unanchored target 阻止 code change；
-- up/down direction allowlist、same ABI reuse，以及独立的双向 Env migrator；
-- Env 是 capture-name map，普通 migrator 只收到 `#{env => SourceEnv}`；
-- declaration/step `state` shorthand、up_state/down_state default/conflict 和 capture validation；
-- state-aware migrator 的 `source_state` 来自该方向 SourceEnv，`current_state` 精确等于
-  API 第四参数；
-- 多 entry 与 mismatch State 更新不改变 Env migrator 看到的 current_state snapshot；
-- 未声明方向 state 时 context 不暴露 source_state/current_state，也不按 capture name 自动识别；
-- runtime 不自动升级/降级 State 或把 current_state 写入 TargetEnv；
-- migrator failure 进入 mismatch；base policy 可将 local-fun result 归为 `unstable_capture`；
-- successful migration only changes each stable node frame and preserves direct parent_ref；
-- current anchor refreshes frame from current manifest；
-- current anchor 在 `steps => []` 时仍独立 refresh，不查询 historical mapping；
-- mismatch abort、非法返回和 callback crash；
-- mixed callbacks map 中 ordinary callback、non-stable descriptor与accumulator entries bit-for-bit 不变；
-- pending request 不重放，原 reply 进入 new frame；
-- upgrade purge old module 后不调用 historical code；
-- OTP-style downgrade 在 v4 code_change 中构造 v3 frame，旧 module 加载前不调用 v3 MFA；
-- downgrade 使用 target State layout/offset，missing down plan 或无效 historical target
-  不部分提交并阻止旧 module 加载；
-- 匿名 `{F,A,N}` ↔命名 block 的双向 plans；
-- 未调用 API 时零 migration side effect。
-- 仅含 `sf_do` 时不生成 migration manifest/export，用户定义同名 manifest function 时
-  编译期 collision diagnostic；
-- public results 固定 source/target fields，API errors 固定 stage/context、入口 State 和空 Results；
-- README 覆盖 declaration/options、selectors、upgrade/downgrade、State context、result/error
-  以及 appup/downgrade 最小示例；
-- `rebar3 dialyzer` 不新增 feature-specific warning；不得用宽泛 suppress 掩盖问题。
+- migration-enabled owner缺失显式`-vsn`编译失败；literal Vsn exact match且不做term coercion；
+- `sf_do_code_change/2` clauses/case选择多个exact historical Vsns；unknown source返回unhandled；
+- complete historical named sf-do分析；partial/unnamed block拒绝；historical body不生成或执行；
+- old/current StepName精确解析；rename mapping；missing Step/Block和duplicate source diagnostics；
+- raw bridge仅在Outcome shape兼容且target captures为source subset时编译；
+- converter同时转换Outcome/Env；same-identity converter覆盖automatic inheritance；
+- converter error、invalid return、incompatible output与user exception边界；
+- callback/frame不被重写，request不重发，Step前半段不重跑，direct parent_ref保持；
+- 无plan但相同identity+Env subset在up/down都automatic resume；
+- B→A时B Env只增加可恢复，删除A所需capture则reply-time failure；
+- down Outcome原样传递且不调用reverse converter；
+- renamed/incompatible down callback只failure自身，不阻止appdown；
+- linked multi-owner frames逐node独立resolve，ordinary callback不变；
+- no State scan、no callbacks offset API、no dependency attribute、no migration manifest compatibility reader；
+- compile、EUnit、Common Test、xref、dialyzer与`openspec validate sf-migrate --strict`通过。
