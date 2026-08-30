@@ -303,40 +303,15 @@ bridge_name(OldVsn, OldBlock, OldStep) ->
 
 raw_bridge(Name, TargetBoundary) ->
     Pos = maps:get(pos, TargetBoundary),
-    Input = {var, Pos, '__SfMigrationInput'},
-    Env = {var, Pos, '__SfMigrationEnv'},
+    Used0 = ordsets:from_list(maps:get(captures, TargetBoundary)),
+    {InputName, Used1} = allocate_generated_name('__SfBridgeInput', Used0),
+    {EnvName, _Used2} = allocate_generated_name('__SfBridgeEnv', Used1),
+    Input = {var, Pos, InputName},
+    Env = {var, Pos, EnvName},
     TargetCall = remote_call(Pos, maps:get(module, TargetBoundary),
         maps:get(function, TargetBoundary), [Input, Env]),
-    Body = bridge_target_validation(TargetBoundary, Input, Env, TargetCall),
     {function, Pos, Name, 2,
-        [{clause, Pos, [Input, Env], [], Body}]}.
-
-bridge_target_validation(#{pattern := undefined}, _Input, _Env, TargetCall) ->
-    [TargetCall];
-bridge_target_validation(Boundary, Input, Env, TargetCall) ->
-    Pos = maps:get(pos, Boundary),
-    Pattern = maps:get(pattern, Boundary),
-    Captures = ordsets:from_list(maps:get(captures, Boundary)),
-    PatternBindings = async_sf_lexical:pattern_new_bindings(
-        Pattern, fresh, ordsets:new()
-    ),
-    Shadowed = ordsets:intersection(Captures, PatternBindings),
-    Used = ordsets:from_list(['__SfMigrationInput', '__SfMigrationEnv']),
-    {Aliases, _} = allocate_capture_aliases(Shadowed, Used, #{}),
-    MatchPattern = async_sf_lexical:rename_pattern_references(
-        Pattern, fresh, Captures, Aliases
-    ),
-    Restore = [
-        {match, Pos, {var, Pos, maps:get(Capture, Aliases, Capture)},
-            remote_call(Pos, maps, get, [{atom, Pos, Capture}, Env])}
-     || Capture <- maps:get(captures, Boundary)],
-    Restore ++ [{'case', Pos, Input, [
-        {clause, Pos, [MatchPattern], [], [TargetCall]},
-        {clause, Pos, [{var, Pos, '_'}], [], [
-            {tuple, Pos, [{atom, Pos, sf_migration_failure},
-                {atom, Pos, incompatible_frame}]}
-        ]}
-    ]}].
+        [{clause, Pos, [Input, Env], [], [TargetCall]}]}.
 
 replace_migrations(Forms, Replacements) ->
     replace_migration_term(Forms, Replacements).
@@ -575,12 +550,18 @@ collect(Node, State, #{step := pre} = Attr) ->
                 )
             );
         application ->
-            case sf_call(Node) of
-                false -> collect_return(Node, State);
+            case {sf_call(Node), migration_call(Node)} of
+                {false, true} ->
+                    astranaut:walk_return(#{
+                        return => Node,
+                        state => State,
+                        continue => true
+                    });
+                {false, false} -> collect_return(Node, State);
                 Call ->
                     astranaut_return:lift_m(
                         fun(State1) -> collect_return(Node, State1) end,
-                        collect_sf(Node, Call, State)
+                        collect_sf(Node, element(1, Call), State)
                     )
             end;
         _ ->
@@ -1431,6 +1412,9 @@ sf_call(Node) ->
         sf_do -> #{args => erl_syntax:application_arguments(Node)};
         _ -> false
     end.
+
+migration_call(Node) ->
+    local_call_name(Node) =:= sf_migrate.
 
 local_call_name(Node) ->
     case astranaut_syntax:type(Node) of
