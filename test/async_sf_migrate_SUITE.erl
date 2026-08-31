@@ -70,6 +70,18 @@ compiler_extended_matrix(_Config) ->
     {module, M} = code:load_binary(M, "sf_extended", Bin),
     ?assertEqual({ok, reply}, info_reply({Ref, reply}, State0)),
     unload(M),
+    lists:foreach(fun(StoredVsn) ->
+        RefMismatch = make_ref(),
+        {ok, M, MismatchA, []} = compile_text(M, version_source(M, StoredVsn,
+            old_flow, wait, old, none)),
+        {module, M} = code:load_binary(M, "sf_extended_mismatch_a", MismatchA),
+        {ok, MismatchState} = start(M, M:action(RefMismatch), extended_mismatch),
+        {ok, M, MismatchB, []} = compile_text(M, nonliteral_vsn_source(M)),
+        {module, M} = code:load_binary(M, "sf_extended_mismatch", MismatchB),
+        MismatchOutcome = info_reply({RefMismatch, reply}, MismatchState),
+        ?assertNotEqual({ok, {historical, reply}}, MismatchOutcome),
+        unload(M)
+    end, [{1, 0, 0}, old_vsn, <<"1">>, "1"]),
     Ref2 = make_ref(),
     {ok, M, A2, []} = compile_text(M, version_source(M, {2, 0, 0},
         second_flow, wait, second, none)),
@@ -377,7 +389,7 @@ incompatible_downgrade_a_source(M) ->
      "counter(Key) -> get(Key).\n"].
 
 nonliteral_vsn_source(M) ->
-    io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,complete/2,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)). sf_do_code_change(V,B) -> case {V,B} of {1,old_flow} -> sf_migrate(1, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
+    io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,complete/2,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)). sf_do_code_change(V,B) -> case {V,B} of {1,old_flow} -> sf_migrate(1, [async_m || wait, X <- async_m:promise(make_ref()), return({historical, X})], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
 
 multiple_vsn_source(M) ->
     io_lib:format("-module(~p). -vsn({3,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,complete/2,counter/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)). counter(Key) -> get(Key). sf_do_code_change(V,B) -> case {V,B} of {{1,0,0},first_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>first_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); {{2,0,0},second_flow} -> sf_migrate({2,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>second_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
