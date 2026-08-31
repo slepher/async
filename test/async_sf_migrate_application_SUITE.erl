@@ -407,13 +407,18 @@ compile_fixture(V, Root, Priv) ->
     Ebin = filename:join([Priv, "fixtures", atom_to_list(V), "ebin"]),
     ok = filelib:ensure_dir(filename:join(Ebin, "placeholder")),
     lists:foreach(fun(F) ->
-        case compile:file(filename:join(Src, F), [{outdir, Ebin}, {i, Root},
-                return_errors, return_warnings, debug_info]) of
-            {ok, _, Warnings} -> ct:pal("compiled ~p/~s warnings=~p", [V,F,Warnings]);
+        Source = filename:join(Src, F),
+        {ok, Forms} = epp:parse_file(Source, [{includes, [Root]}]),
+        case compile:forms(Forms, [{source, Source}, return_errors,
+                return_warnings, debug_info]) of
+            {ok, Module, Binary, Warnings} ->
+                ok = file:write_file(filename:join(Ebin,
+                    atom_to_list(Module) ++ ".beam"), Binary),
+                ct:pal("compiled ~p/~s warnings=~p", [V,F,Warnings]);
             {error, Errors, Warnings} -> ct:fail({fixture_compile, V, F, Errors, Warnings})
         end
-    end, ["sf_fixture_app.erl", "sf_fixture_sup.erl", "order_flow.erl",
-        "payment_flow.erl"]),
+    end, ["sf_fixture_app.src", "sf_fixture_sup.src", "order_flow.src",
+        "payment_flow.src"]),
     {ok, _} = file:copy(filename:join(Src, "sf_fixture.app"),
         filename:join(Ebin, "sf_fixture.app")),
     {ok, _} = file:copy(filename:join(Src, "sf_fixture.appup"),
