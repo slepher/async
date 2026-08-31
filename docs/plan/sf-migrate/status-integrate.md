@@ -3,8 +3,8 @@
 ## Lane
 
 - Name: `integrate`
-- State: `ready`
-- Active task: `task-test-3`
-- Candidate: `none`
-- Next action: `dispatcher rebinds lane to generation 3 target base and dispatches task-test-3`
+- State: `complete`
+- Active task: `none`
+- Candidate: `308ca7ce86c97759fd6765f2c4c4889dc1914327`
+- Next action: `none`
 - Blocker: `none`
