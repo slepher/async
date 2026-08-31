@@ -1,6 +1,6 @@
 # sf-migrate generation-2 lane manifest
 
-- Lanes status: ready
+- Lanes status: complete
 - Plan: plan-2.md
 - Concurrency: lanes
 - Merge policy: merge-ready FIFO

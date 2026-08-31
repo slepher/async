@@ -3,8 +3,8 @@
 ## Lane
 
 - Name: `integrate`
-- State: `verified`
-- Active task: `task-test-2`
-- Candidate: `c8fcbc2ea722193818984a27d1f9178167bc1252`
-- Next action: `dispatch strict full_tester for task-test-2`
+- State: `complete`
+- Active task: `none`
+- Candidate: `35e48959cdfb28200fe65b2d6f9402aa6373c8df`
+- Next action: `none`
 - Blocker: `none`

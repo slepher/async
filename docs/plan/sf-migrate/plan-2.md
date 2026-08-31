@@ -1,6 +1,6 @@
 # sf-migrate generation-2 test enhancement plan
 
-- Plan status: accepted
+- Plan status: complete
 - Goal: `sf-migrate`
 - Generation: `2`
 - Context: context-2.md
