@@ -1,18 +1,35 @@
 # task-test-3 测试报告
 
-- Status: passed（strict 本机 gates）；OTP 21–29 matrix: unverified（容器运行环境权限问题）
+- Status: passed（strict 本机 gates）；OTP 21–29 matrix: passed
 - task: task-test-3
 - generation: 3
 - test profile: strict
 - source branch: `codex/sf-migrate-g3-integrate`
 - accepted base: `7552a0c7d6bd1cd167b9822534ad7327352e1f81`
-- candidate/tree: `308ca7ce86c97759fd6765f2c4c4889dc1914327` / `test: keep dynamic fixtures out of eunit discovery`
-- dedicated test worktree: `/tmp/async-sf-cc-task-test-3-g3`
-- test branch: `codex/sf-migrate-g3-test-3-full-tester-1`
-- worktree/HEAD（测试开始及每条命令前）: clean；`git rev-parse HEAD` = `308ca7ce86c97759fd6765f2c4c4889dc1914327`；candidate 包含 accepted base。测试完成后仅新增本报告 artifact
-- integrate worktree 未用于测试，未修改源码、测试、配置、workflow 或 `test.md`
+- candidate/tree: `b45401c1e9e0a1c1c435b3c5f463339746dccda9` / `test: support legacy otp node runners`
+- verification worktree: `codex/sf-migrate-g3-integrate`
+- worktree/HEAD（兼容性复验开始及每条命令前）: clean；`git rev-parse HEAD` = `b45401c1e9e0a1c1c435b3c5f463339746dccda9`；candidate 包含 accepted base
+- 用户输入 `test.md`、`test_fail.md` 未修改；runner、产品代码和配置未修改
 
-## 精确命令与结果
+## 兼容性修正复验（b45401c）
+
+候选 b45401c 修复 OTP 21–24 的 peer 不可用与 staged release runtime
+启动兼容问题。使用包含 HOME 修复并显式启动 epmd 的本地
+rebar3_docker_ci checkout 执行 rebar3 docker_ci run：
+
+| 范围 | 结果 |
+|---|---|
+| OTP 21–29（9 个目标） | 全部通过 |
+| 每个目标 Common Test | 6/6 |
+| 每个目标 compile/xref | 通过 |
+| 本地 application suite | 6/6 |
+| 本地 EUnit | 33/33 |
+| 本地 xref、diff check | 通过 |
+
+OTP 21–24 的 release 节点均使用 legacy ct_slave 路径成功完成启动及
+release_handler 安装场景；OTP 25–29 保持 peer 路径并通过。
+
+## 既有 strict gates（308ca7c）
 
 | 命令 | 退出码 | 结果/计数 |
 |---|---:|---|
@@ -52,4 +69,6 @@ strict 本机 full CT 覆盖候选提交中的全部 99 个 Common Test 用例�
 
 ## 结论
 
-候选 `308ca7ce86c97759fd6765f2c4c4889dc1914327` 在 OTP 29 专用 clean test worktree 上通过全部 strict commands。OTP 21–29 跨版本发布证据仍未验证；当前闭环需要让 Docker runner 在可写 HOME 外显式启动 epmd，然后在同一候选提交重跑 `rebar3 docker_ci run`。
+候选 b45401c1e9e0a1c1c435b3c5f463339746dccda9 已通过本地 strict gates、
+review-3 PASS 以及 OTP 21–29 全矩阵。原 test_fail.md 中的 OTP 21–24
+兼容性失败已闭合。
