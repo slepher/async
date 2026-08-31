@@ -17,7 +17,7 @@
 - Lane: integrate
 - Worktree: /home/slepher/project/erl_projects/async-sf-cc/.worktree/integrate
 - Branch: codex/sf-migrate-g2-integrate
-- Base: a980e9086a7e142c888d82f75e94d49f55334f51
+- Base: a37d5335101c0d24169468f94614f3f8f7361e3d
 - Depends on: none
 - Covers: none
 
@@ -66,8 +66,8 @@ All `src/`, `include/`, README, OpenSpec, workflow/status files, existing test s
 - Goal: create the shared dynamic A/B/C two-owner fixture and prove the canonical nested lifecycle, direct A->C selection, mixed rollout, Outcome propagation, purge, one-shot, and late-reply path
 - Worker role: fresh `def_coding_worker`
 - Lane: integrate
-- Exact target base: a980e9086a7e142c888d82f75e94d49f55334f51
-- Starting phase base: integrate HEAD must equal a980e9086a7e142c888d82f75e94d49f55334f51
+- Exact target base: a37d5335101c0d24169468f94614f3f8f7361e3d
+- Starting phase base: integrate HEAD must equal a37d5335101c0d24169468f94614f3f8f7361e3d
 - Depends on sibling subtasks: none
 - Covers: parent objectives 1-6 and the canonical instances of 7-9
 - Owned paths: `test/async_sf_migrate_nested_fixture.erl`, `test/async_sf_migrate_nested_SUITE.erl`
@@ -113,8 +113,8 @@ Every added case must execute in these commands. Focused success is not parent a
 - Goal: add the disjoint representative nested owner/version, raw/converter, failure/privacy, and unfinished-callback matrix without repeating canonical or generation-1 cases
 - Worker role: fresh `def_coding_worker`
 - Lane: integrate
-- Exact target base: a980e9086a7e142c888d82f75e94d49f55334f51
-- Starting phase base: dispatcher must bind the reviewed immutable `task-test-2.1` checkpoint to its full exact commit before dispatch; that commit's target ancestor must be a980e9086a7e142c888d82f75e94d49f55334f51, and a symbolic-only base is invalid
+- Exact target base: a37d5335101c0d24169468f94614f3f8f7361e3d
+- Starting phase base: dispatcher must bind the reviewed immutable `task-test-2.1` checkpoint to its full exact commit before dispatch; that commit's target ancestor must be a37d5335101c0d24169468f94614f3f8f7361e3d, and a symbolic-only base is invalid
 - Depends on sibling subtasks: task-test-2.1 checkpoint and review
 - Covers: parent objectives 7-9 and nonduplicated variants of 2-6
 - Owned paths: `test/async_sf_migrate_nested_matrix_SUITE.erl`
@@ -170,7 +170,7 @@ Every added matrix case must execute. Focused success is not parent acceptance.
 - Source branch: async-sf-cc
 - Test branch: codex/sf-migrate-g2-integrate
 - Worktree: /home/slepher/project/erl_projects/async-sf-cc/.worktree/integrate
-- Target base: a980e9086a7e142c888d82f75e94d49f55334f51
+- Target base: a37d5335101c0d24169468f94614f3f8f7361e3d
 - Candidate: dispatcher must bind the reviewed immutable cumulative `task-test-2.2` checkpoint to its full exact commit before `full_tester` dispatch; a symbolic-only candidate is invalid
 - Test profile: strict
 - Timeout: 60 minutes per command

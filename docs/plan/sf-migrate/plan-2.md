@@ -47,7 +47,7 @@ No standalone `task-test-2.1.md` or `task-test-2.2.md` is created; both contract
 
 ## Execution and correction route
 
-The generation begins from exact target commit `a980e9086a7e142c888d82f75e94d49f55334f51`. Test-owned work is checkpointed in integrate and reaches target only after focused reviews and the strict parent gate.
+The planning target is `a980e9086a7e142c888d82f75e94d49f55334f51`; after the dispatcher commits this accepted planning bundle, the execution base is the resulting target `a37d5335101c0d24169468f94614f3f8f7361e3d`. Test-owned work is checkpointed in integrate and reaches target only after focused reviews and the strict parent gate.
 
 Any product finding stops the test task. The dispatcher creates `task-test-2-fix-N` in coding from the observed target; the only route is `coding -> target -> integrate -> target`. Integrate must refresh from the corrected target and repeat affected focused checks, checkpoint review, and the complete parent gate. Direct coding-to-integrate merge and test-side product repair are forbidden.
 
