@@ -79,7 +79,8 @@ compiler_extended_matrix(_Config) ->
         {ok, M, MismatchB, []} = compile_text(M, nonliteral_vsn_source(M)),
         {module, M} = code:load_binary(M, "sf_extended_mismatch", MismatchB),
         MismatchOutcome = info_reply({RefMismatch, reply}, MismatchState),
-        ?assertNotEqual({ok, {historical, reply}}, MismatchOutcome),
+        assert_migration_failure_versions(MismatchOutcome, M, no_compatible_plan,
+            {1, old_flow, wait}, StoredVsn, {2, 0, 0}),
         unload(M)
     end, [{1, 0, 0}, old_vsn, <<"1">>, "1"]),
     Ref2 = make_ref(),
