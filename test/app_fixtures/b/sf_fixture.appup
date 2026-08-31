@@ -1,0 +1,7 @@
+{"2.0.0",
+ [{"1.0.0", [{load_module, sf_fixture_app}, {load_module, sf_fixture_sup},
+              {update, order_flow, {advanced, []}},
+              {update, payment_flow, {advanced, []}}]}],
+ [{"1.0.0", [{load_module, sf_fixture_app}, {load_module, sf_fixture_sup},
+              {update, order_flow, {advanced, []}},
+              {update, payment_flow, {advanced, []}}]}]}.

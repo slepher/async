@@ -1,0 +1,3 @@
+-module(sf_fixture_app).
+-vsn({2,0,0}).
+-include("../sf_fixture_app.hrl").
