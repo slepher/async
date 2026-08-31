@@ -34,7 +34,9 @@ parse_transform(Forms, _Options) ->
     },
     astranaut_return:to_compiler(
         astranaut_return:with_error(
-            fun(Error) -> astranaut_error:update_file(File, Error) end,
+            fun(Error) ->
+                astranaut_error:update_file(eof, Error#{file => File})
+            end,
             do([
             return
          || Collect0Result <- astranaut_return:fail_on_error(
