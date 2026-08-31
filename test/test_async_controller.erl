@@ -1,10 +1,12 @@
 -module(test_async_controller).
 -behaviour(gen_server).
 
--export([start_link/1, stop/1, make_reply/3, pending/1, counts/1, identity/2]).
+-export([start/1, start_link/1, stop/1, make_reply/3, pending/1, counts/1,
+    identity/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 
+start(Observer) -> gen_server:start(?MODULE, Observer, []).
 start_link(Observer) -> gen_server:start_link(?MODULE, Observer, []).
 stop(Server) -> gen_server:stop(Server).
 make_reply(Server, MRef, Reply) -> gen_server:call(Server, {reply, MRef, Reply}).

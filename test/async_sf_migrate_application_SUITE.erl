@@ -429,37 +429,80 @@ start_fixture_node(V, Config) ->
     Ebin = maps:get(V, ?config(fixture_ebins, Config)),
     Name = unique_atom("sf_fixture_" ++ atom_to_list(V) ++ "_"),
     Args = lists:append([["-pa", P] || P <- runtime_paths()]),
-    {ok, P, Node} = peer:start_link(#{name => Name, connection => standard_io,
-        args => Args}),
+    {ok, P, Node} = start_node(Name, Args, undefined, []),
     pong = net_adm:ping(Node),
-    true = peer:call(P, code, add_patha, [Ebin]),
-    {ok, _} = peer:call(P, application, ensure_all_started, [sf_fixture]),
-    {ok, Controller} = peer:call(P, test_async_controller, start_link, [self()]),
+    true = node_call(P, code, add_patha, [Ebin]),
+    {ok, _} = node_call(P, application, ensure_all_started, [sf_fixture]),
+    {ok, Controller} = start_controller(P, self()),
     #{peer => P, node => Node, version => V, current => V,
         controller => Controller}.
 
-stop_fixture_node(#{peer := P}) -> catch peer:stop(P), ok.
+stop_fixture_node(#{peer := P}) -> catch stop_node(P), ok.
+
+start_node(Name, Args, Exec, Env) ->
+    case code:ensure_loaded(peer) of
+        {module, peer} ->
+            Options = case Exec of
+                undefined -> #{name => Name, connection => standard_io, args => Args};
+                _ -> #{name => Name, connection => standard_io, exec => Exec,
+                    env => Env, args => Args}
+            end,
+            {ok, Peer, Node} = peer:start_link(Options),
+            {ok, {peer, Peer}, Node};
+        _ ->
+            SlaveEnv = case Exec of
+                undefined -> Env;
+                _ -> [{"PATH", filename:dirname(Exec) ++ ":" ++ os:getenv("PATH")} |
+                    Env]
+            end,
+            SlaveArgs = Args ++ ["-pa", filename:dirname(code:which(ct_slave))],
+            {ok, Node} = ct_slave:start(Name, [{erl_flags,
+                string:join(SlaveArgs, " ")}, {env, SlaveEnv}, {boot_timeout, 30}]),
+            {ok, {ct_slave, Node}, Node}
+    end.
+
+node_call({peer, Peer}, Module, Function, Args) ->
+    peer:call(Peer, Module, Function, Args);
+node_call({ct_slave, Node}, Module, Function, Args) ->
+    rpc:call(Node, Module, Function, Args).
+
+start_controller({peer, _} = Peer, Observer) ->
+    node_call(Peer, test_async_controller, start_link, [Observer]);
+start_controller({ct_slave, _} = Slave, Observer) ->
+    node_call(Slave, test_async_controller, start, [Observer]).
+
+stop_node({peer, Peer}) -> peer:stop(Peer);
+stop_node({ct_slave, Node}) -> ct_slave:stop(Node).
+
+legacy_erl_wrapper(Root, Erl) ->
+    Wrapper = filename:join(Root, "bin/erl"),
+    ok = filelib:ensure_dir(Wrapper),
+    ok = file:write_file(Wrapper, io_lib:format(
+        "#!/bin/sh~nROOTDIR=~s~nBINDIR=~s~nexport ROOTDIR BINDIR~nexec \"$BINDIR/erlexec\" \"$@\"~n",
+        [Root, filename:dirname(Erl)])),
+    ok = file:change_mode(Wrapper, 8#755),
+    Wrapper.
 
 node_snapshot(#{peer := P, controller := C}) ->
-    Apps = peer:call(P, application, which_applications, []),
-    Application = peer:call(P, application_controller, get_master, [sf_fixture]),
+    Apps = node_call(P, application, which_applications, []),
+    Application = node_call(P, application_controller, get_master, [sf_fixture]),
     ?assert(is_pid(Application)),
-    Order = peer:call(P, order_flow, status, []),
-    Payment = peer:call(P, payment_flow, status, []),
-    Pending = peer:call(P, test_async_controller, pending, [C]),
+    Order = node_call(P, order_flow, status, []),
+    Payment = node_call(P, payment_flow, status, []),
+    Pending = node_call(P, test_async_controller, pending, [C]),
     #{apps => Apps, application => Application,
       marker => maps:get(marker, Order),
       version => maps:get(version, Order), controller => C,
-      controller_counts => peer:call(P, test_async_controller, counts, [C]),
+      controller_counts => node_call(P, test_async_controller, counts, [C]),
       controller_pending => Pending,
       controller_identities => [{MRef,
-          peer:call(P, test_async_controller, identity, [C, MRef])} ||
+          node_call(P, test_async_controller, identity, [C, MRef])} ||
           MRef <- Pending],
       order => Order, payment => Payment,
-      tree => #{top => peer:call(P, erlang, whereis, [sf_fixture_sup]),
-          order_sup => peer:call(P, erlang, whereis, [order_sup]),
+      tree => #{top => node_call(P, erlang, whereis, [sf_fixture_sup]),
+          order_sup => node_call(P, erlang, whereis, [order_sup]),
           order_worker => maps:get(pid, Order),
-          payment_sup => peer:call(P, erlang, whereis, [payment_sup]),
+          payment_sup => node_call(P, erlang, whereis, [payment_sup]),
           payment_worker => maps:get(pid, Payment)}}.
 
 assert_tree(S) ->
@@ -468,16 +511,16 @@ assert_tree(S) ->
         [top, order_sup, order_worker, payment_sup, payment_worker]).
 
 baseline_call(#{peer := P, controller := C}, Tag) ->
-    {ok, MRef} = peer:call(P, order_flow, start, [C, Tag, self()]),
+    {ok, MRef} = node_call(P, order_flow, start, [C, Tag, self()]),
     held_mref(MRef),
     ?assertEqual(#{pending => 1, replied => 0},
-        peer:call(P, test_async_controller, counts, [C])),
-    ok = peer:call(P, test_async_controller, make_reply, [C, MRef, reply]),
+        node_call(P, test_async_controller, counts, [C])),
+    ok = node_call(P, test_async_controller, make_reply, [C, MRef, reply]),
     receive {order_complete, Tag, Outcome} -> ?assertEqual(false, contains_private(Outcome))
     after 5000 -> ct:fail({Tag, missing_completion}) end,
     ?assertEqual(#{pending => 0, replied => 1},
-        peer:call(P, test_async_controller, counts, [C])),
-    Status = peer:call(P, order_flow, status, []),
+        node_call(P, test_async_controller, counts, [C])),
+    Status = node_call(P, order_flow, status, []),
     ?assertEqual(0, maps:get(pending, Status)),
     ?assertEqual(1, maps:get(completion_count, Status)).
 
@@ -488,25 +531,25 @@ current_version(#{current := V}) -> version_tuple_for(V).
 order_request(N, Tag) ->
     #{peer := P, controller := C} = N,
     Vsn = current_version(N),
-    {ok, MRef} = peer:call(P, order_flow, start, [C, Tag, self()]),
+    {ok, MRef} = node_call(P, order_flow, start, [C, Tag, self()]),
     held_request(MRef, {order, Vsn, Tag}),
     assert_runtime_has(N, Vsn, [MRef]),
     ?assertMatch({pending, {_, MRef}},
-        peer:call(P, test_async_controller, identity, [C, MRef])),
+        node_call(P, test_async_controller, identity, [C, MRef])),
     {N, MRef}.
 payment_request(N, Tag) ->
     #{peer := P, controller := C} = N,
     Vsn = current_version(N),
-    {ok, MRef} = peer:call(P, payment_flow, start, [C, Tag, self()]),
+    {ok, MRef} = node_call(P, payment_flow, start, [C, Tag, self()]),
     held_request(MRef, {payment, Vsn, Tag}),
     assert_runtime_has(N, Vsn, [MRef]),
     ?assertMatch({pending, {_, MRef}},
-        peer:call(P, test_async_controller, identity, [C, MRef])),
+        node_call(P, test_async_controller, identity, [C, MRef])),
     {N, MRef}.
 nested_request(N, Tag) ->
     #{peer := P, controller := C} = N,
     Vsn = current_version(N),
-    {ok, Refs} = peer:call(P, order_flow, start_nested,
+    {ok, Refs} = node_call(P, order_flow, start_nested,
         [C, Tag, {child, Tag}, self()]),
     O = maps:get(order, Refs), PRef = maps:get(payment, Refs),
     ParentRef = maps:get(parent, Refs),
@@ -515,16 +558,16 @@ nested_request(N, Tag) ->
     assert_runtime_has(N, Vsn, [O, PRef]),
     ?assert(is_reference(ParentRef)),
     ?assertMatch({pending, {_, O}},
-        peer:call(P, test_async_controller, identity, [C, O])),
+        node_call(P, test_async_controller, identity, [C, O])),
     ?assertMatch({pending, {_, PRef}},
-        peer:call(P, test_async_controller, identity, [C, PRef])),
+        node_call(P, test_async_controller, identity, [C, PRef])),
     {N, O, PRef, ParentRef}.
 held_request(Expected, Request) ->
     receive {controller_held, Expected, Request} -> ok
     after 5000 -> ct:fail({missing_exact_request, Expected, Request}) end.
 reply(N, MRef, Value) -> ?assertEqual(ok, reply_result(N, MRef, Value)).
 reply_result(#{peer := P, controller := C}, MRef, Value) ->
-    peer:call(P, test_async_controller, make_reply, [C, MRef, Value]).
+    node_call(P, test_async_controller, make_reply, [C, MRef, Value]).
 complete_order(Tag, Vsn) ->
     receive {order_complete, Tag, Outcome} ->
         ?assertMatch({ok, {order, _, _, _}}, Outcome),
@@ -582,7 +625,7 @@ assert_release(BeforeN, AfterN, Vsn, OrderRefs, PaymentRefs) ->
         {MRef, ExpectedIdentity} = lists:keyfind(MRef, 1,
             maps:get(controller_identities, Before)),
         ?assertEqual(ExpectedIdentity,
-            peer:call(maps:get(peer, AfterN), test_async_controller, identity,
+            node_call(maps:get(peer, AfterN), test_async_controller, identity,
                 [maps:get(controller, AfterN), MRef]))
     end, OrderRefs ++ PaymentRefs),
     assert_runtime(AfterN, Vsn, OrderRefs, PaymentRefs).
@@ -805,16 +848,20 @@ start_release_node(Releases, _Config) ->
     TestPath = filename:dirname(code:which(test_async_controller)),
     Erts = "erts-" ++ erlang:system_info(version),
     Erl = filename:join([Root, Erts, "bin", "erl"]),
-    Args = ["-boot", maps:get(base, A),
+    Args = ["-boot", maps:get(base, A), "-boot_var", "ROOT", Root,
         "-boot_var", "RELEASE_LIB", maps:get(lib, A), "-pa", TestPath],
     ct:pal("release node exec=~s args=~p env=~p", [Erl, Args,
         [{"ERL_ROOTDIR", Root}]]),
-    PeerResult = peer:start_link(#{name => Name, connection => standard_io,
-        exec => Erl, env => [{"ERL_ROOTDIR", Root}], args => Args}),
-    ct:pal("release node peer:start_link result=~p", [PeerResult]),
+    PeerResult = case code:ensure_loaded(peer) of
+        {module, peer} -> start_node(Name, Args, Erl, [{"ERL_ROOTDIR", Root}]);
+        _ -> start_node(Name, Args, legacy_erl_wrapper(Root, Erl),
+            [{"ERL_ROOTDIR", Root}])
+    end,
+    ct:pal("release node start result=~p", [PeerResult]),
     {ok, P, Node} = PeerResult,
     pong = net_adm:ping(Node),
-    {ok, C} = peer:call(P, test_async_controller, start_link, [self()]),
+    {ok, _} = node_call(P, application, ensure_all_started, [sf_fixture]),
+    {ok, C} = start_controller(P, self()),
     N = #{peer => P, node => Node, controller => C, releases => Releases,
       current => a, root => Root},
     ct:pal("release node status node=~p status=~p", [Node, observe(N)]), N.
@@ -825,19 +872,19 @@ install_release(#{peer := P, releases := Releases, root := Root} = N, Target) ->
     R = maps:get(Target, Releases), Name = "sf_release-" ++ maps:get(vsn, R),
     {ok, _} = file:copy(maps:get(tar, R),
         filename:join([Root, "releases", Name ++ ".tar.gz"])),
-    Unpack = peer:call(P, release_handler, unpack_release, [Name]),
+    Unpack = node_call(P, release_handler, unpack_release, [Name]),
     ct:pal("release_handler:unpack_release(~p) -> ~p", [Name, Unpack]),
     ?assertMatch({ok, _}, Unpack),
-    Check = peer:call(P, release_handler, check_install_release,
+    Check = node_call(P, release_handler, check_install_release,
         [maps:get(vsn, R)]),
     ct:pal("release_handler:check_install_release(~p) -> ~p", [maps:get(vsn,R), Check]),
     ?assertMatch({ok, _, _}, Check),
-    Install = peer:call(P, release_handler, install_release, [maps:get(vsn, R)]),
+    Install = node_call(P, release_handler, install_release, [maps:get(vsn, R)]),
     ct:pal("release_handler:install_release(~p) -> ~p", [maps:get(vsn,R), Install]),
     ?assertMatch({ok, _, _}, Install),
     ?assertEqual(maps:get(controller, Before), maps:get(controller, observe(N))),
-    ?assertEqual(Target, peer:call(P, order_flow, marker, [])),
-    Which = peer:call(P, release_handler, which_releases, []),
+    ?assertEqual(Target, node_call(P, order_flow, marker, [])),
+    Which = node_call(P, release_handler, which_releases, []),
     ct:pal("release_handler:which_releases() -> ~p", [Which]),
     ?assert(lists:any(fun({"sf_release", V, _, Status}) ->
         V =:= maps:get(vsn,R) andalso lists:member(Status,[current,permanent])
