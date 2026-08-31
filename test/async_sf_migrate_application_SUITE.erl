@@ -54,6 +54,8 @@ independent_nodes(Config) ->
         ?assertEqual([a,b,c], [maps:get(marker, S) || S <- Snapshots]),
         ?assertEqual(3, length(lists:usort([maps:get(controller, S) ||
             S <- Snapshots]))),
+        ?assertEqual(3, length(lists:usort([maps:get(application, S) ||
+            S <- Snapshots]))),
         lists:foreach(fun assert_tree/1, Snapshots),
         lists:foreach(fun(S) -> ?assertEqual(#{pending => 0, replied => 0},
             maps:get(controller_counts, S)) end, Snapshots),
@@ -202,6 +204,9 @@ run_application_scenario(t14, duplicate_reply, Config) -> with_release_node(fun(
     reply(N2, R, t14_reply), complete_order(t14, {3,0,0}),
     ?assertEqual({error, already_replied}, reply_result(N2, R, duplicate)),
     assert_done(N2, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}),
+    assert_exact_counters(N2, order, #{{action,order} => 1,
+        {request,order} => 1, {resume,order} => 1,
+        {route,{{1,0,0},{3,0,0}}} => 1}),
     assert_no_completion(t14) end, Config);
 run_application_scenario(t15, unknown_reply, Config) -> with_release_node(fun(N) ->
     C = maps:get(controller, N), Before = observe(N), Unknown = make_ref(),
@@ -212,7 +217,12 @@ run_application_scenario(t16, continuity, Config) -> with_release_node(fun(N) ->
     {N1, R} = order_request(N, t16), N2 = upgrade(N1, b),
     assert_release(N1, N2, {2,0,0}, [R], []),
     reply(N2, R, t16_reply), complete_order(t16, {2,0,0}),
-    assert_done(N2, order, {2,0,0}, {route, {{1,0,0},{2,0,0}}}) end, Config);
+    assert_done(N2, order, {2,0,0}, {route, {{1,0,0},{2,0,0}}}),
+    assert_exact_counters(N2, order, #{{action,order} => 1,
+        {request,order} => 1, {resume,order} => 1,
+        {route,{{1,0,0},{2,0,0}}} => 1}),
+    ?assertEqual(#{pending => 0, replied => 1},
+        maps:get(controller_counts, observe(N2))) end, Config);
 run_application_scenario(t17, old_and_new, Config) -> with_release_node(fun(N) ->
     N1 = upgrade(N, b), {N2, Old} = order_request(N1, t17_b), N3 = upgrade(N2, c),
     assert_release(N2, N3, {3,0,0}, [Old], []),
@@ -266,6 +276,7 @@ run_nested_scenario(n05, both_ac, Config) -> with_release_node(fun(N) ->
 run_nested_scenario(n06, parent_converter_child_raw, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n06), N2 = upgrade(N1, b),
     reply(N2, P, n06_child_raw), complete_payment({child, n06}, {2,0,0}),
+    assert_runtime(N2, {2,0,0}, [O], []),
     reply(N2, O, n06_parent), complete_order(n06, {2,0,0}),
     assert_nested_done(N2, {2,0,0}, {2,0,0}),
     assert_exact_counters(N2, order, #{{request,order} => 1,
@@ -276,8 +287,10 @@ run_nested_scenario(n06, parent_converter_child_raw, Config) -> with_release_nod
         {resume,payment} => 1}) end, Config);
 run_nested_scenario(n07, parent_raw_child_converter, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n07), N2 = upgrade(N1, b), N3 = upgrade(N2, c),
+    reply(N3, O, n07_parent), assert_runtime(N3, {3,0,0}, [], [P]),
+    assert_no_completion(n07),
     reply(N3, P, n07_child), complete_payment({child, n07}, {3,0,0}),
-    reply(N3, O, n07_parent), complete_order(n07, {3,0,0}),
+    complete_order(n07, {3,0,0}),
     assert_nested_done(N3, {3,0,0}, {3,0,0}),
     assert_exact_counters(N3, order, #{{request,order} => 1,
         {action,order} => 1, {route, {{1,0,0},{3,0,0}}} => 2,
@@ -288,23 +301,31 @@ run_nested_scenario(n07, parent_raw_child_converter, Config) -> with_release_nod
         {converter,payment} => 1}) end, Config);
 run_nested_scenario(n08, mixed_pending, Config) -> with_release_node(fun(N) ->
     Sentinel = {privacy_sentinel, make_ref()}, TagA = n08_a,
-    TagB = {n08_b, Sentinel},
-    {N1, OA, PA, _} = nested_request(N, TagA),
-    {N2, OB, PB, _} = nested_request(N1, TagB),
+    TagB = n08_b, TagC = {n08_c, Sentinel},
+    {N1, OA, PA, _} = nested_request(N, TagA), N2 = upgrade(N1, b),
+    assert_release(N1, N2, {2,0,0}, [OA], [PA]),
+    {N3, OB, PB, _} = nested_request(N2, TagB),
     ?assertEqual(lists:sort([OA, OB, PA, PB]),
-        lists:sort(maps:get(controller_pending, observe(N2)))),
-    N3 = upgrade(N2, c),
-    assert_release(N2, N3, {3,0,0}, [OA, OB], [PA, PB]),
-    reply(N3, PB, n08_b_child), PBOutcome = complete_payment({child, TagB}, {3,0,0}),
-    assert_no_sentinel(PBOutcome, Sentinel),
-    assert_nested_progress(N3, [OA, OB], [PA], 0, 1),
-    reply(N3, OB, n08_b_parent), OBOutcome = complete_order(TagB, {3,0,0}),
-    assert_no_sentinel(OBOutcome, Sentinel),
-    assert_nested_progress(N3, [OA], [PA], 1, 1),
-    reply(N3, PA, n08_a_child), complete_payment({child, TagA}, {3,0,0}),
-    assert_nested_progress(N3, [OA], [], 1, 2),
-    reply(N3, OA, n08_a_parent), complete_order(TagA, {3,0,0}),
-    assert_nested_done_count(N3, {3,0,0}, {3,0,0}, 2) end, Config);
+        lists:sort(maps:get(controller_pending, observe(N3)))),
+    N4 = upgrade(N3, c),
+    assert_release(N3, N4, {3,0,0}, [OA, OB], [PA, PB]),
+    {N5, OC, PC, _} = nested_request(N4, TagC),
+    ?assertEqual(lists:sort([OA, OB, OC, PA, PB, PC]),
+        lists:sort(maps:get(controller_pending, observe(N5)))),
+    reply(N5, PC, n08_c_child), PCOutcome = complete_payment({child, TagC}, {3,0,0}),
+    assert_no_sentinel(PCOutcome, Sentinel),
+    assert_nested_progress(N5, [OA, OB, OC], [PA, PB], 0, 1),
+    reply(N5, OC, n08_c_parent), OCOutcome = complete_order(TagC, {3,0,0}),
+    assert_no_sentinel(OCOutcome, Sentinel),
+    assert_nested_progress(N5, [OA, OB], [PA, PB], 1, 1),
+    reply(N5, PB, n08_b_child), complete_payment({child, TagB}, {3,0,0}),
+    assert_nested_progress(N5, [OA, OB], [PA], 1, 2),
+    reply(N5, OB, n08_b_parent), complete_order(TagB, {3,0,0}),
+    assert_nested_progress(N5, [OA], [PA], 2, 2),
+    reply(N5, PA, n08_a_child), complete_payment({child, TagA}, {3,0,0}),
+    assert_nested_progress(N5, [OA], [], 2, 3),
+    reply(N5, OA, n08_a_parent), complete_order(TagA, {3,0,0}),
+    assert_nested_done_count(N5, {3,0,0}, {3,0,0}, 3) end, Config);
 run_nested_scenario(n09, bounded_child_failure, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n09), N2 = upgrade(N1, c),
     reply(N2, P, {error, child_failed}),
@@ -370,10 +391,12 @@ stop_fixture_node(#{peer := P}) -> catch peer:stop(P), ok.
 
 node_snapshot(#{peer := P, controller := C}) ->
     Apps = peer:call(P, application, which_applications, []),
+    Application = peer:call(P, application_controller, get_master, [sf_fixture]),
+    ?assert(is_pid(Application)),
     Order = peer:call(P, order_flow, status, []),
     Payment = peer:call(P, payment_flow, status, []),
     Pending = peer:call(P, test_async_controller, pending, [C]),
-    #{apps => Apps, application => application_identity(Apps),
+    #{apps => Apps, application => Application,
       marker => maps:get(marker, Order),
       version => maps:get(version, Order), controller => C,
       controller_counts => peer:call(P, test_async_controller, counts, [C]),
@@ -584,9 +607,6 @@ contains_any(Term, Needles) when is_tuple(Term) ->
 contains_any(Term, Needles) when is_map(Term) ->
     contains_any(maps:to_list(Term), Needles);
 contains_any(Term, Needles) -> lists:member(Term, Needles).
-application_identity(Apps) ->
-    {sf_fixture, _Description, _Vsn} = lists:keyfind(sf_fixture, 1, Apps),
-    sf_fixture.
 assert_no_sentinel(Term, Sentinel) -> ?assertEqual(false, contains_term(Term, Sentinel)).
 contains_term(Term, Needle) when Term =:= Needle -> true;
 contains_term(Term, Needle) when is_list(Term) ->
