@@ -5,7 +5,8 @@
     complete/2, convert_order/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
--record(state, {callbacks = #{}, completions = [], errors = []}).
+-record(state, {callbacks = #{}, completions = [], errors = [],
+    observers = #{}, checkpoints = #{}}).
 
 start_link() -> gen_server:start_link({local, order_worker}, ?MODULE, [], []).
 start(Controller, Tag, Observer) ->
@@ -20,8 +21,10 @@ init([]) -> {ok, #state{}}.
 handle_call({start, Controller, Tag, Observer}, _From, State) ->
     MRef = async_gen_server:call(Controller, {order, ?VSN, Tag}),
     mark({request, order}),
+    FrameState = State#state{observers = maps:put(Tag, Observer,
+        State#state.observers)},
     {_Started, NewState} = async_m:run_sf_frame(action(MRef), cc(Observer, Tag),
-        #state.callbacks, State),
+        #state.callbacks, FrameState),
     {reply, {ok, MRef}, NewState};
 handle_call({nested, Controller, Tag, ChildRequest, Observer}, _From, State) ->
     MRef = async_gen_server:call(Controller, {order, ?VSN, Tag}),
@@ -29,8 +32,11 @@ handle_call({nested, Controller, Tag, ChildRequest, Observer}, _From, State) ->
     {ok, ChildMRef} = payment_flow:start_child(
         Controller, ChildRequest, {self(), ParentRef}, Observer),
     mark({request, order}),
+    FrameState = State#state{observers = maps:put(Tag, Observer,
+        State#state.observers), checkpoints = maps:put(ParentRef,
+        {Observer, Tag}, State#state.checkpoints)},
     {_Started, NewState} = async_m:run_sf_frame(nested_action(MRef, ParentRef, Tag),
-        cc(Observer, Tag), #state.callbacks, State),
+        cc(Observer, Tag), #state.callbacks, FrameState),
     {reply, {ok, #{order => MRef, payment => ChildMRef, parent => ParentRef}},
         NewState};
 handle_call(status, _From, #state{callbacks = Callbacks, completions = Done,
@@ -41,12 +47,27 @@ handle_call(status, _From, #state{callbacks = Callbacks, completions = Done,
         counters => counters()}, State}.
 handle_cast(_Request, State) -> {noreply, State}.
 handle_info({order_complete, Tag, Outcome}, #state{completions = Done,
-        errors = Errors} = State) ->
+        errors = Errors, observers = Observers} = State) ->
     NewErrors = case Outcome of {error, _} -> [Outcome | Errors]; _ -> Errors end,
-    {noreply, State#state{completions = [{Tag, Outcome} | Done], errors = NewErrors}};
+    NewState = State#state{completions = [{Tag, Outcome} | Done],
+        errors = NewErrors, observers = maps:remove(Tag, Observers)},
+    case maps:find(Tag, Observers) of
+        {ok, Observer} -> self() ! {emit_order_complete, Observer, Tag, Outcome};
+        error -> ok
+    end,
+    {noreply, NewState};
+handle_info({emit_order_complete, Observer, Tag, Outcome}, State) ->
+    Observer ! {order_complete, Tag, Outcome}, {noreply, State};
+handle_info({emit_parent_checkpoint, Observer, Tag}, State) ->
+    Observer ! {parent_consumed, Tag}, {noreply, State};
 handle_info(Info, State) ->
-    {_Result, NewState} = async_m:run_info(Info, #state.callbacks, State),
-    {noreply, NewState}.
+    {Result, NewState} = async_m:run_info(Info, #state.callbacks, State),
+    {CheckpointState, Checkpoint} = checkpoint_state(Info, Result, NewState),
+    case Checkpoint of
+        none -> ok;
+        {Observer, Tag} -> self() ! {emit_parent_checkpoint, Observer, Tag}
+    end,
+    {noreply, CheckpointState}.
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
@@ -93,8 +114,19 @@ order_result(_MRefs, OrderReply, Resume) ->
 convert_order(Outcome, Env) ->
     mark({converter, order}), {ok, Outcome, Env}.
 
+checkpoint_state({Ref, _Value}, {ok, unhandled}, State)
+        when is_reference(Ref) -> {State, none};
+checkpoint_state({Ref, _Value}, _Result,
+        #state{checkpoints = Checkpoints} = State) when is_reference(Ref) ->
+    case maps:take(Ref, Checkpoints) of
+        {{Observer, Tag}, Rest} ->
+            {State#state{checkpoints = Rest}, {Observer, Tag}};
+        error -> {State, none}
+    end;
+checkpoint_state(_, _, State) -> {State, none}.
+
 complete(Outcome, {Pid, Observer, Tag}) ->
-    Observer ! {order_complete, Tag, Outcome},
+    _ = Observer,
     Pid ! {order_complete, Tag, Outcome},
     async_r_t:return(Outcome, async_r_t:new(identity)).
 cc(Observer, Tag) -> #{kind => sf_cc, protocol => 1,

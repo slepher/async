@@ -5,7 +5,7 @@
     complete/2, convert_payment/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
--record(state, {callbacks = #{}, completions = [], errors = []}).
+-record(state, {callbacks = #{}, completions = [], errors = [], observers = #{}}).
 
 start_link() -> gen_server:start_link({local, payment_worker}, ?MODULE, [], []).
 start(Controller, Tag, Observer) ->
@@ -20,8 +20,10 @@ init([]) -> {ok, #state{}}.
 handle_call({start, Controller, Tag, Parent, Observer}, _From, State) ->
     MRef = async_gen_server:call(Controller, {payment, ?VSN, Tag}),
     mark({request, payment}),
+    FrameState = State#state{observers = maps:put(Tag, Observer,
+        State#state.observers)},
     {_Started, NewState} = async_m:run_sf_frame(action(MRef, child_mode(Tag)),
-        cc(Observer, Tag, Parent), #state.callbacks, State),
+        cc(Observer, Tag, Parent), #state.callbacks, FrameState),
     {reply, {ok, MRef}, NewState};
 handle_call(status, _From, #state{callbacks = Callbacks, completions = Done,
         errors = Errors} = State) ->
@@ -30,10 +32,24 @@ handle_call(status, _From, #state{callbacks = Callbacks, completions = Done,
         completion_count => length(Done), errors => lists:reverse(Errors),
         counters => counters()}, State}.
 handle_cast(_Request, State) -> {noreply, State}.
-handle_info({payment_complete, Tag, Outcome}, #state{completions = Done,
-        errors = Errors} = State) ->
+handle_info({payment_complete, Tag, Outcome, Parent}, #state{completions = Done,
+        errors = Errors, observers = Observers} = State) ->
     NewErrors = case Outcome of {error, _} -> [Outcome | Errors]; _ -> Errors end,
-    {noreply, State#state{completions = [{Tag, Outcome} | Done], errors = NewErrors}};
+    NewState = State#state{completions = [{Tag, Outcome} | Done],
+        errors = NewErrors, observers = maps:remove(Tag, Observers)},
+    case maps:find(Tag, Observers) of
+        {ok, Observer} ->
+            self() ! {emit_payment_complete, Observer, Tag, Outcome, Parent};
+        error -> ok
+    end,
+    {noreply, NewState};
+handle_info({emit_payment_complete, Observer, Tag, Outcome, Parent}, State) ->
+    Observer ! {payment_complete, Tag, Outcome},
+    case Parent of
+        none -> ok;
+        {ParentPid, ParentRef} -> ParentPid ! {ParentRef, Outcome}
+    end,
+    {noreply, State};
 handle_info(Info, State) ->
     {_Result, NewState} = async_m:run_info(Info, #state.callbacks, State),
     {noreply, NewState}.
@@ -55,9 +71,8 @@ action(MRef, raw) ->
         return({payment, ?VSN, Reply, Resume})]).
 
 complete(Outcome, {Pid, Observer, Tag, Parent}) ->
-    Observer ! {payment_complete, Tag, Outcome},
-    Pid ! {payment_complete, Tag, Outcome},
-    case Parent of none -> ok; {ParentPid, ParentRef} -> ParentPid ! {ParentRef, Outcome} end,
+    _ = Observer,
+    Pid ! {payment_complete, Tag, Outcome, Parent},
     async_r_t:return(Outcome, async_r_t:new(identity)).
 cc(Observer, Tag, Parent) -> #{kind => sf_cc, protocol => 1,
     mfa => {?MODULE, complete, 2}, context => {self(), Observer, Tag, Parent}}.

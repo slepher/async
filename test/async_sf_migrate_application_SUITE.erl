@@ -207,6 +207,8 @@ run_application_scenario(t14, duplicate_reply, Config) -> with_release_node(fun(
     assert_exact_counters(N2, order, #{{action,order} => 1,
         {request,order} => 1, {resume,order} => 1,
         {route,{{1,0,0},{3,0,0}}} => 1}),
+    ?assertEqual(#{pending => 0, replied => 1},
+        maps:get(controller_counts, observe(N2))),
     assert_no_completion(t14) end, Config);
 run_application_scenario(t15, unknown_reply, Config) -> with_release_node(fun(N) ->
     C = maps:get(controller, N), Before = observe(N), Unknown = make_ref(),
@@ -276,7 +278,17 @@ run_nested_scenario(n05, both_ac, Config) -> with_release_node(fun(N) ->
 run_nested_scenario(n06, parent_converter_child_raw, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n06), N2 = upgrade(N1, b),
     reply(N2, P, n06_child_raw), complete_payment({child, n06}, {2,0,0}),
-    assert_runtime(N2, {2,0,0}, [O], []),
+    parent_consumed(n06),
+    assert_nested_exact(N2, [O], [],
+        #{order => #{pending => 3, completion_count => 0,
+              counters => #{{request,order} => 1, {action,order} => 1,
+                {route,{{1,0,0},{2,0,0}}} => 1,
+                {resume,order} => 1, {converter,order} => 1}},
+          payment => #{pending => 0, completion_count => 1,
+              counters => #{{request,payment} => 1, {action,payment} => 1,
+                {route,{{1,0,0},{2,0,0}}} => 1,
+                {resume,payment} => 1}},
+          controller => #{pending => 1, replied => 1}}),
     reply(N2, O, n06_parent), complete_order(n06, {2,0,0}),
     assert_nested_done(N2, {2,0,0}, {2,0,0}),
     assert_exact_counters(N2, order, #{{request,order} => 1,
@@ -287,9 +299,19 @@ run_nested_scenario(n06, parent_converter_child_raw, Config) -> with_release_nod
         {resume,payment} => 1}) end, Config);
 run_nested_scenario(n07, parent_raw_child_converter, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n07), N2 = upgrade(N1, b), N3 = upgrade(N2, c),
-    reply(N3, O, n07_parent), assert_runtime(N3, {3,0,0}, [], [P]),
-    assert_no_completion(n07),
     reply(N3, P, n07_child), complete_payment({child, n07}, {3,0,0}),
+    parent_consumed(n07),
+    assert_nested_exact(N3, [O], [],
+        #{order => #{pending => 3, completion_count => 0,
+              counters => #{{request,order} => 1, {action,order} => 1,
+                {route,{{1,0,0},{3,0,0}}} => 1,
+                {resume,order} => 1}},
+          payment => #{pending => 0, completion_count => 1,
+              counters => #{{request,payment} => 1, {action,payment} => 1,
+                {route,{{1,0,0},{3,0,0}}} => 1,
+                {resume,payment} => 1, {converter,payment} => 1}},
+          controller => #{pending => 1, replied => 1}}),
+    assert_no_completion(n07), reply(N3, O, n07_parent),
     complete_order(n07, {3,0,0}),
     assert_nested_done(N3, {3,0,0}, {3,0,0}),
     assert_exact_counters(N3, order, #{{request,order} => 1,
@@ -325,7 +347,13 @@ run_nested_scenario(n08, mixed_pending, Config) -> with_release_node(fun(N) ->
     reply(N5, PA, n08_a_child), complete_payment({child, TagA}, {3,0,0}),
     assert_nested_progress(N5, [OA], [], 2, 3),
     reply(N5, OA, n08_a_parent), complete_order(TagA, {3,0,0}),
-    assert_nested_done_count(N5, {3,0,0}, {3,0,0}, 3) end, Config);
+    assert_nested_done_count(N5, {3,0,0}, {3,0,0}, 3),
+    assert_exact_counters(N5, order, #{{request,order} => 3,
+        {action,order} => 3, {route,{{1,0,0},{3,0,0}}} => 2,
+        {route,{{2,0,0},{3,0,0}}} => 2, {resume,order} => 6}),
+    assert_exact_counters(N5, payment, #{{request,payment} => 3,
+        {action,payment} => 3, {route,{{1,0,0},{3,0,0}}} => 1,
+        {route,{{2,0,0},{3,0,0}}} => 1, {resume,payment} => 3}) end, Config);
 run_nested_scenario(n09, bounded_child_failure, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n09), N2 = upgrade(N1, c),
     reply(N2, P, {error, child_failed}),
@@ -337,15 +365,33 @@ run_nested_scenario(n09, bounded_child_failure, Config) -> with_release_node(fun
     assert_no_completion(n09) end, Config);
 run_nested_scenario(n10, child_late_duplicate, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n10), N2 = upgrade(N1, c),
-    reply(N2, O, n10_parent), assert_runtime(N2, {3,0,0}, [], [P]),
+    ParentCounters = #{{request,order} => 1, {action,order} => 1,
+        {route,{{1,0,0},{3,0,0}}} => 1, {resume,order} => 1},
+    PaymentPendingCounters = #{{request,payment} => 1, {action,payment} => 1},
+    reply(N2, O, n10_parent),
+    assert_nested_exact(N2, [], [P],
+        #{order => #{pending => 3, completion_count => 0,
+              counters => ParentCounters},
+          payment => #{pending => 3, completion_count => 0,
+              counters => PaymentPendingCounters},
+          controller => #{pending => 1, replied => 1}}),
     assert_no_completion(n10),
     reply(N2, P, n10_child),
     ChildOutcome = complete_payment({child, n10}, {3,0,0}),
     ?assertMatch({ok, {payment, _, _, _}}, ChildOutcome),
+    parent_consumed(n10),
+    Done = #{order => #{pending => 0, completion_count => 1,
+            counters => ParentCounters#{{route,{{1,0,0},{3,0,0}}} => 2,
+                {resume,order} => 2}},
+        payment => #{pending => 0, completion_count => 1,
+            counters => PaymentPendingCounters#{{route,{{1,0,0},{3,0,0}}} => 1,
+                {resume,payment} => 1}},
+        controller => #{pending => 0, replied => 2}},
+    assert_nested_exact(N2, [], [], Done),
     ?assertEqual({error, already_replied}, reply_result(N2, P, duplicate_child)),
-    assert_no_completion({child, n10}),
+    assert_nested_exact(N2, [], [], Done), assert_no_completion({child, n10}),
     complete_order(n10, {3,0,0}), assert_nested_done(N2, {3,0,0}, {3,0,0}),
-    assert_no_completion(n10) end, Config).
+    assert_nested_exact(N2, [], [], Done), assert_no_completion(n10) end, Config).
 
 baseline_version(Id, V, Config) ->
     N = start_fixture_node(V, Config),
@@ -486,6 +532,9 @@ complete_payment(Tag, Vsn) ->
         ?assertEqual(Vsn, element(2, element(2, Outcome))),
         ?assertEqual(false, contains_private(Outcome)), Outcome
     after 5000 -> ct:fail({Tag, missing_payment_completion}) end.
+parent_consumed(Tag) ->
+    receive {parent_consumed, Tag} -> ok
+    after 5000 -> ct:fail({Tag, missing_parent_consumed}) end.
 complete_order_error(Tag) ->
     receive {order_complete, Tag, {ok, {error, {child, Reason, _}}}} ->
         ?assertEqual(child_failed, Reason);
@@ -569,6 +618,14 @@ assert_nested_progress(N, OrderRefs, PaymentRefs, OrderCount, PaymentCount) ->
     S = assert_runtime(N, current_version(N), OrderRefs, PaymentRefs),
     ?assertEqual(OrderCount, maps:get(completion_count, maps:get(order, S))),
     ?assertEqual(PaymentCount, maps:get(completion_count, maps:get(payment, S))),
+    S.
+assert_nested_exact(N, OrderRefs, PaymentRefs, Expected) ->
+    S = assert_runtime(N, current_version(N), OrderRefs, PaymentRefs),
+    lists:foreach(fun(Owner) ->
+        ?assertEqual(maps:get(Owner, Expected), maps:with(
+            [pending, completion_count, counters], maps:get(Owner, S)))
+    end, [order, payment]),
+    ?assertEqual(maps:get(controller, Expected), maps:get(controller_counts, S)),
     S.
 has_counter(N, Owner, Key) ->
     maps:is_key(Key, maps:get(counters, maps:get(Owner, observe(N)))).
