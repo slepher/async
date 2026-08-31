@@ -9,7 +9,8 @@
 suite() -> [{timetrap, {seconds, 60}}].
 all() -> [declaration_compiler_contract, compiler_negative_matrix,
     raw_bridge_and_purge,
-    converter_and_precedence, fallback_and_failure_privacy,
+    compiler_extended_matrix, converter_and_precedence,
+    converter_failure_privacy, fallback_and_failure_privacy,
     downgrade_and_existing_boundary].
 init_per_suite(Config) -> async:start(), Config.
 end_per_suite(_Config) -> flush(), ok.
@@ -52,6 +53,23 @@ compiler_negative_matrix(_Config) ->
             [env, outcome, state, callback, 'fun', payload, ast]))
     end, Cases).
 
+compiler_extended_matrix(_Config) ->
+    M = fresh("sf_extended_"),
+    {ok, M, LiteralBin, []} = compile_text(M, nonliteral_vsn_source(M)),
+    {module, M} = code:load_binary(M, "sf_extended_literal", LiteralBin),
+    ?assert(is_map(M:sf_do_code_change(1, old_flow))),
+    ?assertEqual(unhandled, M:sf_do_code_change({1, 0, 0}, old_flow)),
+    unload(M),
+    {ok, M, Bin, []} = compile_text(M, multiple_vsn_source(M)),
+    {module, M} = code:load_binary(M, "sf_extended", Bin),
+    ?assert(is_map(M:sf_do_code_change({1, 0, 0}, first_flow))),
+    ?assert(is_map(M:sf_do_code_change({2, 0, 0}, second_flow))),
+    unload(M),
+    {error, CollisionErrors, []} = compile_text(M, collision_source(M)),
+    ?assert(contains_term(CollisionErrors, sf_migration_generated_collision)),
+    {error, RequiredErrors, []} = compile_text(M, converter_required_source(M)),
+    ?assert(contains_term(RequiredErrors, sf_migration_converter_required)).
+
 raw_bridge_and_purge(_Config) ->
     M = fresh("sf_raw_"), Ref = make_ref(),
     {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0}, old_flow,
@@ -64,11 +82,13 @@ raw_bridge_and_purge(_Config) ->
         fetch, migrated, {old_flow, current_flow, wait, fetch})),
     {module, M} = code:load_binary(M, "sf_raw_b", B),
     ?assert(is_reference(Request)), ?assert(is_reference(Parent)),
-    _ = code:purge(M),
+    ?assertEqual(false, code:purge(M)),
     {RawOutcome, RawDone} = info_reply_state({Ref, reply}, State0),
     ?assertEqual({ok, {migrated, reply}}, RawOutcome),
     assert_completion(raw, {ok, {migrated, reply}}),
     ?assertEqual([], summaries(RawDone)),
+    ?assertEqual(1, get_counter(M, {action_calls, old_flow})),
+    ?assertEqual(true, code:purge(M)),
     unload(M).
 
 converter_and_precedence(_Config) ->
@@ -81,6 +101,25 @@ converter_and_precedence(_Config) ->
     {module, M} = code:load_binary(M, "sf_convert_b", B),
     ?assertEqual({ok, {migrated, {converted, reply}}}, info_reply({Ref, reply}, State0)),
     ?assertEqual(1, get_counter(M, converter_calls)), unload(M).
+
+converter_failure_privacy(_Config) ->
+    lists:foreach(fun({Mode, Reason}) ->
+        M = fresh("sf_convert_failure_"), Ref = make_ref(),
+        {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0},
+            old_flow, wait, old, none)),
+        {module, M} = code:load_binary(M, "sf_convert_failure_a", A),
+        {ok, State0} = start(M, M:action(Ref), converter_failure),
+        {ok, M, B, _Warnings} = compile_text(M, converter_mode_source(M, Mode)),
+        {module, M} = code:load_binary(M, "sf_convert_failure_b", B),
+        {Outcome, Done} = info_reply_state({Ref, reply}, State0),
+        ?assertEqual([], summaries(Done)),
+        ?assertMatch({error, {sf_runtime, {incompatible_frame,
+            #{module := M, stored_vsn := {1, 0, 0}, current_vsn := {2, 0, 0},
+              identity := {1, old_flow, wait}, reason := Reason}}}}, Outcome),
+        ?assertEqual(false, contains_any(Outcome,
+            [env, outcome, state, callback, 'fun', secret, sentinel])),
+        unload(M)
+    end, [{error, converter_failed}, {invalid, invalid_converter_result}]).
 
 fallback_and_failure_privacy(_Config) ->
     M = fresh("sf_fallback_"), Ref = make_ref(),
@@ -156,12 +195,37 @@ partial_source(M) -> io_lib:format("-module(~p). -vsn(1). -define(ASYNC_DO,true)
 
 version_source(M, Vsn, Block, Step, Label, Migration) ->
     Header = io_lib:format("-module(~p).~n-vsn(~p).~n-define(ASYNC_DO,true).~n-include_lib(\"async/include/async.hrl\").~n-export([action/1,complete/2,counter/1]).~n", [M, Vsn]),
-    Body = io_lib:format("action(Ref) -> sf_do(~p, [async_m || ~p, Reply <- async_m:promise(Ref), return({~p, Reply})]).~ncomplete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).~ncounter(Key) -> get(Key).~n", [Block, Step, Label]),
+    Body = io_lib:format("action(Ref) -> put({action_calls,~p}, 1 + case get({action_calls,~p}) of undefined -> 0; N -> N end), sf_do(~p, [async_m || ~p, Reply <- async_m:promise(Ref), return({~p, Reply})]).~ncomplete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).~ncounter(Key) -> get(Key).~n", [Block, Block, Block, Step, Label]),
     MigrationSource = case Migration of
         none -> [];
         {From, To, Old, New} -> io_lib:format("sf_do_code_change(V, B) -> case {V,B} of {{1,0,0},~p} -> sf_migrate({1,0,0}, [async_m || ~p, OldReply <- async_m:promise(make_ref()), return({old, OldReply})], #{from=>~p,to=>~p,steps=>#{~p=>#{to=>~p}}}); _ -> unhandled end.~n", [From, Old, From, To, Old, New])
     end,
     [Header, Body, MigrationSource].
+
+nonliteral_vsn_source(M) ->
+    io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(_,_) -> sf_migrate(1, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}).", [M]).
+
+multiple_vsn_source(M) ->
+    io_lib:format("-module(~p). -vsn({3,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(V,B) -> case {V,B} of {{1,0,0},first_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>first_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); {{2,0,0},second_flow} -> sf_migrate({2,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>second_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
+
+collision_source(M) ->
+    Bridge = list_to_atom("$sf_migrate__" ++ integer_to_list(erlang:phash2({{1,0,0},old_flow,wait}, 16#100000000))),
+    [version_source(M, {2,0,0}, current_flow, fetch, migrated,
+        {old_flow, current_flow, wait, fetch}),
+     io_lib:format("~p(_,_) -> collision.~n", [Bridge])].
+
+converter_required_source(M) ->
+    io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return({migrated, X, extra})]). sf_do_code_change(_,_) -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return({old, X})], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>fetch}}}).", [M]).
+
+converter_mode_source(M, Mode) ->
+    Converter = io_lib:format("convert(Outcome, Env) -> put(converter_calls, 1), ~s.~n", [converter_return(Mode)]),
+    [version_source(M, {2,0,0}, current_flow, fetch, migrated, none),
+     "-export([convert/2]).\n",
+     "sf_do_code_change(V, B) -> case {V,B} of {{1,0,0},old_flow} -> sf_migrate({1,0,0}, [async_m || wait, Old <- async_m:promise(make_ref()), return({old, Old})], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>fetch,convert=>{?MODULE,convert,2}}}}); _ -> unhandled end.\n",
+     Converter].
+
+converter_return(error) -> "{error, {secret, sentinel}}";
+converter_return(invalid) -> "invalid_converter_value".
 
 converter_source(M) -> [version_source(M, {2, 0, 0}, current_flow, fetch,
     migrated, none),
