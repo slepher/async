@@ -12,6 +12,7 @@
 
 parse_transform(Forms, _Options) ->
     Module = astranaut_lib:analyze_forms_module(Forms),
+    File = astranaut_lib:analyze_forms_file(Forms),
     Vsn = module_vsn(Forms),
     Collect0 = #{
         module => Module,
@@ -32,7 +33,9 @@ parse_transform(Forms, _Options) ->
         migration_generated => []
     },
     astranaut_return:to_compiler(
-        do([
+        astranaut_return:with_error(
+            fun(Error) -> astranaut_error:update_file(File, Error) end,
+            do([
             return
          || Collect0Result <- astranaut_return:fail_on_error(
                 astranaut:reduce(
@@ -46,7 +49,8 @@ parse_transform(Forms, _Options) ->
                 collect_migrations(Forms, Collect0Result)
             ),
             rewrite_module(Forms, Collect)
-        ])
+            ])
+        )
     ).
 
 collect_return(Node, State) ->
