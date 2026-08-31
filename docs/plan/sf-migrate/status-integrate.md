@@ -3,8 +3,8 @@
 ## Lane
 
 - Name: `integrate`
-- State: `working`
+- State: `candidate`
 - Active task: `task-test-2.2`
-- Candidate: `9e597478f0c7839fab494586b7148f31d72db657`
-- Next action: `dispatch nested owner/version matrix test worker`
+- Candidate: `d5264b0b3b384cd847575a4e53852d9ea67b74eb`
+- Next action: `review cumulative task-test-2.2 checkpoint`
 - Blocker: `none`
