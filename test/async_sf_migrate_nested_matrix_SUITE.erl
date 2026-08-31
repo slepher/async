@@ -8,7 +8,8 @@
 suite() -> [{timetrap, {seconds, 60}}].
 all() -> [parent_converter_child_raw, parent_raw_child_converter,
     direct_ac_and_bc_pairings, omitted_automatic_step,
-    mixed_unfinished_converter_parent, nested_failure_isolation_privacy].
+    mixed_unfinished_converter_parent, nested_failure_isolation_privacy,
+    nested_failure_isolation_privacy_sibling].
 init_per_suite(Config) -> async:start(), Config.
 end_per_suite(_) -> flush(), ok.
 
@@ -97,6 +98,43 @@ nested_failure_isolation_privacy(_) ->
     ?assertEqual({ok, unhandled}, async_m:run_info({make_ref(), late},
         #state.callbacks, Done)), cleanup(O, P).
 
+nested_failure_isolation_privacy_sibling(_) ->
+    BadOrder = fresh("matrix_bad_order_"), GoodOrder = fresh("matrix_good_order_"),
+    BadPayment = fresh("matrix_bad_payment_"), GoodPayment = fresh("matrix_good_payment_"),
+    load(BadPayment, 1, payment, none, []),
+    load(GoodPayment, 1, payment, none, []),
+    load_order(BadOrder, 1, BadPayment, []), load_order(GoodOrder, 1, GoodPayment, []),
+    BadRef = make_ref(), GoodRef = make_ref(),
+    {ok, S0} = async_m:run_sf_frame(BadOrder:run({make_ref(), BadRef}),
+        cc(BadOrder, bad), #state.callbacks, #state{}),
+    {ok, S1} = async_m:run_sf_frame(GoodOrder:run({make_ref(), GoodRef}),
+        cc(GoodOrder, good), #state.callbacks, S0),
+    load_order(BadOrder, 2, BadPayment, [1]),
+    load_order(GoodOrder, 2, GoodPayment, [1]),
+    load(BadPayment, 2, payment, invalid, [1]),
+    load(GoodPayment, 2, payment, none, [1]),
+    {BadOutcome, S2} = async_m:run_info({BadRef, bad_reply},
+        #state.callbacks, S1),
+    ?assertMatch({error, {sf_runtime, {incompatible_frame,
+        #{module := BadPayment, reason := invalid_converter_result}}}}, BadOutcome),
+    ?assertEqual(false, contains_any(BadOutcome,
+        [env, outcome, state, callback, 'fun', secret, sentinel])),
+    ?assert(lists:any(fun(S) -> child_frame_matches(S, GoodPayment) end,
+        summaries(S2))),
+    assert_completion(bad, BadOutcome), assert_no_completion(good),
+    {GoodOutcome, Done} = async_m:run_info({GoodRef, good_reply},
+        #state.callbacks, S2),
+    ?assertMatch({ok, {order, {2,0,0},
+        {ok, {payment, {2,0,0}, good_reply, {resume, payment}}},
+        {resume, order}}}, GoodOutcome),
+    ?assertEqual([], summaries(Done)),
+    assert_completion(good, GoodOutcome), assert_no_completion(bad),
+    ?assertEqual({ok, unhandled}, async_m:run_info({BadRef, late},
+        #state.callbacks, Done)),
+    ?assertEqual({ok, unhandled}, async_m:run_info({GoodRef, late},
+        #state.callbacks, Done)),
+    cleanup(BadOrder, BadPayment), cleanup(GoodOrder, GoodPayment).
+
 owners() -> {fresh("matrix_order_"), async_sf_migrate_nested_fixture:payment_module()}.
 
 start(O, _P, Tag) ->
@@ -117,7 +155,10 @@ load(M, V, Kind, Converter, Declarations) ->
     {module, M} = code:load_binary(M, atom_to_list(M) ++ integer_to_list(V), Bin), ok.
 
 source(M, V, Kind, Converter, Declarations) ->
-    Child = async_sf_migrate_nested_fixture:payment_module(),
+    source(M, V, Kind, Converter, Declarations,
+        async_sf_migrate_nested_fixture:payment_module()).
+
+source(M, V, Kind, Converter, Declarations, Child) ->
     Body = case Kind of
         order -> io_lib:format("run({_OrderRef, PaymentRef}) -> put(matrix_payment_ref, PaymentRef), sf_do(order_flow, [async_m || order_step, Child <- ~p:run(PaymentRef), Marker <- async_m:pure_return(mark({resume, order})), return({order, version(), Child, Marker})]).~n", [Child]);
         payment -> "run(Ref) -> sf_do(payment_flow, [async_m || payment_step, Reply <- async_m:promise(Ref), Marker <- async_m:pure_return(mark({resume, payment})), return({payment, version(), Reply, Marker})]).\n"
@@ -131,6 +172,11 @@ source(M, V, Kind, Converter, Declarations) ->
     Common = "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)). counter(Key) -> get(Key). version() -> " ++ io_lib:format("~p", [{V,0,0}]) ++ ". mark(Key) -> put(Key, 1 + case get(Key) of undefined -> 0; N -> N end), Key.\n",
     Decl = declarations(Declarations, Kind, Converter, V),
     iolist_to_binary([Header, Body, Common, ConverterText, Decl]).
+
+load_order(M, V, Child, Declarations) ->
+    Source = source(M, V, order, none, Declarations, Child),
+    {ok, M, Bin, _} = compile_text(M, Source),
+    {module, M} = code:load_binary(M, atom_to_list(M) ++ integer_to_list(V), Bin), ok.
 
 declarations([], _Kind, _Converter, _TargetVsn) -> [];
 declarations(Vsns, Kind, Converter, TargetVsn) ->
@@ -150,6 +196,13 @@ summaries(S) -> {ok, R} = async_m:inspect_sf_callbacks(fun(_) -> true end, #stat
 counter(M, K) -> M:counter(K).
 frame_matches(#{frame := #{module := M, vsn := V}}, M, V) -> true;
 frame_matches(_, _, _) -> false.
+child_frame_matches(#{frame := #{module := M}}, M) -> true;
+child_frame_matches(_, _) -> false.
+assert_completion(Tag, Outcome) ->
+    receive {Tag, Outcome} -> ok after 1000 -> ct:fail({missing, Tag, Outcome}) end.
+assert_no_completion(Tag) ->
+    receive {Tag, _} = Message -> ct:fail({duplicate, Message})
+    after 0 -> ok end.
 compile_text(M, Source) ->
     D = filename:join(["_build", "test", "sf_migrate_nested_matrix"]), ok = filelib:ensure_dir(filename:join(D, "x")),
     F = filename:join(D, atom_to_list(M) ++ ".erl"), ok = file:write_file(F, Source),
