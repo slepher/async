@@ -11,6 +11,9 @@ all() -> [static_fixture_contract, independent_nodes, controller_contract,
 
 init_per_suite(Config) ->
     DistStarted = ensure_distribution(),
+    ct:pal("runtime otp=~p erts=~p root=~p rebar3=~s", [
+        erlang:system_info(otp_release), erlang:system_info(version),
+        code:root_dir(), os:cmd("rebar3 --version")]),
     Priv = ?config(priv_dir, Config),
     ProjectRoot = lists:foldl(fun(_, D) -> filename:dirname(D) end,
         code:lib_dir(async), lists:seq(1, 4)),
@@ -112,10 +115,11 @@ nested_scenario_matrix(Config) ->
 release_artifacts(Config) ->
     Releases = ensure_releases(Config),
     lists:foreach(fun({_V, R}) ->
-        lists:foreach(fun(Key) -> ?assert(filelib:is_file(maps:get(Key, R))) end,
-            [rel, script, boot, tar]),
+        lists:foreach(fun(Key) -> artifact_evidence(Key, maps:get(Key, R)) end,
+            [rel, script, boot, relup, tar]),
         ct:pal("release metadata: ~p", [R])
     end, maps:to_list(Releases)),
+    ?assert(filelib:is_file(maps:get(relup, maps:get(b, Releases)))),
     ?assert(filelib:is_file(maps:get(relup, maps:get(c, Releases)))).
 
 run_application_scenario(t01, baseline_a, Config) -> baseline_version(t01, a, Config);
@@ -135,13 +139,22 @@ run_application_scenario(t06, a_to_b_to_c_direct, Config) -> with_release_node(f
     {N1, R} = order_request(N, t06), N2 = upgrade(N1, b), N3 = upgrade(N2, c),
     assert_release(N2, N3, {3,0,0}, [R], []),
     reply(N3, R, t06_reply), complete_order(t06, {3,0,0}),
-    assert_done(N3, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}) end, Config);
+    assert_done(N3, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}),
+    assert_exact_counters(N3, order, #{{action,order} => 1,
+        {request,order} => 1, {resume,order} => 1,
+        {route,{{1,0,0},{3,0,0}}} => 1}),
+    assert_no_counter(N3, order, {route, {{1,0,0},{2,0,0}}}),
+    assert_no_counter(N3, order, {converter, order}) end, Config);
 run_application_scenario(t07, a_to_c_direct, Config) -> with_release_node(fun(N) ->
     {N1, R} = order_request(N, t07), N2 = upgrade(N1, c),
     assert_release(N1, N2, {3,0,0}, [R], []),
     reply(N2, R, t07_reply), complete_order(t07, {3,0,0}),
     assert_done(N2, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}),
-    ?assertEqual(false, has_counter(N2, order, {route, {{1,0,0},{2,0,0}}})) end, Config);
+    assert_exact_counters(N2, order, #{{action,order} => 1,
+        {request,order} => 1, {resume,order} => 1,
+        {route,{{1,0,0},{3,0,0}}} => 1}),
+    assert_no_counter(N2, order, {route, {{1,0,0},{2,0,0}}}),
+    assert_no_counter(N2, order, {converter, order}) end, Config);
 run_application_scenario(t08, reply_before_upgrade, Config) -> with_release_node(fun(N) ->
     {N1, R} = order_request(N, t08), reply(N1, R, t08_reply),
     complete_order(t08, {1,0,0}), N2 = upgrade(N1, b),
@@ -160,21 +173,30 @@ run_application_scenario(t11, mixed_a_b, Config) -> with_release_node(fun(N) ->
     assert_release(N3, N4, {3,0,0}, [A,B], []),
     reply(N4, B, t11_b_reply), complete_order(t11_b, {3,0,0}),
     reply(N4, A, t11_a_reply), complete_order(t11_a, {3,0,0}),
-    assert_done(N4, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}) end, Config);
+    assert_done_count(N4, order, {3,0,0}, 2,
+        #{{action,order} => 2, {request,order} => 2, {resume,order} => 2,
+          {route,{{1,0,0},{3,0,0}}} => 1,
+          {route,{{2,0,0},{3,0,0}}} => 1}) end, Config);
 run_application_scenario(t12, mixed_a_b_c, Config) -> with_release_node(fun(N) ->
     {N1, A} = order_request(N, t12_a), N2 = upgrade(N1, b),
     {N3, B} = order_request(N2, t12_b), N4 = upgrade(N3, c),
-    {N5, C} = order_request(N4, t12_c), assert_release(N4, N5, {3,0,0}, [A,B,C], []),
+    assert_release(N3, N4, {3,0,0}, [A,B], []),
+    {N5, C} = order_request(N4, t12_c), assert_runtime(N5, {3,0,0}, [A,B,C], []),
     reply(N5, C, t12_c_reply), complete_order(t12_c, {3,0,0}),
     reply(N5, A, t12_a_reply), complete_order(t12_a, {3,0,0}),
     reply(N5, B, t12_b_reply), complete_order(t12_b, {3,0,0}),
-    assert_done(N5, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}) end, Config);
+    assert_done_count(N5, order, {3,0,0}, 3,
+        #{{action,order} => 3, {request,order} => 3, {resume,order} => 3,
+          {route,{{1,0,0},{3,0,0}}} => 1,
+          {route,{{2,0,0},{3,0,0}}} => 1}) end, Config);
 run_application_scenario(t13, same_source_two, Config) -> with_release_node(fun(N) ->
     {N1, A} = order_request(N, t13_a), {N2, B} = order_request(N1, t13_b),
     N3 = upgrade(N2, c), assert_release(N2, N3, {3,0,0}, [A,B], []),
     reply(N3, B, t13_b_reply), complete_order(t13_b, {3,0,0}),
     reply(N3, A, t13_a_reply), complete_order(t13_a, {3,0,0}),
-    assert_done(N3, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}) end, Config);
+    assert_done_count(N3, order, {3,0,0}, 2,
+        #{{action,order} => 2, {request,order} => 2, {resume,order} => 2,
+          {route,{{1,0,0},{3,0,0}}} => 2}) end, Config);
 run_application_scenario(t14, duplicate_reply, Config) -> with_release_node(fun(N) ->
     {N1, R} = order_request(N, t14), N2 = upgrade(N1, c),
     reply(N2, R, t14_reply), complete_order(t14, {3,0,0}),
@@ -193,17 +215,25 @@ run_application_scenario(t16, continuity, Config) -> with_release_node(fun(N) ->
     assert_done(N2, order, {2,0,0}, {route, {{1,0,0},{2,0,0}}}) end, Config);
 run_application_scenario(t17, old_and_new, Config) -> with_release_node(fun(N) ->
     N1 = upgrade(N, b), {N2, Old} = order_request(N1, t17_b), N3 = upgrade(N2, c),
-    {N4, New} = order_request(N3, t17_c), assert_release(N3, N4, {3,0,0}, [Old,New], []),
+    assert_release(N2, N3, {3,0,0}, [Old], []),
+    {N4, New} = order_request(N3, t17_c), assert_runtime(N4, {3,0,0}, [Old,New], []),
     reply(N4, New, t17_c_reply), complete_order(t17_c, {3,0,0}),
-    reply(N4, Old, t17_b_reply), complete_order(t17_b, {3,0,0}) end, Config);
+    reply(N4, Old, t17_b_reply), complete_order(t17_b, {3,0,0}),
+    assert_done_count(N4, order, {3,0,0}, 2,
+        #{{action,order} => 2, {request,order} => 2, {resume,order} => 2,
+          {route,{{2,0,0},{3,0,0}}} => 1}) end, Config);
 run_application_scenario(t18, three_owner_versions, Config) -> with_release_node(fun(N) ->
     {N1, A} = order_request(N, t18_a), N2 = upgrade(N1, b),
     {N3, B} = order_request(N2, t18_b), N4 = upgrade(N3, c),
-    {N5, C} = order_request(N4, t18_c), assert_release(N4, N5, {3,0,0}, [A,B,C], []),
+    assert_release(N3, N4, {3,0,0}, [A,B], []),
+    {N5, C} = order_request(N4, t18_c), assert_runtime(N5, {3,0,0}, [A,B,C], []),
     reply(N5, A, t18_a_reply), complete_order(t18_a, {3,0,0}),
     reply(N5, C, t18_c_reply), complete_order(t18_c, {3,0,0}),
     reply(N5, B, t18_b_reply), complete_order(t18_b, {3,0,0}),
-    assert_done(N5, order, {3,0,0}, {route, {{1,0,0},{3,0,0}}}) end, Config).
+    assert_done_count(N5, order, {3,0,0}, 3,
+        #{{action,order} => 3, {request,order} => 3, {resume,order} => 3,
+          {route,{{1,0,0},{3,0,0}}} => 1,
+          {route,{{2,0,0},{3,0,0}}} => 1}) end, Config).
 
 run_nested_scenario(n01, same_a, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _PR} = nested_request(N, n01),
@@ -211,9 +241,11 @@ run_nested_scenario(n01, same_a, Config) -> with_release_node(fun(N) ->
     reply(N1, O, n01_order), complete_order(n01, {1,0,0}),
     assert_nested_done(N1, {1,0,0}, {1,0,0}) end, Config);
 run_nested_scenario(n02, order_ab_payment_a, Config) -> with_release_node(fun(N) ->
-    {N1, O, P, _} = nested_request(N, n02), N2 = upgrade(N1, b),
-    assert_release(N1, N2, {2,0,0}, [O,P], []), reply(N2, P, n02_child),
-    complete_payment({child, n02}, {2,0,0}), reply(N2, O, n02_order), complete_order(n02, {2,0,0}),
+    {N1, O, P, _} = nested_request(N, n02),
+    reply(N1, P, n02_child), complete_payment({child, n02}, {1,0,0}),
+    assert_runtime(N1, {1,0,0}, [O], []),
+    N2 = upgrade(N1, b), assert_release(N1, N2, {2,0,0}, [O], []),
+    reply(N2, O, n02_order), complete_order(n02, {2,0,0}),
     assert_nested_done(N2, {2,0,0}, {2,0,0}) end, Config);
 run_nested_scenario(n03, order_a_payment_ac, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n03), N2 = upgrade(N1, b), N3 = upgrade(N2, c),
@@ -235,19 +267,44 @@ run_nested_scenario(n06, parent_converter_child_raw, Config) -> with_release_nod
     {N1, O, P, _} = nested_request(N, n06), N2 = upgrade(N1, b),
     reply(N2, P, n06_child_raw), complete_payment({child, n06}, {2,0,0}),
     reply(N2, O, n06_parent), complete_order(n06, {2,0,0}),
-    assert_nested_done(N2, {2,0,0}, {2,0,0}) end, Config);
+    assert_nested_done(N2, {2,0,0}, {2,0,0}),
+    assert_exact_counters(N2, order, #{{request,order} => 1,
+        {action,order} => 1, {route, {{1,0,0},{2,0,0}}} => 2,
+        {resume,order} => 2, {converter,order} => 2}),
+    assert_exact_counters(N2, payment, #{{request,payment} => 1,
+        {action,payment} => 1, {route, {{1,0,0},{2,0,0}}} => 1,
+        {resume,payment} => 1}) end, Config);
 run_nested_scenario(n07, parent_raw_child_converter, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n07), N2 = upgrade(N1, b), N3 = upgrade(N2, c),
     reply(N3, P, n07_child), complete_payment({child, n07}, {3,0,0}),
     reply(N3, O, n07_parent), complete_order(n07, {3,0,0}),
-    assert_nested_done(N3, {3,0,0}, {3,0,0}) end, Config);
+    assert_nested_done(N3, {3,0,0}, {3,0,0}),
+    assert_exact_counters(N3, order, #{{request,order} => 1,
+        {action,order} => 1, {route, {{1,0,0},{3,0,0}}} => 2,
+        {resume,order} => 2}),
+    assert_exact_counters(N3, payment, #{{request,payment} => 1,
+        {action,payment} => 1, {route, {{1,0,0},{3,0,0}}} => 1,
+        {resume,payment} => 1,
+        {converter,payment} => 1}) end, Config);
 run_nested_scenario(n08, mixed_pending, Config) -> with_release_node(fun(N) ->
-    {N1, O, P, _} = nested_request(N, n08), N2 = upgrade(N1, b),
-    {N3, Extra} = order_request(N2, n08_extra), N4 = upgrade(N3, c),
-    reply(N4, P, n08_child), complete_payment({child, n08}, {3,0,0}),
-    reply(N4, Extra, n08_extra_reply), complete_order(n08_extra, {3,0,0}),
-    reply(N4, O, n08_parent), complete_order(n08, {3,0,0}),
-    assert_nested_done_count(N4, {3,0,0}, {3,0,0}, 2) end, Config);
+    Sentinel = {privacy_sentinel, make_ref()}, TagA = n08_a,
+    TagB = {n08_b, Sentinel},
+    {N1, OA, PA, _} = nested_request(N, TagA),
+    {N2, OB, PB, _} = nested_request(N1, TagB),
+    ?assertEqual(lists:sort([OA, OB, PA, PB]),
+        lists:sort(maps:get(controller_pending, observe(N2)))),
+    N3 = upgrade(N2, c),
+    assert_release(N2, N3, {3,0,0}, [OA, OB], [PA, PB]),
+    reply(N3, PB, n08_b_child), PBOutcome = complete_payment({child, TagB}, {3,0,0}),
+    assert_no_sentinel(PBOutcome, Sentinel),
+    assert_nested_progress(N3, [OA, OB], [PA], 0, 1),
+    reply(N3, OB, n08_b_parent), OBOutcome = complete_order(TagB, {3,0,0}),
+    assert_no_sentinel(OBOutcome, Sentinel),
+    assert_nested_progress(N3, [OA], [PA], 1, 1),
+    reply(N3, PA, n08_a_child), complete_payment({child, TagA}, {3,0,0}),
+    assert_nested_progress(N3, [OA], [], 1, 2),
+    reply(N3, OA, n08_a_parent), complete_order(TagA, {3,0,0}),
+    assert_nested_done_count(N3, {3,0,0}, {3,0,0}, 2) end, Config);
 run_nested_scenario(n09, bounded_child_failure, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n09), N2 = upgrade(N1, c),
     reply(N2, P, {error, child_failed}),
@@ -255,13 +312,19 @@ run_nested_scenario(n09, bounded_child_failure, Config) -> with_release_node(fun
         complete_payment({child, n09}, {3,0,0})),
     reply(N2, O, n09_parent), complete_order_error(n09),
     ?assertEqual(1, maps:get(completion_count, maps:get(order, observe(N2)))),
-    ?assertEqual(false, contains_private(maps:get(completions, maps:get(order, observe(N2))))) end, Config);
+    ?assertEqual(false, contains_private(maps:get(completions, maps:get(order, observe(N2))))),
+    assert_no_completion(n09) end, Config);
 run_nested_scenario(n10, child_late_duplicate, Config) -> with_release_node(fun(N) ->
     {N1, O, P, _} = nested_request(N, n10), N2 = upgrade(N1, c),
-    reply(N2, P, n10_child), complete_payment({child, n10}, {3,0,0}),
+    reply(N2, O, n10_parent), assert_runtime(N2, {3,0,0}, [], [P]),
+    assert_no_completion(n10),
+    reply(N2, P, n10_child),
+    ChildOutcome = complete_payment({child, n10}, {3,0,0}),
+    ?assertMatch({ok, {payment, _, _, _}}, ChildOutcome),
     ?assertEqual({error, already_replied}, reply_result(N2, P, duplicate_child)),
-    reply(N2, O, n10_parent), complete_order(n10, {3,0,0}),
-    assert_nested_done(N2, {3,0,0}, {3,0,0}), assert_no_completion(n10) end, Config).
+    assert_no_completion({child, n10}),
+    complete_order(n10, {3,0,0}), assert_nested_done(N2, {3,0,0}, {3,0,0}),
+    assert_no_completion(n10) end, Config).
 
 baseline_version(Id, V, Config) ->
     N = start_fixture_node(V, Config),
@@ -309,10 +372,15 @@ node_snapshot(#{peer := P, controller := C}) ->
     Apps = peer:call(P, application, which_applications, []),
     Order = peer:call(P, order_flow, status, []),
     Payment = peer:call(P, payment_flow, status, []),
-    #{apps => Apps, marker => maps:get(marker, Order),
+    Pending = peer:call(P, test_async_controller, pending, [C]),
+    #{apps => Apps, application => application_identity(Apps),
+      marker => maps:get(marker, Order),
       version => maps:get(version, Order), controller => C,
       controller_counts => peer:call(P, test_async_controller, counts, [C]),
-      controller_pending => peer:call(P, test_async_controller, pending, [C]),
+      controller_pending => Pending,
+      controller_identities => [{MRef,
+          peer:call(P, test_async_controller, identity, [C, MRef])} ||
+          MRef <- Pending],
       order => Order, payment => Payment,
       tree => #{top => peer:call(P, erlang, whereis, [sf_fixture_sup]),
           order_sup => peer:call(P, erlang, whereis, [order_sup]),
@@ -370,7 +438,7 @@ nested_request(N, Tag) ->
     ParentRef = maps:get(parent, Refs),
     held_request(O, {order, Vsn, Tag}),
     held_request(PRef, {payment, Vsn, {child, Tag}}),
-    assert_runtime(N, Vsn, [O], [PRef]),
+    assert_runtime_has(N, Vsn, [O, PRef]),
     ?assert(is_reference(ParentRef)),
     ?assertMatch({pending, {_, O}},
         peer:call(P, test_async_controller, identity, [C, O])),
@@ -422,25 +490,46 @@ assert_runtime_has(N, Vsn, Refs) ->
     Pending = maps:get(controller_pending, S),
     lists:foreach(fun(MRef) -> ?assert(lists:member(MRef, Pending)) end, Refs), S.
 assert_release(BeforeN, AfterN, Vsn, OrderRefs, PaymentRefs) ->
-    Before = observe(BeforeN), After = observe(AfterN),
+    _ = BeforeN,
+    Before = maps:get(before_upgrade, AfterN),
+    After = maps:get(after_upgrade, AfterN),
+    ct:pal("release snapshots before=~p after=~p", [Before, After]),
+    ?assertEqual(maps:get(application, Before), maps:get(application, After)),
     ?assertEqual(maps:get(controller, Before), maps:get(controller, After)),
     ?assertEqual(maps:get(controller_counts, Before), maps:get(controller_counts, After)),
+    ?assertEqual(maps:get(controller_pending, Before), maps:get(controller_pending, After)),
+    ?assertEqual(maps:get(controller_identities, Before),
+        maps:get(controller_identities, After)),
     ?assertEqual(maps:get(tree, Before), maps:get(tree, After)),
     lists:foreach(fun(MRef) ->
-        ?assertMatch({pending, {_, MRef}},
+        {MRef, ExpectedIdentity} = lists:keyfind(MRef, 1,
+            maps:get(controller_identities, Before)),
+        ?assertEqual(ExpectedIdentity,
             peer:call(maps:get(peer, AfterN), test_async_controller, identity,
                 [maps:get(controller, AfterN), MRef]))
     end, OrderRefs ++ PaymentRefs),
     assert_runtime(AfterN, Vsn, OrderRefs, PaymentRefs).
 upgrade(N, Target) ->
-    install_release(N, Target), N#{current => Target}.
+    {ok, Before, After} = install_release(N, Target),
+    N#{current => Target, before_upgrade => Before, after_upgrade => After}.
 assert_done(N, Owner, Vsn, Route) ->
+    S = observe(N), Status = maps:get(Owner, S),
+    ct:pal("scenario final owner=~p vsn=~p status=~p controller=~p",
+        [Owner, Vsn, Status, maps:get(controller_counts, S)]),
+    ?assertEqual(Vsn, maps:get(version, Status)),
+    ?assertEqual(0, maps:get(pending, Status)),
+    ?assertEqual(1, maps:get(completion_count, Status)),
+    case Route of undefined -> ok; _ -> ?assert(has_counter(N, Owner, Route)) end,
+    ?assertEqual(0, maps:get(pending, maps:get(controller_counts, S))).
+assert_done_count(N, Owner, Vsn, Count, ExpectedCounters) ->
     S = observe(N), Status = maps:get(Owner, S),
     ?assertEqual(Vsn, maps:get(version, Status)),
     ?assertEqual(0, maps:get(pending, Status)),
-    ?assert(maps:get(completion_count, Status) >= 1),
-    case Route of undefined -> ok; _ -> ?assert(has_counter(N, Owner, Route)) end,
-    ?assertEqual(0, maps:get(pending, maps:get(controller_counts, S))).
+    ?assertEqual(Count, maps:get(completion_count, Status)),
+    ?assertEqual(ExpectedCounters, maps:get(counters, Status)),
+    ?assertEqual([], maps:get(controller_pending, S)),
+    ?assertEqual(#{pending => 0, replied => Count},
+        maps:get(controller_counts, S)).
 assert_nested_done(N, OrderVsn, PaymentVsn) ->
     assert_nested_done_count(N, OrderVsn, PaymentVsn, 1).
 assert_nested_done_count(N, OrderVsn, PaymentVsn, OrderCount) ->
@@ -448,13 +537,22 @@ assert_nested_done_count(N, OrderVsn, PaymentVsn, OrderCount) ->
     ?assertEqual(OrderVsn, maps:get(version, maps:get(order, S))),
     ?assertEqual(PaymentVsn, maps:get(version, maps:get(payment, S))),
     ?assertEqual(OrderCount, maps:get(completion_count, maps:get(order, S))),
-    ?assertEqual(1, maps:get(completion_count, maps:get(payment, S))),
+    ?assertEqual(OrderCount, maps:get(completion_count, maps:get(payment, S))),
     ?assertEqual(0, maps:get(pending, maps:get(order, S))),
     ?assertEqual(0, maps:get(pending, maps:get(payment, S))),
-    ?assertEqual(#{pending => 0, replied => OrderCount + 1},
+    ?assertEqual(#{pending => 0, replied => OrderCount * 2},
         maps:get(controller_counts, S)).
+assert_nested_progress(N, OrderRefs, PaymentRefs, OrderCount, PaymentCount) ->
+    S = assert_runtime(N, current_version(N), OrderRefs, PaymentRefs),
+    ?assertEqual(OrderCount, maps:get(completion_count, maps:get(order, S))),
+    ?assertEqual(PaymentCount, maps:get(completion_count, maps:get(payment, S))),
+    S.
 has_counter(N, Owner, Key) ->
     maps:is_key(Key, maps:get(counters, maps:get(Owner, observe(N)))).
+assert_exact_counters(N, Owner, Expected) ->
+    ?assertEqual(Expected, maps:get(counters, maps:get(Owner, observe(N)))).
+assert_no_counter(N, Owner, Key) ->
+    ?assertEqual(false, maps:is_key(Key, maps:get(counters, maps:get(Owner, observe(N))))).
 
 held(Expected) ->
     receive {controller_held, MRef, Expected} -> {MRef, Expected}
@@ -486,6 +584,18 @@ contains_any(Term, Needles) when is_tuple(Term) ->
 contains_any(Term, Needles) when is_map(Term) ->
     contains_any(maps:to_list(Term), Needles);
 contains_any(Term, Needles) -> lists:member(Term, Needles).
+application_identity(Apps) ->
+    {sf_fixture, _Description, _Vsn} = lists:keyfind(sf_fixture, 1, Apps),
+    sf_fixture.
+assert_no_sentinel(Term, Sentinel) -> ?assertEqual(false, contains_term(Term, Sentinel)).
+contains_term(Term, Needle) when Term =:= Needle -> true;
+contains_term(Term, Needle) when is_list(Term) ->
+    lists:any(fun(E) -> contains_term(E, Needle) end, Term);
+contains_term(Term, Needle) when is_tuple(Term) ->
+    contains_term(tuple_to_list(Term), Needle);
+contains_term(Term, Needle) when is_map(Term) ->
+    contains_term(maps:to_list(Term), Needle);
+contains_term(_, _) -> false.
 
 flush() -> receive _ -> flush() after 0 -> ok end.
 
@@ -532,7 +642,9 @@ stage_release(V, Vsn, Base, Apps, Config) ->
     ok = write_term(Rel, RelTerm),
     Paths = [filename:join([Lib, app_dir_name(App, Vsn), "ebin"]) || App <- Apps],
     BaseName = filename:rootname(Rel),
-    ok = systools_ok(systools:make_script(BaseName, [{path, Paths}, silent])),
+    ScriptResult = systools:make_script(BaseName, [{path, Paths}, silent]),
+    ct:pal("systools make_script path=~s result=~p", [BaseName, ScriptResult]),
+    ok = systools_ok(ScriptResult),
     #{version => V, vsn => Vsn, root => Root, lib => Lib, rel => Rel,
       base => BaseName, paths => Paths, script => BaseName ++ ".script",
       boot => BaseName ++ ".boot", tar => BaseName ++ ".tar.gz",
@@ -543,11 +655,15 @@ make_relup(Current, Old) ->
     Bases = [maps:get(base, R) || R <- Old],
     Result = systools:make_relup(maps:get(base, Current), Bases, Bases,
         [{path, Paths}, {outdir, filename:dirname(maps:get(rel, Current))}, silent]),
+    ct:pal("systools make_relup path=~s result=~p",
+        [filename:join(filename:dirname(maps:get(rel, Current)), "relup"), Result]),
     systools_ok(Result).
 
 make_release_tar(R) ->
-    ok = systools_ok(systools:make_tar(maps:get(base, R),
-        [{path, maps:get(paths, R)}, silent])), R.
+    Result = systools:make_tar(maps:get(base, R),
+        [{path, maps:get(paths, R)}, silent]),
+    ct:pal("systools make_tar path=~s result=~p", [maps:get(tar, R), Result]),
+    ok = systools_ok(Result), R.
 
 stage_app(App, Lib) ->
     Source = code:lib_dir(App),
@@ -599,23 +715,32 @@ systools_ok(Other) -> ct:fail({systools, Other}).
 
 start_release_node(Releases, _Config) ->
     A = maps:get(a, Releases), Root = maps:get(root, A),
-    ok = release_handler:create_RELEASES(Root, maps:get(rel, A)),
+    CreateReleases = release_handler:create_RELEASES(Root, maps:get(rel, A)),
+    ct:pal("release_handler:create_RELEASES(~s) -> ~p", [maps:get(rel, A),
+        CreateReleases]),
+    ok = CreateReleases,
     Name = unique_atom("sf_release_a_"),
     TestPath = filename:dirname(code:which(test_async_controller)),
     Erts = "erts-" ++ erlang:system_info(version),
     Erl = filename:join([Root, Erts, "bin", "erl"]),
     Args = ["-boot", maps:get(base, A),
         "-boot_var", "RELEASE_LIB", maps:get(lib, A), "-pa", TestPath],
-    {ok, P, Node} = peer:start_link(#{name => Name, connection => standard_io,
+    ct:pal("release node exec=~s args=~p env=~p", [Erl, Args,
+        [{"ERL_ROOTDIR", Root}]]),
+    PeerResult = peer:start_link(#{name => Name, connection => standard_io,
         exec => Erl, env => [{"ERL_ROOTDIR", Root}], args => Args}),
+    ct:pal("release node peer:start_link result=~p", [PeerResult]),
+    {ok, P, Node} = PeerResult,
     pong = net_adm:ping(Node),
     {ok, C} = peer:call(P, test_async_controller, start_link, [self()]),
-    #{peer => P, node => Node, controller => C, releases => Releases,
-      current => a, root => Root}.
+    N = #{peer => P, node => Node, controller => C, releases => Releases,
+      current => a, root => Root},
+    ct:pal("release node status node=~p status=~p", [Node, observe(N)]), N.
 
 install_release(#{peer := P, releases := Releases, root := Root} = N, Target) ->
+    Before = observe(N),
+    ct:pal("release_handler snapshot before target=~p: ~p", [Target, Before]),
     R = maps:get(Target, Releases), Name = "sf_release-" ++ maps:get(vsn, R),
-    BeforeController = maps:get(controller, N),
     {ok, _} = file:copy(maps:get(tar, R),
         filename:join([Root, "releases", Name ++ ".tar.gz"])),
     Unpack = peer:call(P, release_handler, unpack_release, [Name]),
@@ -628,9 +753,26 @@ install_release(#{peer := P, releases := Releases, root := Root} = N, Target) ->
     Install = peer:call(P, release_handler, install_release, [maps:get(vsn, R)]),
     ct:pal("release_handler:install_release(~p) -> ~p", [maps:get(vsn,R), Install]),
     ?assertMatch({ok, _, _}, Install),
-    ?assertEqual(BeforeController, maps:get(controller, N)),
+    ?assertEqual(maps:get(controller, Before), maps:get(controller, observe(N))),
     ?assertEqual(Target, peer:call(P, order_flow, marker, [])),
     Which = peer:call(P, release_handler, which_releases, []),
+    ct:pal("release_handler:which_releases() -> ~p", [Which]),
     ?assert(lists:any(fun({"sf_release", V, _, Status}) ->
         V =:= maps:get(vsn,R) andalso lists:member(Status,[current,permanent])
-    end, Which)), ok.
+    end, Which)),
+    After = observe(N),
+    ct:pal("release_handler snapshot after target=~p: ~p", [Target, After]),
+    {ok, Before, After}.
+
+artifact_evidence(Key, Path) ->
+    Exists = filelib:is_file(Path),
+    Sha = case Exists of
+        true -> {ok, Bin} = file:read_file(Path),
+            hex(crypto:hash(sha256, Bin));
+        false -> missing
+    end,
+    ct:pal("release artifact key=~p path=~s exists=~p sha256=~p",
+        [Key, Path, Exists, Sha]),
+    case Key of relup -> ok; _ -> ?assert(Exists) end.
+
+hex(Bin) -> lists:flatten([io_lib:format("~2.16.0B", [B]) || B <- binary_to_list(Bin)]).

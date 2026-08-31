@@ -2,7 +2,7 @@
 -define(ASYNC_DO, true).
 -include_lib("async/include/async.hrl").
 -export([start_link/0, start/3, start_child/4, status/0, version/0, marker/0,
-    complete/2]).
+    complete/2, convert_payment/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 -record(state, {callbacks = #{}, completions = [], errors = []}).
@@ -20,7 +20,7 @@ init([]) -> {ok, #state{}}.
 handle_call({start, Controller, Tag, Parent, Observer}, _From, State) ->
     MRef = async_gen_server:call(Controller, {payment, ?VSN, Tag}),
     mark({request, payment}),
-    {_Started, NewState} = async_m:run_sf_frame(action(MRef),
+    {_Started, NewState} = async_m:run_sf_frame(action(MRef, child_mode(Tag)),
         cc(Observer, Tag, Parent), #state.callbacks, State),
     {reply, {ok, MRef}, NewState};
 handle_call(status, _From, #state{callbacks = Callbacks, completions = Done,
@@ -40,7 +40,14 @@ handle_info(Info, State) ->
 terminate(_Reason, _State) -> ok.
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
-action(MRef) ->
+action(MRef) -> action(MRef, raw).
+action(MRef, child_converter) ->
+    mark({action, payment}),
+    sf_do(payment_nested_converter_flow, [async_m || wait,
+        Reply <- async:promise_mref(MRef),
+        Resume <- async_m:pure_return(mark({resume, payment})),
+        return({payment, ?VSN, Reply, Resume})]);
+action(MRef, raw) ->
     mark({action, payment}),
     sf_do(payment_flow, [async_m || wait,
         Reply <- async:promise_mref(MRef),
@@ -54,6 +61,10 @@ complete(Outcome, {Pid, Observer, Tag, Parent}) ->
     async_r_t:return(Outcome, async_r_t:new(identity)).
 cc(Observer, Tag, Parent) -> #{kind => sf_cc, protocol => 1,
     mfa => {?MODULE, complete, 2}, context => {self(), Observer, Tag, Parent}}.
+child_mode({child, n07}) -> child_converter;
+child_mode(_) -> raw.
+convert_payment(Outcome, Env) ->
+    mark({converter, payment}), {ok, Outcome, Env}.
 mark(Key) -> put(Key, 1 + case get(Key) of undefined -> 0; N -> N end), Key.
 counters() -> maps:from_list([{K, V} || {K, V} <- get(), is_tuple(K),
     tuple_size(K) =:= 2]).

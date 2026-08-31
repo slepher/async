@@ -2,7 +2,7 @@
 -define(ASYNC_DO, true).
 -include_lib("async/include/async.hrl").
 -export([start_link/0, start/3, start_nested/4, status/0, version/0, marker/0,
-    complete/2]).
+    complete/2, convert_order/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2,
     code_change/3]).
 -record(state, {callbacks = #{}, completions = [], errors = []}).
@@ -29,7 +29,7 @@ handle_call({nested, Controller, Tag, ChildRequest, Observer}, _From, State) ->
     {ok, ChildMRef} = payment_flow:start_child(
         Controller, ChildRequest, {self(), ParentRef}, Observer),
     mark({request, order}),
-    {_Started, NewState} = async_m:run_sf_frame(nested_action(MRef, ParentRef),
+    {_Started, NewState} = async_m:run_sf_frame(nested_action(MRef, ParentRef, Tag),
         cc(Observer, Tag), #state.callbacks, State),
     {reply, {ok, #{order => MRef, payment => ChildMRef, parent => ParentRef}},
         NewState};
@@ -58,14 +58,24 @@ action(MRefs) ->
         Resume <- async_m:pure_return(mark({resume, order})),
         return(order_result(MRefs, Replies, Resume))]).
 
-nested_action(MRef, ParentRef) ->
-    nested_action([MRef, ParentRef]).
+nested_action(MRef, ParentRef, Tag) ->
+    nested_action([MRef, ParentRef], nested_mode(Tag)).
+nested_action(MRefs, parent_converter) ->
+    mark({action, order}),
+    sf_do(order_nested_converter_flow, [async_m || wait,
+        Replies <- async_m:par([async:promise_mref(R) || R <- MRefs]),
+        Resume <- async_m:pure_return(mark({resume, order})),
+        return(order_result(MRefs, Replies, Resume))]);
+nested_action(MRefs, raw) -> nested_action(MRefs).
 nested_action(MRefs) ->
     mark({action, order}),
     sf_do(order_nested_flow, [async_m || wait,
         Replies <- async_m:par([async:promise_mref(R) || R <- MRefs]),
         Resume <- async_m:pure_return(mark({resume, order})),
         return(order_result(MRefs, Replies, Resume))]).
+
+nested_mode(n06) -> parent_converter;
+nested_mode(_) -> raw.
 
 order_result(_MRefs,
         [OrderReply, {ok, {payment, _, {error, Reason}, _}}], _Resume) ->
@@ -79,6 +89,9 @@ order_result(_MRefs, OrderReply, Resume) ->
         undefined -> {order, ?VSN, OrderReply, Resume};
         Reason -> {error, {child, Reason, OrderReply}}
     end.
+
+convert_order(Outcome, Env) ->
+    mark({converter, order}), {ok, Outcome, Env}.
 
 complete(Outcome, {Pid, Observer, Tag}) ->
     Observer ! {order_complete, Tag, Outcome},

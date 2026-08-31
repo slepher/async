@@ -13,5 +13,14 @@ sf_do_code_change(V, B) -> case {V, B} of
             return({payment, ?VSN, Reply, Resume})],
             #{from => payment_flow, to => payment_flow,
               steps => #{wait => #{to => wait}}});
+    {{1,0,0}, payment_nested_converter_flow} ->
+        mark({route, {{1,0,0}, {2,0,0}}}),
+        sf_migrate({1,0,0}, [async_m || wait,
+            Reply <- async:promise_mref(make_ref()),
+            Resume <- async_m:pure_return(mark({resume, payment})),
+            return({payment, ?VSN, Reply, Resume})],
+            #{from => payment_nested_converter_flow, to => payment_nested_converter_flow,
+              steps => #{wait => #{to => wait,
+                  convert => {?MODULE, convert_payment, 2}}}});
     _ -> unhandled
 end.
