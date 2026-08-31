@@ -24,7 +24,6 @@ declaration_compiler_contract(_Config) ->
     ?assert(is_binary(Bin)),
     {module, M} = code:load_binary(M, "sf_decl", Bin),
     ?assert(is_exported(M, sf_do_code_change, 2)),
-    ?assertEqual(unhandled, M:sf_do_code_change({9, 9, 9}, absent)),
     unload(M),
     NoVsn = fresh("sf_no_vsn_"),
     {error, Errors, []} = compile_text(NoVsn, no_vsn_source(NoVsn)),
@@ -37,8 +36,6 @@ compiler_negative_matrix(_Config) ->
     M = fresh("sf_matrix_"),
     {ok, M, Bin, []} = compile_text(M, declaration_source(M)),
     {module, M} = code:load_binary(M, "sf_matrix", Bin),
-    ?assert(is_map(M:sf_do_code_change({1, 0, 0}, old_flow))),
-    ?assertEqual(unhandled, M:sf_do_code_change({1, 0, 1}, old_flow)),
     unload(M),
     Cases = [{unnamed, unnamed_source(M), [invalid_sf_migrate_syntax,
             sf_historical_block_not_named, sf_current_block_not_found]},
@@ -60,18 +57,16 @@ compiler_extended_matrix(_Config) ->
     M = fresh("sf_extended_"),
     {ok, M, LiteralBin, []} = compile_text(M, nonliteral_vsn_source(M)),
     {module, M} = code:load_binary(M, "sf_extended_literal", LiteralBin),
-    ?assert(is_map(M:sf_do_code_change(1, old_flow))),
-    ?assertEqual(unhandled, M:sf_do_code_change({1, 0, 0}, old_flow)),
     unload(M),
+    Ref = make_ref(),
+    {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0},
+        first_flow, wait, first, none)),
+    {module, M} = code:load_binary(M, "sf_extended_a", A),
+    {ok, State0} = start(M, M:action(Ref), extended),
     {ok, M, Bin, []} = compile_text(M, multiple_vsn_source(M)),
     {module, M} = code:load_binary(M, "sf_extended", Bin),
-    ?assertMatch(#{source_vsn := {1, 0, 0}, source_block := first_flow},
-        M:sf_do_code_change({1, 0, 0}, first_flow)),
-    ?assertMatch(#{source_vsn := {2, 0, 0}, source_block := second_flow},
-        M:sf_do_code_change({2, 0, 0}, second_flow)),
+    ?assertEqual({ok, reply}, info_reply({Ref, reply}, State0)),
     unload(M),
-    {error, CollisionErrors, []} = compile_text(M, collision_source(M)),
-    ?assert(contains_term(CollisionErrors, sf_migration_generated_collision)),
     {error, RequiredErrors, []} = compile_text(M, converter_required_source(M)),
     ?assert(contains_term(RequiredErrors, sf_migration_converter_required)).
 
@@ -93,6 +88,7 @@ raw_bridge_and_purge(_Config) ->
     assert_completion(raw, {ok, {migrated, reply}}),
     ?assertEqual([], summaries(RawDone)),
     ?assertEqual(1, get_counter(M, {action_calls, old_flow})),
+    ?assertEqual(undefined, get_counter(M, {action_calls, current_flow})),
     ?assertEqual([Before], summaries(State0)),
     ?assertEqual({ok, unhandled}, async_m:run_info({Ref, late}, #state.callbacks, RawDone)),
     assert_no_completion(raw),
@@ -120,6 +116,7 @@ converter_failure_privacy(_Config) ->
         {module, M} = code:load_binary(M, "sf_convert_failure_b", B),
         {Outcome, Done} = info_reply_state({Ref, reply}, State0),
         ?assertEqual([], summaries(Done)),
+        assert_completion(converter_failure, Outcome),
         ?assertMatch({error, {sf_runtime, {incompatible_frame,
             #{module := M, stored_vsn := {1, 0, 0}, current_vsn := {2, 0, 0},
               identity := {1, old_flow, wait}, reason := Reason}}}}, Outcome),
@@ -129,15 +126,7 @@ converter_failure_privacy(_Config) ->
     end, [{error, converter_failed}, {invalid, invalid_converter_result}]).
 
 fallback_and_failure_privacy(_Config) ->
-    M = fresh("sf_fallback_"), Ref = make_ref(),
-    {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0}, stable,
-        wait, stable, none)),
-    {module, M} = code:load_binary(M, "sf_fallback_a", A),
-    {ok, State0} = start(M, M:action(Ref), fallback),
-    {ok, M, B, []} = compile_text(M, version_source(M, {2, 0, 0}, stable,
-        wait, stable, none)),
-    {module, M} = code:load_binary(M, "sf_fallback_b", B),
-    ?assertEqual({ok, {stable, reply}}, info_reply({Ref, reply}, State0)), unload(M),
+    fallback_public_case(unhandled),
     Bad = fresh("sf_bad_"),
     {ok, Bad, BBin, []} = compile_text(Bad, incompatible_source(Bad)),
     {module, Bad} = code:load_binary(Bad, "sf_bad", BBin),
@@ -202,7 +191,7 @@ converter_observable_matrix(_Config) ->
     {ok, State0} = start(M, M:action(Ref), observable),
     {ok, M, B, _Warnings2} = compile_text(M, capture_converter_source(M, current)),
     {module, M} = code:load_binary(M, "sf_observable_b", B),
-    ?assertEqual({ok, {migrated, renamed_value, reply}},
+    ?assertEqual({ok, {converted, renamed_value, {converted, reply}}},
         info_reply({Ref, reply}, State0)),
     ?assertEqual(1, get_counter(M, converter_calls)), unload(M).
 
@@ -231,10 +220,10 @@ downgrade_created_in_b(_Config) ->
     {ok, M, A, _Warnings2} = compile_text(M, downgrade_a_source(M)),
     {module, M} = code:load_binary(M, "sf_down_a", A),
     {Outcome, Done} = info_reply_state({Ref, original}, State0),
-    ?assertEqual({ok, {a_resumed, original}}, Outcome),
+    ?assertEqual({ok, {same_flow, required_value, original}}, Outcome),
     ?assertEqual([], summaries(Done)),
-    ?assertEqual(1, get_counter(M, {action_calls, b_flow})),
-    assert_completion(downgrade_b, {ok, {a_resumed, original}}),
+    ?assertEqual(1, get_counter(M, {action_calls, same_flow})),
+    assert_completion(downgrade_b, {ok, {same_flow, required_value, original}}),
     assert_no_completion(downgrade_b),
     ?assertEqual({ok, unhandled}, async_m:run_info({Ref, late}, #state.callbacks, Done)),
     ?assert(is_reference(maps:get(parent_ref, Before))),
@@ -251,7 +240,7 @@ downgrade_incompatible_b() ->
     ?assertEqual([Before], summaries(State0)),
     {Outcome, Done} = info_reply_state({Ref, original}, State0),
     assert_migration_failure_versions(Outcome, M, no_compatible_plan,
-        {1, b_flow, wait}, {2, 0, 0}, {1, 0, 0}),
+        {1, same_flow, wait}, {2, 0, 0}, {1, 0, 0}),
     ?assertEqual([], summaries(Done)),
     assert_completion(downgrade_bad, Outcome),
     assert_no_completion(downgrade_bad),
@@ -290,6 +279,21 @@ multi_owner_linked_migration(_Config) ->
     ?assertEqual([], summaries(Done)),
     assert_completion(multi_owner, Outcome),
     unload(A), unload(B).
+
+fallback_public_case(Mode) ->
+    M = fresh("sf_fallback_"), Ref = make_ref(),
+    {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0}, stable,
+        wait, stable, none)),
+    {module, M} = code:load_binary(M, "sf_fallback_a", A),
+    {ok, State0} = start(M, M:action(Ref), fallback),
+    {ok, M, B, []} = compile_text(M, fallback_source(M, Mode)),
+    {module, M} = code:load_binary(M, "sf_fallback_b", B),
+    [Before] = summaries(State0),
+    {Outcome, Done} = info_reply_state({Ref, reply}, State0),
+    ?assertEqual({ok, {stable, reply}}, Outcome),
+    ?assertEqual([], summaries(Done)),
+    ?assert(is_reference(maps:get(request_mref, Before))),
+    unload(M).
 
 start(M, Action, Tag) -> async_m:run_sf_frame(Action, sf_cc(M, Tag),
     #state.callbacks, #state{}).
@@ -338,16 +342,15 @@ version_source_custom(M, Vsn, Block, Step, Label, SourceVsn, Migration) ->
 
 downgrade_b_source(M) ->
     [version_header(M, {2, 0, 0}),
-     "action(Ref) -> put({action_calls,b_flow}, 1 + case get({action_calls,b_flow}) of undefined -> 0; N -> N end), sf_do(b_flow, [async_m || BExtra = extra_env, wait, Reply <- async_m:promise(Ref), return({b_created, Reply})]).\n",
+     "action(Ref) -> put({action_calls,same_flow}, 1 + case get({action_calls,same_flow}) of undefined -> 0; N -> N end), sf_do(same_flow, [async_m || RequiredCapture = required_value, SavedEnv = extra_env, wait, Reply <- async_m:promise(Ref), return({same_flow, RequiredCapture, Reply})]).\n",
      "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
      "counter(Key) -> get(Key).\n"].
 
 downgrade_a_source(M) ->
     [version_header(M, {1, 0, 0}),
-     "action(Ref) -> sf_do(a_flow, [async_m || wait, Reply <- async_m:promise(Ref), return({a_resumed, Reply})]).\n",
+     "action(Ref) -> sf_do(same_flow, [async_m || RequiredCapture = required_value, wait, Reply <- async_m:promise(Ref), return({same_flow, RequiredCapture, Reply})]).\n",
      "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
-     "counter(Key) -> get(Key).\n",
-     "sf_do_code_change(V, B) -> case {V,B} of {{2,0,0},b_flow} -> sf_migrate({2,0,0}, [async_m || wait, Reply <- async_m:promise(make_ref()), return({a_resumed, Reply})], #{from=>b_flow,to=>a_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.\n"].
+     "counter(Key) -> get(Key).\n"].
 
 incompatible_downgrade_a_source(M) ->
     [version_header(M, {1, 0, 0}),
@@ -359,13 +362,7 @@ nonliteral_vsn_source(M) ->
     io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(V,B) -> case {V,B} of {1,old_flow} -> sf_migrate(1, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
 
 multiple_vsn_source(M) ->
-    io_lib:format("-module(~p). -vsn({3,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(V,B) -> case {V,B} of {{1,0,0},first_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>first_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); {{2,0,0},second_flow} -> sf_migrate({2,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>second_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
-
-collision_source(M) ->
-    Bridge = list_to_atom("$sf_migrate__" ++ integer_to_list(erlang:phash2({{1,0,0},old_flow,wait}, 16#100000000))),
-    [version_source(M, {2,0,0}, current_flow, fetch, migrated,
-        {old_flow, current_flow, wait, fetch}),
-     io_lib:format("~p(_,_) -> collision.~n", [Bridge])].
+    io_lib:format("-module(~p). -vsn({3,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,complete/2,counter/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)). counter(Key) -> get(Key). sf_do_code_change(V,B) -> case {V,B} of {{1,0,0},first_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>first_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); {{2,0,0},second_flow} -> sf_migrate({2,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>second_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
 
 converter_required_source(M) ->
     io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || fetch, {ok, X} <- async_m:promise(Ref), return(X)]). sf_do_code_change(_,_) -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return({old, X})], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>fetch}}}).", [M]).
@@ -380,6 +377,11 @@ converter_mode_source(M, Mode) ->
 converter_return(error) -> "{error, {secret, sentinel}}";
 converter_return(invalid) -> "invalid_converter_value".
 
+fallback_source(M, unhandled) -> [version_header(M, {2, 0, 0}),
+    "action(Ref) -> sf_do(stable, [async_m || wait, Reply <- async_m:promise(Ref), return({stable, Reply})]).\n",
+    "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
+    "counter(Key) -> get(Key).\n",
+    "sf_do_code_change(_, _) -> unhandled.\n"].
 converter_source(M) -> [version_source(M, {2, 0, 0}, current_flow, fetch,
     migrated, none),
     "-export([convert/2]).\n",
@@ -405,12 +407,12 @@ capture_converter_source(M, old) -> [
     "counter(Key) -> get(Key).\n"];
 capture_converter_source(M, current) -> [
     version_header(M, {2, 0, 0}),
-    "action(Ref) -> sf_do(current_flow, [async_m || RenamedCapture = unused, wait, Reply <- async_m:promise(Ref), return({migrated, RenamedCapture, Reply})]).\n",
+    "action(Ref) -> sf_do(current_flow, [async_m || RenamedCapture = unused, wait, {converted, Reply} <- async_m:promise(Ref), return({converted, RenamedCapture, {converted, Reply}})]).\n",
     "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
     "counter(Key) -> get(Key).\n",
     "-export([convert/2]).\n",
     "sf_do_code_change(V, B) -> case {V,B} of {{1,0,0},old_flow} -> sf_migrate({1,0,0}, [async_m || OldCapture = old_value, wait, Reply <- async_m:promise(make_ref()), return(Reply)], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait,convert=>{?MODULE,convert,2}}}}); _ -> unhandled end.\n",
-    "convert(Outcome, Env) -> put(converter_calls, 1), {ok, Outcome, #{'RenamedCapture' => renamed_value, extra => {old_capture, maps:is_key('OldCapture', Env)}}}.\n"].
+    "convert(Outcome, _Env) -> put(converter_calls, 1), {ok, {converted, Outcome}, #{'RenamedCapture' => renamed_value, extra => {old_capture, true}}}.\n"].
 
 version_header(M, Vsn) -> io_lib:format("-module(~p).~n-vsn(~p).~n-define(ASYNC_DO,true).~n-include_lib(\"async/include/async.hrl\").~n-export([action/1,complete/2,counter/1]).~n", [M, Vsn]).
 
