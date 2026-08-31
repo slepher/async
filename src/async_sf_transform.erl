@@ -556,7 +556,7 @@ finish_rewrite(RewrittenForms, Rewrite, Collect) ->
                 maps:get(module, Collect), maps:get(vsn, Collect),
                 maps:values(maps:get(plans, Collect))
             ),
-            ManifestForms = manifest_forms(Manifest),
+            ManifestForms = manifest_forms(Manifest, RewrittenForms),
             RouterExport = case maps:is_key(
                     {sf_do_code_change, 2}, maps:get(functions, Collect)) of
                 true -> [{sf_do_code_change, 2}];
@@ -1525,13 +1525,20 @@ module_vsn(Forms) ->
         [Vsn | _] -> Vsn
     end.
 
-manifest_forms(Manifest) ->
+manifest_forms(Manifest, ExistingForms) ->
     Pos = 0,
-    [
-        {attribute, Pos, export, [{'$async_sf_manifest', 0}]},
-        {function, Pos, '$async_sf_manifest', 0,
-            [{clause, Pos, [], [], [abstract(Manifest)]}]}
-    ].
+    ManifestForm = {function, Pos, '$async_sf_manifest', 0,
+        [{clause, Pos, [], [], [abstract(Manifest)]}]},
+    case lists:any(fun
+            ({function, _, '$async_sf_manifest', 0, _}) -> true;
+            (_) -> false
+        end, ExistingForms) of
+        true -> [];
+        false -> [
+            {attribute, Pos, export, [{'$async_sf_manifest', 0}]},
+            ManifestForm
+        ]
+    end.
 
 rewrite_complete(#{
     block_stack := [], owner := undefined, plans := Plans, consumed := Consumed
