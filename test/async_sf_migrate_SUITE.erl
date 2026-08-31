@@ -13,7 +13,8 @@ all() -> [declaration_compiler_contract, compiler_negative_matrix,
     converter_env_and_precedence, converter_observable_matrix,
     converter_incompatible_shapes,
     converter_failure_privacy, fallback_and_failure_privacy,
-    downgrade_and_existing_boundary, downgrade_created_in_b].
+    downgrade_and_existing_boundary, downgrade_created_in_b,
+    multi_owner_linked_migration].
 init_per_suite(Config) -> async:start(), Config.
 end_per_suite(_Config) -> flush(), ok.
 
@@ -80,7 +81,7 @@ raw_bridge_and_purge(_Config) ->
         wait, old, none)),
     {module, M} = code:load_binary(M, "sf_raw_a", A),
     {ok, State0} = start(M, M:action(Ref), raw),
-    [#{frame := #{vsn := {1, 0, 0}, block := old_flow, step_name := wait},
+    [Before = #{frame := #{vsn := {1, 0, 0}, block := old_flow, step_name := wait},
         request_mref := Request, parent_ref := Parent}] = summaries(State0),
     {ok, M, B, []} = compile_text(M, version_source(M, {2, 0, 0}, current_flow,
         fetch, migrated, {old_flow, current_flow, wait, fetch})),
@@ -92,8 +93,9 @@ raw_bridge_and_purge(_Config) ->
     assert_completion(raw, {ok, {migrated, reply}}),
     ?assertEqual([], summaries(RawDone)),
     ?assertEqual(1, get_counter(M, {action_calls, old_flow})),
-    %% OTP returns false when no old code remains to purge.  Public proof is
-    %% completion, counters, and an empty callback store after reply.
+    ?assertEqual([Before], summaries(State0)),
+    ?assertEqual({ok, unhandled}, async_m:run_info({Ref, late}, #state.callbacks, RawDone)),
+    assert_no_completion(raw),
     unload(M).
 
 converter_and_precedence(_Config) ->
@@ -222,15 +224,72 @@ converter_incompatible_shapes(_Config) ->
 
 downgrade_created_in_b(_Config) ->
     M = fresh("sf_down_b_"), Ref = make_ref(),
-    {ok, M, B, []} = compile_text(M, version_source(M, {2, 0, 0}, stable,
-        wait, stable, none)),
+    {ok, M, B, _Warnings} = compile_text(M, downgrade_b_source(M)),
     {module, M} = code:load_binary(M, "sf_down_b", B),
     {ok, State0} = start(M, M:action(Ref), downgrade_b),
-    {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0}, stable,
-        wait, stable, none)),
+    [Before] = summaries(State0),
+    {ok, M, A, _Warnings2} = compile_text(M, downgrade_a_source(M)),
     {module, M} = code:load_binary(M, "sf_down_a", A),
-    ?assertEqual({ok, {stable, reply}}, info_reply({Ref, reply}, State0)),
+    {Outcome, Done} = info_reply_state({Ref, original}, State0),
+    ?assertEqual({ok, {a_resumed, original}}, Outcome),
+    ?assertEqual([], summaries(Done)),
+    ?assertEqual(1, get_counter(M, {action_calls, b_flow})),
+    assert_completion(downgrade_b, {ok, {a_resumed, original}}),
+    assert_no_completion(downgrade_b),
+    ?assertEqual({ok, unhandled}, async_m:run_info({Ref, late}, #state.callbacks, Done)),
+    ?assert(is_reference(maps:get(parent_ref, Before))),
+    unload(M), downgrade_incompatible_b().
+
+downgrade_incompatible_b() ->
+    M = fresh("sf_down_b_bad_"), Ref = make_ref(),
+    {ok, M, B, _Warnings} = compile_text(M, downgrade_b_source(M)),
+    {module, M} = code:load_binary(M, "sf_down_b_bad", B),
+    {ok, State0} = start(M, M:action(Ref), downgrade_bad),
+    [Before] = summaries(State0),
+    {ok, M, A, _Warnings2} = compile_text(M, incompatible_downgrade_a_source(M)),
+    {module, M} = code:load_binary(M, "sf_down_b_bad_a", A),
+    ?assertEqual([Before], summaries(State0)),
+    {Outcome, Done} = info_reply_state({Ref, original}, State0),
+    assert_migration_failure_versions(Outcome, M, no_compatible_plan,
+        {1, b_flow, wait}, {2, 0, 0}, {1, 0, 0}),
+    ?assertEqual([], summaries(Done)),
+    assert_completion(downgrade_bad, Outcome),
+    assert_no_completion(downgrade_bad),
     unload(M).
+
+multi_owner_linked_migration(_Config) ->
+    A = fresh("sf_owner_a_"), B = fresh("sf_owner_b_"),
+    RefA = make_ref(), RefB = make_ref(),
+    {ok, A, A1, []} = compile_text(A, version_source(A, {1, 0, 0},
+        owner_a_old, wait, a_old, none)),
+    {module, A} = code:load_binary(A, "sf_owner_a_1", A1),
+    {ok, B, B1, []} = compile_text(B, version_source(B, {2, 0, 0},
+        owner_b_old, wait, b_old, none)),
+    {module, B} = code:load_binary(B, "sf_owner_b_3", B1),
+    {[ok, ok], State0} = async_m:run_sf_frame(
+        async_m:par([A:action(RefA), B:action(RefB)]), sf_cc(A, multi_owner),
+        #state.callbacks, #state{}),
+    [First, Second] = summaries(State0),
+    ?assertEqual(1, length(lists:usort([maps:get(parent_ref, First),
+        maps:get(parent_ref, Second)]))),
+    {ok, A, A2Bin, []} = compile_text(A, version_source(A, {2, 0, 0},
+        owner_a_new, fetch, a_new, {owner_a_old, owner_a_new, wait, fetch})),
+    {module, A} = code:load_binary(A, "sf_owner_a_2", A2Bin),
+    {ok, B, B2Bin, []} = compile_text(B, version_source_custom(B, {3, 0, 0},
+        owner_b_new, fetch, b_new, {2, 0, 0},
+        {owner_b_old, owner_b_new, wait, fetch})),
+    {module, B} = code:load_binary(B, "sf_owner_b_4", B2Bin),
+    {_, State1} = info_reply_state({RefA, a_reply}, State0),
+    [#{frame := #{module := B, vsn := {2, 0, 0}, block := owner_b_old},
+        parent_ref := Parent1}] = summaries(State1),
+    ?assertEqual(maps:get(parent_ref, First), Parent1),
+    ?assertEqual(1, get_counter(A, {action_calls, owner_a_old})),
+    ?assertEqual(1, get_counter(B, {action_calls, owner_b_old})),
+    {Outcome, Done} = info_reply_state({RefB, b_reply}, State1),
+    ?assertEqual({ok, {b_new, b_reply}}, Outcome),
+    ?assertEqual([], summaries(Done)),
+    assert_completion(multi_owner, Outcome),
+    unload(A), unload(B).
 
 start(M, Action, Tag) -> async_m:run_sf_frame(Action, sf_cc(M, Tag),
     #state.callbacks, #state{}).
@@ -266,13 +325,35 @@ no_vsn_source(M) -> io_lib:format("-module(~p). -define(ASYNC_DO,true). -include
 partial_source(M) -> io_lib:format("-module(~p). -vsn(1). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(_,_) -> sf_migrate(1, [async_m || wait], #{from=>a,to=>current,steps=>#{}}).", [M]).
 
 version_source(M, Vsn, Block, Step, Label, Migration) ->
+    version_source_custom(M, Vsn, Block, Step, Label, {1, 0, 0}, Migration).
+
+version_source_custom(M, Vsn, Block, Step, Label, SourceVsn, Migration) ->
     Header = io_lib:format("-module(~p).~n-vsn(~p).~n-define(ASYNC_DO,true).~n-include_lib(\"async/include/async.hrl\").~n-export([action/1,complete/2,counter/1]).~n", [M, Vsn]),
     Body = io_lib:format("action(Ref) -> put({action_calls,~p}, 1 + case get({action_calls,~p}) of undefined -> 0; N -> N end), sf_do(~p, [async_m || ~p, Reply <- async_m:promise(Ref), return({~p, Reply})]).~ncomplete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).~ncounter(Key) -> get(Key).~n", [Block, Block, Block, Step, Label]),
     MigrationSource = case Migration of
         none -> [];
-        {From, To, Old, New} -> io_lib:format("sf_do_code_change(V, B) -> case {V,B} of {{1,0,0},~p} -> sf_migrate({1,0,0}, [async_m || ~p, OldReply <- async_m:promise(make_ref()), return({old, OldReply})], #{from=>~p,to=>~p,steps=>#{~p=>#{to=>~p}}}); _ -> unhandled end.~n", [From, Old, From, To, Old, New])
+        {From, To, Old, New} -> io_lib:format("sf_do_code_change(V, B) -> case {V,B} of {~p,~p} -> sf_migrate(~p, [async_m || ~p, OldReply <- async_m:promise(make_ref()), return({old, OldReply})], #{from=>~p,to=>~p,steps=>#{~p=>#{to=>~p}}}); _ -> unhandled end.~n", [SourceVsn, From, SourceVsn, Old, From, To, Old, New])
     end,
     [Header, Body, MigrationSource].
+
+downgrade_b_source(M) ->
+    [version_header(M, {2, 0, 0}),
+     "action(Ref) -> put({action_calls,b_flow}, 1 + case get({action_calls,b_flow}) of undefined -> 0; N -> N end), sf_do(b_flow, [async_m || BExtra = extra_env, wait, Reply <- async_m:promise(Ref), return({b_created, Reply})]).\n",
+     "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
+     "counter(Key) -> get(Key).\n"].
+
+downgrade_a_source(M) ->
+    [version_header(M, {1, 0, 0}),
+     "action(Ref) -> sf_do(a_flow, [async_m || wait, Reply <- async_m:promise(Ref), return({a_resumed, Reply})]).\n",
+     "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
+     "counter(Key) -> get(Key).\n",
+     "sf_do_code_change(V, B) -> case {V,B} of {{2,0,0},b_flow} -> sf_migrate({2,0,0}, [async_m || wait, Reply <- async_m:promise(make_ref()), return({a_resumed, Reply})], #{from=>b_flow,to=>a_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.\n"].
+
+incompatible_downgrade_a_source(M) ->
+    [version_header(M, {1, 0, 0}),
+     "action(Ref) -> sf_do(a_flow, [async_m || other, Reply <- async_m:promise(Ref), return({a, Reply})]).\n",
+     "complete(Outcome, {Pid, Tag}) -> Pid ! {Tag, Outcome}, async_r_t:return(Outcome, async_r_t:new(identity)).\n",
+     "counter(Key) -> get(Key).\n"].
 
 nonliteral_vsn_source(M) ->
     io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(V,B) -> case {V,B} of {1,old_flow} -> sf_migrate(1, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
@@ -352,12 +433,17 @@ assert_migration_failure(Outcome, M, Reason) ->
     assert_migration_failure(Outcome, M, Reason, {1, old_flow, wait}).
 
 assert_migration_failure(Outcome, M, Reason, Identity) ->
+    assert_migration_failure_versions(Outcome, M, Reason, Identity,
+        {1, 0, 0}, {2, 0, 0}).
+
+assert_migration_failure_versions(Outcome, M, Reason, Identity, StoredVsn,
+        CurrentVsn) ->
     ?assertMatch({error, {sf_runtime, {incompatible_frame, _}}}, Outcome),
     {error, {sf_runtime, {incompatible_frame, Info}}} = Outcome,
     ?assertEqual([current_vsn, identity, module, reason, stored_vsn],
         lists:sort(maps:keys(Info))),
-    ?assertEqual(#{module => M, stored_vsn => {1, 0, 0},
-        current_vsn => {2, 0, 0}, identity => Identity,
+    ?assertEqual(#{module => M, stored_vsn => StoredVsn,
+        current_vsn => CurrentVsn, identity => Identity,
         reason => Reason}, Info),
     ?assert(lists:member(Reason, [converter_failed, invalid_converter_result,
         incompatible_outcome, incompatible_env, no_compatible_plan,
@@ -381,3 +467,7 @@ flush() -> receive _ -> flush() after 0 -> ok end.
 
 assert_completion(Tag, Outcome) ->
     receive {Tag, Outcome} -> ok after 1000 -> ct:fail({missing, Tag, Outcome}) end.
+
+assert_no_completion(Tag) ->
+    receive {Tag, _Outcome} = Message -> ct:fail({duplicate, Message})
+    after 0 -> ok end.
