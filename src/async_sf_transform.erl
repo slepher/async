@@ -1529,16 +1529,21 @@ manifest_forms(Manifest, ExistingForms) ->
     Pos = 0,
     ManifestForm = {function, Pos, '$async_sf_manifest', 0,
         [{clause, Pos, [], [], [abstract(Manifest)]}]},
-    case lists:any(fun
-            ({function, _, '$async_sf_manifest', 0, _}) -> true;
-            (_) -> false
-        end, ExistingForms) of
+    case lists:any(fun is_generated_manifest/1, ExistingForms) of
         true -> [];
         false -> [
             {attribute, Pos, export, [{'$async_sf_manifest', 0}]},
             ManifestForm
         ]
     end.
+
+is_generated_manifest(
+    {function, 0, '$async_sf_manifest', 0,
+        [{clause, 0, [], [], [{map, 0, _}]}]}
+) ->
+    true;
+is_generated_manifest(_Form) ->
+    false.
 
 rewrite_complete(#{
     block_stack := [], owner := undefined, plans := Plans, consumed := Consumed
