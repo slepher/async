@@ -7,7 +7,8 @@
 -record(state, {callbacks = #{}, events = []}).
 
 suite() -> [{timetrap, {seconds, 60}}].
-all() -> [declaration_compiler_contract, raw_bridge_and_purge,
+all() -> [declaration_compiler_contract, compiler_negative_matrix,
+    raw_bridge_and_purge,
     converter_and_precedence, fallback_and_failure_privacy,
     downgrade_and_existing_boundary].
 init_per_suite(Config) -> async:start(), Config.
@@ -28,6 +29,29 @@ declaration_compiler_contract(_Config) ->
     {error, PartialErrors, []} = compile_text(Partial, partial_source(Partial)),
     ?assert(contains_term(PartialErrors, invalid_sf_migrate_syntax)).
 
+compiler_negative_matrix(_Config) ->
+    M = fresh("sf_matrix_"),
+    {ok, M, Bin, []} = compile_text(M, declaration_source(M)),
+    {module, M} = code:load_binary(M, "sf_matrix", Bin),
+    ?assert(is_map(M:sf_do_code_change({1, 0, 0}, old_flow))),
+    ?assertEqual(unhandled, M:sf_do_code_change({1, 0, 1}, old_flow)),
+    unload(M),
+    Cases = [{unnamed, unnamed_source(M), [invalid_sf_migrate_syntax,
+            sf_historical_block_not_named, sf_current_block_not_found]},
+        {duplicate, duplicate_source(M), [duplicate_sf_migration_source]},
+        {missing_block, missing_block_source(M), [sf_current_block_not_found]},
+        {missing_step, missing_step_source(M), [sf_step_not_found]},
+        {placement, placement_source(M), [invalid_sf_migrate_placement]}],
+    lists:foreach(fun({_Name, Source, Reasons}) ->
+        {error, Errors, _Warnings} = compile_text(M, Source),
+        case lists:any(fun(Reason) -> contains_term(Errors, Reason) end, Reasons) of
+            true -> ok;
+            false -> ct:fail({unmatched_diagnostic, _Name, Errors})
+        end,
+        ?assertEqual(false, contains_any(Errors,
+            [env, outcome, state, callback, 'fun', payload, ast]))
+    end, Cases).
+
 raw_bridge_and_purge(_Config) ->
     M = fresh("sf_raw_"), Ref = make_ref(),
     {ok, M, A, []} = compile_text(M, version_source(M, {1, 0, 0}, old_flow,
@@ -40,7 +64,11 @@ raw_bridge_and_purge(_Config) ->
         fetch, migrated, {old_flow, current_flow, wait, fetch})),
     {module, M} = code:load_binary(M, "sf_raw_b", B),
     ?assert(is_reference(Request)), ?assert(is_reference(Parent)),
-    ?assertEqual({ok, {migrated, reply}}, info_reply({Ref, reply}, State0)),
+    _ = code:purge(M),
+    {RawOutcome, RawDone} = info_reply_state({Ref, reply}, State0),
+    ?assertEqual({ok, {migrated, reply}}, RawOutcome),
+    assert_completion(raw, {ok, {migrated, reply}}),
+    ?assertEqual([], summaries(RawDone)),
     unload(M).
 
 converter_and_precedence(_Config) ->
@@ -98,6 +126,9 @@ start(M, Action, Tag) -> async_m:run_sf_frame(Action, sf_cc(M, Tag),
 info_reply(Message, State) ->
     {Outcome, Done} = async_m:run_info(Message, #state.callbacks, State),
     ?assertEqual([], summaries(Done)), Outcome.
+info_reply_state(Message, State) ->
+    {Outcome, Done} = async_m:run_info(Message, #state.callbacks, State),
+    {Outcome, Done}.
 sf_cc(M, Tag) -> #{kind => sf_cc, protocol => 1,
     mfa => {M, complete, 2}, context => {self(), Tag}}.
 summaries(State) -> {ok, S} = async_m:inspect_sf_callbacks(
@@ -110,6 +141,13 @@ contains_term(Term, Needle) when is_map(Term) -> lists:any(fun({K,V}) ->
 contains_term(Term, Needle) when is_tuple(Term) -> contains_term(tuple_to_list(Term), Needle);
 contains_term(Term, Needle) when is_list(Term) -> lists:any(fun(E) -> contains_term(E, Needle) end, Term);
 contains_term(_, _) -> false.
+contains_any(Term, Tags) when is_map(Term) ->
+    lists:any(fun(Tag) -> maps:is_key(Tag, Term) end, Tags) orelse
+        lists:any(fun({K, V}) -> contains_any(K, Tags) orelse contains_any(V, Tags) end,
+            maps:to_list(Term));
+contains_any(Term, Tags) when is_tuple(Term) -> contains_any(tuple_to_list(Term), Tags);
+contains_any(Term, Tags) when is_list(Term) -> lists:any(fun(E) -> contains_any(E, Tags) end, Term);
+contains_any(Term, Tags) -> lists:member(Term, Tags).
 
 declaration_source(M) -> version_source(M, {2, 0, 0}, current_flow, fetch,
     migrated, {old_flow, current_flow, wait, fetch}).
@@ -132,6 +170,12 @@ converter_source(M) -> [version_source(M, {2, 0, 0}, current_flow, fetch,
     "convert(Outcome, Env) -> put(converter_calls, 1), {ok, {converted, Outcome}, Env}.\n"].
 incompatible_source(M) -> version_source(M, {2, 0, 0}, current_flow, other,
     bad, none).
+
+unnamed_source(M) -> io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([sf_do_code_change/2]). sf_do_code_change(_,_) -> sf_migrate({1,0,0}, [async_m || X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{}}).", [M]).
+duplicate_source(M) -> io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(old_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(V,B) -> case {V,B} of {{1,0,0},old_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>old_flow,steps=>#{wait=>#{to=>wait}}}); {{1,0,0},old_flow} -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>old_flow,steps=>#{wait=>#{to=>wait}}}); _ -> unhandled end.", [M]).
+missing_block_source(M) -> io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([sf_do_code_change/2]). sf_do_code_change(_,_) -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>absent,steps=>#{wait=>#{to=>wait}}}).", [M]).
+missing_step_source(M) -> io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1,sf_do_code_change/2]). action(Ref) -> sf_do(current_flow, [async_m || wait, X <- async_m:promise(Ref), return(X)]). sf_do_code_change(_,_) -> sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(make_ref()), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{absent=>#{to=>wait}}}).", [M]).
+placement_source(M) -> io_lib:format("-module(~p). -vsn({2,0,0}). -define(ASYNC_DO,true). -include_lib(\"async/include/async.hrl\"). -compile({parse_transform, async_sf_transform}). -export([action/1]). action(Ref) -> begin sf_migrate({1,0,0}, [async_m || wait, X <- async_m:promise(Ref), return(X)], #{from=>old_flow,to=>current_flow,steps=>#{}}) end.", [M]).
 
 compile_text(M, Source) ->
     Dir = filename:join(["_build", "test", "sf_migrate_fixtures"]),
