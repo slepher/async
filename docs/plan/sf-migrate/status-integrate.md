@@ -3,8 +3,8 @@
 ## Lane
 
 - Name: `integrate`
-- State: `candidate`
-- Active task: `task-test-2.2`
-- Candidate: `d5264b0b3b384cd847575a4e53852d9ea67b74eb`
-- Next action: `review cumulative task-test-2.2 checkpoint`
+- State: `verified`
+- Active task: `task-test-2`
+- Candidate: `c8fcbc2ea722193818984a27d1f9178167bc1252`
+- Next action: `dispatch strict full_tester for task-test-2`
 - Blocker: `none`
