@@ -15,7 +15,7 @@
     fun((fun((reply_t:reply(A)) -> async_r_t:async_r_t(S, M, R)), sf_context()) ->
         async_r_t:async_r_t(S, M, R)).
 -type sf_context() :: undefined | #{
-    current := {frame, map()} | {ordinary, fun()} | {ref, reference()},
+    current := {frame, map()} | {ref, reference()},
     parent_ref := reference() | none,
     runner := fun((term()) -> term())
 }.
@@ -33,6 +33,7 @@
 }.
 -type info_route(S, A) ::
     {handled, A, S}
+    | {legacy_outcome, A, S}
     | {not_async, S}
     | {missing_callback, missing_callback(), S}.
 
@@ -242,12 +243,22 @@ lift_a2(F, ARTA, ARTB, {?MODULE, _IM} = AT) ->
     applicative:'default_<*'(ARTB, ARTA, AT).
 
 -spec '>>='(async_t(S, R, M, A), fun((A) -> async_t(S, R, M, B))) -> async_t(S, R, M, B).
-'>>='(ATA, KATB, {?MODULE, IM}) ->
+'>>='(ATA, KATB, {?MODULE, IM} = AT) ->
     RM = real_new(IM),
-    contextual_real_to_async_t(fun(SfContext) ->
-        KATB1 = fun(A) -> async_to_real_t(run_k(A, KATB), SfContext) end,
-        monad:'>>='(async_to_real_t(ATA, SfContext), KATB1, RM)
-    end).
+    with_materialized_context(fun(Runner, SfContext) ->
+        KATB1 = fun(A) ->
+            Next = case run_k(A, KATB) of
+                {ok, Action} -> Action;
+                unavailable -> async_t(fun(_K, _Context) ->
+                    forward_unavailable_action(context_parent(SfContext),
+                        {error, {sf_runtime, unavailable_continuation}}, async_r_t:new(IM))
+                end)
+            end,
+            async_to_real_t(Next, SfContext)
+        end,
+        Real = monad:'>>='(async_to_real_t(ATA, SfContext), KATB1, RM),
+        (run_real_t(Real))(Runner)
+    end, AT).
 
 '>>'(ATA, ATB, {?MODULE, _IM} = AT) ->
     monad:'default_>>'(ATA, ATB, AT).
@@ -276,14 +287,15 @@ fail(E, {?MODULE, IM}) ->
 throw_error(E, {?MODULE, IM}) ->
     fail(E, {?MODULE, IM}).
 
-catch_error(ATA, EATB, {?MODULE, IM}) ->
+catch_error(ATA, EATB, {?MODULE, IM} = AT) ->
     RM = real_new(IM),
-    contextual_real_to_async_t(fun(SfContext) ->
-        monad_error:catch_error(
+    with_materialized_context(fun(Runner, SfContext) ->
+        Real = monad_error:catch_error(
             async_to_real_t(ATA, SfContext),
             fun(E) -> async_to_real_t(EATB(E), SfContext) end,
-            RM)
-    end).
+            RM),
+        (run_real_t(Real))(Runner)
+    end, AT).
 
 -spec lift(monad:m(M, A)) -> async_t(_S, _R, M, A).
 lift(MA, {?MODULE, IM} = AT) ->
@@ -550,13 +562,19 @@ map_promises(Promises, Options, {?MODULE, IM} = AT) when is_map(Promises) ->
             pure_return(Acc0, AT);
         _ ->
             {WPromiseKeys, PPromiseKeys} = split(Threads, maps:keys(NPromises)),
-            do([
+            Action = do([
                 {?MODULE, IM}
              || put_ref(CRef, Acc0, AT),
                 put_ref(PRef, maps:with(PPromiseKeys, NPromises), AT),
                 put_ref(WRef, WPromiseKeys, AT),
                 par_acc(CRef, maps:with(WPromiseKeys, NPromises), AT)
-            ])
+            ]),
+            with_materialized_context(fun(Runner, SfContext) ->
+                MR = async_r_t:new(IM),
+                monad:'>>'(async_sf_cc:register_resources(
+                    context_parent(SfContext), [CRef, PRef, WRef], MR),
+                    raw_run_cc(Action, Runner, SfContext, AT), MR)
+            end, AT)
     end;
 map_promises(Promises, Options, {?MODULE, IM} = AT) when is_list(Promises) ->
     Promises1 = maps:from_list(lists:zip(lists:seq(1, length(Promises)), Promises)),
@@ -582,7 +600,7 @@ par_acc(CRef, Promises, AT) ->
 
 par_acc_1(Promises, {?MODULE, IM} = AT) ->
     Len = maps:size(Promises),
-    async_t(
+    with_materialized_context(
         fun(CC, SfContext) ->
             case Len of
                 0 ->
@@ -610,9 +628,11 @@ par_acc_1(Promises, {?MODULE, IM} = AT) ->
                                 end
                             ])
                     end,
-                    sequence_run_cc(maps:values(Promises), CC1, AsyncRT, SfContext, AT)
+                    monad:'>>'(async_sf_cc:register_resources(
+                        context_parent(SfContext), [Ref], AsyncRT),
+                        sequence_run_cc(maps:values(Promises), CC1, AsyncRT, SfContext, AT), AsyncRT)
             end
-        end
+        end, AT
     ).
 
 sequence_run_cc([], CC, _AsyncRT, _SfContext, _AT) ->
@@ -685,13 +705,13 @@ with_all(Promise, Then, {?MODULE, _IM} = AT) ->
 %% or it will cause unexpected error
 -spec par([async_t(S, R, M, A)], t(M)) -> async_t(S, R, M, [A]).
 par(Promises, {?MODULE, _IM} = AT) ->
-    async_t(
+    with_materialized_context(
         fun(CC, SfContext) ->
             traversable:sequence(
                 lists:map(fun(Promise) ->
                     raw_run_cc(Promise, CC, SfContext, AT)
                 end, Promises))
-        end
+        end, AT
     ).
 
 %% acts like par, but only return last value of promises
@@ -784,7 +804,8 @@ exec_cc(X, CC, Offset, State, {?MODULE, IM} = AT) ->
         return(NState)
     ]).
 
--spec run_with_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), integer(), S, _MT) -> S.
+-spec run_with_cc(async_t(S, R, M, A), async_t_cc(S, R, M, A), integer(), S, t(M)) ->
+    monad:m(M, {R, S}).
 run_with_cc(X, CC, Offset, State, {?MODULE, _IM} = AT) ->
     CallbacksGS = state_callbacks_gs(Offset),
     Ref = make_ref(),
@@ -801,11 +822,19 @@ run_cc(X, CC, {?MODULE, _IM} = AT) ->
 run_sf_cc(X, Callback, Context, {?MODULE, _IM} = AT) ->
     run_with_descriptor(X, async_sf_cc:new(async_r_t, Callback, Context), AT).
 
+-spec run_with_sf_cc(async_t(S, R, M, A),
+    fun((reply_t:reply(A), Context) -> term())
+    | fun((reply_t:reply(A), Context, S) -> S), Context, integer(), S, t(M)) ->
+    monad:m(M, {R, S}).
 run_with_sf_cc(X, Callback, Context, Offset, State, {?MODULE, _IM} = AT) ->
     Descriptor = async_sf_cc:new(direct_state, Callback, Context),
     MR = run_with_descriptor(X, Descriptor, AT),
     async_r_t:run(MR, state_callbacks_gs(Offset), make_ref(), State).
 
+-spec exec_sf_cc(async_t(S, _R, M, A),
+    fun((reply_t:reply(A), Context) -> term())
+    | fun((reply_t:reply(A), Context, S) -> S), Context, integer(), S, t(M)) ->
+    monad:m(M, S).
 exec_sf_cc(X, Callback, Context, Offset, State, {?MODULE, IM} = AT) ->
     functor:fmap(fun({_Outcome, NewState}) -> NewState end,
         run_with_sf_cc(X, Callback, Context, Offset, State, AT), IM).
@@ -925,9 +954,15 @@ wait_mresult(MResult, Offset, State, Timeout, {?MODULE, IM} = AT) ->
         end
     ]).
 
--spec handle_info(term(), integer(), S, t(M)) -> monad:m(M, S | unhandled).
+-spec handle_info(term(), integer(), S, t(M)) ->
+    monad:m(M, S | unhandled | {legacy_outcome, term(), S}).
 handle_info(Info, Offset, State, {?MODULE, IM} = AT) ->
-    functor:fmap(fun({_A, NState}) -> NState end, run_info(Info, Offset, State, AT), IM).
+    functor:fmap(fun
+        ({handled, _Outcome, NewState}) -> NewState;
+        ({legacy_outcome, _, _} = Legacy) -> Legacy;
+        ({not_async, _}) -> unhandled;
+        ({missing_callback, _, _}) -> unhandled
+    end, route_info(Info, Offset, State, AT), IM).
 
 -spec route_info(term(), integer(), S, t(M)) -> monad:m(M, info_route(S, term())).
 route_info(Info, Offset, State, {?MODULE, IM} = AT) ->
@@ -978,9 +1013,11 @@ route_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts,
                         async_r_t:return(Result, MR)
                     ])
                 end, MR),
-            functor:fmap(fun({Outcome, NewState}) ->
-                {handled, Outcome, NewState}
-            end, async_r_t:run_scope(Scoped, {CallbacksG, CallbacksS}, AccRef,
+            functor:fmap(fun
+                ({#async_legacy_delivery{outcome = Outcome}, NewState}) ->
+                    {legacy_outcome, Outcome, NewState};
+                ({Outcome, NewState}) -> {handled, Outcome, NewState}
+            end, async_r_t:run(Scoped, {CallbacksG, CallbacksS}, AccRef,
                 NState, MR), IM);
         missing_callback ->
             Missing = #{type => ReplyType, ref => MRef, value => A},
@@ -989,6 +1026,8 @@ route_reply_1(MRef, A, State, #{offset := Offset, type := ReplyType} = Opts,
             monad:return({not_async, State}, IM)
     end.
 
+compatibility_info_result({legacy_outcome, Outcome, State}) ->
+    {{legacy_outcome, Outcome}, State};
 compatibility_info_result({handled, Outcome, State}) -> {Outcome, State};
 compatibility_info_result({not_async, _State}) -> {ok, unhandled};
 compatibility_info_result({missing_callback, _Missing, _State}) -> {ok, unhandled}.
@@ -1052,21 +1091,23 @@ default_map_cc({?MODULE, IM} = AT) ->
 
 callback_to_cc(Callback, {?MODULE, IM}) when is_function(Callback, 0) ->
     MR = async_r_t:new(IM),
-    fun(_A) ->
-        case Callback() of
-            {async_r_t, _Inner} = NMonadMR ->
+    fun(A) ->
+        case async_util:apply_available_fun(Callback, []) of
+            unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, MR);
+            {ok, {async_r_t, _Inner} = NMonadMR} ->
                 NMonadMR;
-            Result ->
+            {ok, Result} ->
                 async_r_t:return(Result, MR)
         end
     end;
 callback_to_cc(Callback, {?MODULE, M}) when is_function(Callback, 1) ->
     MR = async_r_t:new(M),
     fun(A) ->
-        case Callback(A) of
-            {async_r_t, _Inner} = NMonadMR ->
+        case async_util:apply_available_fun(Callback, [A]) of
+            unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, MR);
+            {ok, {async_r_t, _Inner} = NMonadMR} ->
                 NMonadMR;
-            Result ->
+            {ok, Result} ->
                 async_r_t:return(Result, MR)
         end
     end;
@@ -1076,10 +1117,11 @@ callback_to_cc(Callback, {?MODULE, IM}) when is_function(Callback, 2) ->
         do([
             {async_r_t, IM}
          || State <- async_r_t:get_state(MR),
-            case Callback(A, State) of
-                {async_r_t, _Inner} = NMonadMR ->
+            case async_util:apply_available_fun(Callback, [A, State]) of
+                unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, MR);
+                {ok, {async_r_t, _Inner} = NMonadMR} ->
                     NMonadMR;
-                NState ->
+                {ok, NState} ->
                     case async_util:same_type_state(NState, State) of
                         true ->
                             do([
@@ -1138,7 +1180,7 @@ execute_callback_a(#{kind := ordinary_action, cc := Callback,
         {ok, {async_r_t, _} = Effect} -> Effect;
         {ok, Other} -> erlang:error({invalid_continuation_return, Other});
         unavailable ->
-            forward_unavailable_action(ParentRef, MR)
+            forward_unavailable_action(ParentRef, A, MR)
     end;
 execute_callback_a(#{kind := stable_action}, message, A,
         {?MODULE, IM}, _Direction) ->
@@ -1150,15 +1192,15 @@ execute_callback_a(#{kind := ordinary_action, cc := Callback,
         {ok, {async_r_t, _} = Effect} -> Effect;
         {ok, Other} -> erlang:error({invalid_continuation_return, Other});
         unavailable ->
-            forward_unavailable_action(ParentRef, MR)
+            forward_unavailable_action(ParentRef, A, MR)
     end;
 execute_callback_a(#{kind := stable_action, frame := Frame,
         parent_ref := ParentRef}, reply, A, {?MODULE, IM}, Direction) ->
     async_sf_runtime:continue(Frame, ParentRef, A, async_r_t:new(IM), Direction).
 
-forward_unavailable_action(none, MR) ->
-    async_r_t:return({error, {sf_runtime, unavailable_continuation}}, MR);
-forward_unavailable_action(ParentRef, MR) ->
+forward_unavailable_action(none, Outcome, MR) ->
+    async_r_t:return(#async_legacy_delivery{outcome = Outcome}, MR);
+forward_unavailable_action(ParentRef, _Outcome, MR) ->
     async_sf_cc:dispatch_failure(ParentRef,
         {error, {sf_runtime, unavailable_continuation}}, MR).
 
@@ -1187,9 +1229,6 @@ materialize_parent(Runner, #{runner := Runner, current := {ref, Ref}}, MR)
 materialize_parent(Runner, #{runner := Runner, current := {frame, Frame},
         parent_ref := ParentRef}, MR) ->
     register_materialized(async_sf_cc:frame_node(Frame, ParentRef), MR);
-materialize_parent(Runner, #{runner := Runner, current := {ordinary, Callback},
-        parent_ref := ParentRef}, MR) ->
-    register_materialized(async_sf_cc:ordinary_node(Callback, ParentRef), MR);
 materialize_parent(Callback, SfContext, MR) ->
     register_materialized(async_sf_cc:ordinary_node(
         Callback, context_parent(SfContext)), MR).
@@ -1207,5 +1246,37 @@ map_real(F, ATA) ->
         F(async_to_real_t(ATA, SfContext))
     end).
 
+%% Stabilize a frame before a combinator captures its runner or forks branches.
+with_materialized_context(Build, {?MODULE, IM}) ->
+    async_t(fun(Runner, SfContext) ->
+        case SfContext of
+            #{current := {frame, _}} ->
+                MR = async_r_t:new(IM),
+                monad:'>>='(materialize_parent(Runner, SfContext, MR),
+                    fun(Ref) ->
+                        StableRunner = fun
+                            ({message, _} = Input) ->
+                                async_sf_cc:dispatch_message(Ref, Input, MR);
+                            (Input) -> async_sf_cc:dispatch(Ref, Input, MR)
+                        end,
+                        Build(StableRunner, #{current => {ref, Ref},
+                            parent_ref => Ref, runner => StableRunner})
+                    end, MR);
+            _ -> Build(Runner, SfContext)
+        end
+    end).
+
+%% erlando's monad:bind inserts a normalization closure before this adapter.
+%% Unwrap only that known closure so availability is checked on the user fun,
+%% never by catching badfun from inside an arbitrary user function body.
 run_k(A, K) ->
-    K(A).
+    case {erlang:fun_info(K, module), erlang:fun_info(K, name),
+            erlang:fun_info(K, env)} of
+        {{module, monad}, {name, '->>=/3-fun-0-'}, {env, [Target, Monad]}}
+                when is_function(Target, 1) ->
+            case run_k(A, Target) of
+                {ok, Action} -> {ok, undetermined:run(Action, Monad)};
+                unavailable -> unavailable
+            end;
+        _ -> async_util:apply_available_fun(K, [A])
+    end.

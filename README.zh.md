@@ -527,9 +527,15 @@ Result = identity:run(ResultMonad).
 - `lift_final_reply/1` 只把 final reply 提升为值；message 继续向外传播。
 - `with_message/2`、`with_final/2`、`with_all/2` 在不同 reply 边界附加处理器。
 - `handle_message/2` 使用 callback/continuation 消费 message。
-- `route_info/3` 区分 `{handled, Outcome, State}`、`{not_async, State}` 和
-  `{missing_callback, Metadata, State}`；现有 `run_info/3`、`handle_info/3` 保留历史
+- `route_info/3` 区分 `{handled, Outcome, State}`、`{not_async, State}`、
+  `{missing_callback, Metadata, State}` 和 `{legacy_outcome, Outcome, CleanState}`。
+  最后一种结果表示最终回调被 purge，无法接收结果，但请求资源已经清理。
+  `handle_info/3` 原样返回该三元组，`run_info/3` 返回
+  `{{legacy_outcome, Outcome}, CleanState}`；非异步消息和缺失回调仍保留历史
   `unhandled` 兼容行为。
+- 普通 `do` 中间 continuation 被 purge 后，会向仍可调用的外层回调传递
+  `{error, {sf_runtime, unavailable_continuation}}`。结构性失败跳过中间错误处理器，
+  可调用的用户函数体内产生的异常仍原样传播。
 - `pass/0` 有意从运行时层返回，不产生 final `async_t` reply。
 - `par/1` 是底层接口：只能有一个分支产生 final reply，其他分支必须发送
   message 或使用 `pass/0`。

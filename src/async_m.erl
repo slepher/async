@@ -8,6 +8,8 @@
 %%%-------------------------------------------------------------------
 -module(async_m).
 
+-include("async_internal.hrl").
+
 -include_lib("erlando/include/do.hrl").
 -include_lib("erlando/include/gen_fun.hrl").
 -include_lib("erlando/include/erlando_instance.hrl").
@@ -135,23 +137,25 @@ struct(#{} = Map) ->
 
 callback_to_cc(Callback) when is_function(Callback, 0) ->
     fun(A) ->
-        case Callback() of
-            #{'__struct__' := ?MODULE} = Struct ->
+        case async_util:apply_available_fun(Callback, []) of
+            unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, async_r_t:new(identity));
+            {ok, #{'__struct__' := ?MODULE} = Struct} ->
                 struct_to_async_r_m(Struct, async_r_m:return(A));
-            {async_r_t, _Inner} = NMonadMR ->
+            {ok, {async_r_t, _Inner} = NMonadMR} ->
                 NMonadMR;
-            Result ->
+            {ok, Result} ->
                 async_r_m:return(Result)
         end
     end;
 callback_to_cc(Callback) when is_function(Callback, 1) ->
     fun(A) ->
-        case Callback(A) of
-            #{'__struct__' := ?MODULE} = Struct ->
+        case async_util:apply_available_fun(Callback, [A]) of
+            unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, async_r_t:new(identity));
+            {ok, #{'__struct__' := ?MODULE} = Struct} ->
                 struct_to_async_r_m(Struct, async_r_m:return(A));
-            {async_r_t, _Inner} = NMonadMR ->
+            {ok, {async_r_t, _Inner} = NMonadMR} ->
                 NMonadMR;
-            Result ->
+            {ok, Result} ->
                 async_r_m:return(Result)
         end
     end;
@@ -160,12 +164,13 @@ callback_to_cc(Callback) when is_function(Callback, 2) ->
         do([
             async_r_m
          || State <- async_r_m:get_state(),
-            case Callback(A, State) of
-                #{'__struct__' := ?MODULE} = Struct ->
+            case async_util:apply_available_fun(Callback, [A, State]) of
+                unavailable -> async_r_t:return(#async_legacy_delivery{outcome = A}, async_r_t:new(identity));
+                {ok, #{'__struct__' := ?MODULE} = Struct} ->
                     struct_to_async_r_m(Struct, async_r_m:return(A));
-                {async_r_t, _Inner} = NMonadMR ->
+                {ok, {async_r_t, _Inner} = NMonadMR} ->
                     NMonadMR;
-                NState ->
+                {ok, NState} ->
                     case async_util:same_type_state(NState, State) of
                         true ->
                             do([
@@ -218,18 +223,24 @@ run_sf_frame(_Async, SfCc, _Offset, _State) ->
 run_sf_cc(Async, Callback, Context) ->
     async_t:run_sf_cc(Async, Callback, Context, async_t:new(identity)).
 
+-spec run_with_sf_cc(async_t:async_t(S, R, identity, A),
+    fun((reply_t:reply(A), Context) -> term())
+    | fun((reply_t:reply(A), Context, S) -> S), Context, integer(), S) -> {R, S}.
 run_with_sf_cc(Async, Callback, Context, Offset, State) ->
     identity:run(async_t:run_with_sf_cc(
         Async, Callback, Context, Offset, State, async_t:new(identity))).
 
+-spec exec_sf_cc(async_t:async_t(S, _R, identity, A),
+    fun((reply_t:reply(A), Context) -> term())
+    | fun((reply_t:reply(A), Context, S) -> S), Context, integer(), S) -> S.
 exec_sf_cc(Async, Callback, Context, Offset, State) ->
     identity:run(async_t:exec_sf_cc(
         Async, Callback, Context, Offset, State, async_t:new(identity))).
 
--spec handle_info(term(), integer(), S) -> S | unhandled.
+-spec handle_info(term(), integer(), S) -> S | unhandled | {legacy_outcome, term(), S}.
 handle_info(Info, Offset, State) ->
-    {_Outcome, NewState} = run_info(Info, Offset, State),
-    NewState.
+    identity:run(async_t:handle_info(
+        Info, Offset, State, async_t:new(identity))).
 
 -spec route_info(term(), integer(), S) -> async_t:info_route(S, term()).
 route_info(Info, Offset, State) ->

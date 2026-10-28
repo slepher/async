@@ -544,8 +544,15 @@ Result = identity:run(ResultMonad).
   different reply boundaries.
 - `handle_message/2` consumes messages with a callback/continuation.
 - `route_info/3` distinguishes `{handled, Outcome, State}`, `{not_async, State}`,
-  and `{missing_callback, Metadata, State}`. Existing `run_info/3` and
-  `handle_info/3` retain their historical `unhandled` compatibility behavior.
+  `{missing_callback, Metadata, State}`, and `{legacy_outcome, Outcome, CleanState}`.
+  The last result means a purged final callback could not receive the outcome;
+  request resources have been cleaned. `handle_info/3` preserves this triple,
+  while `run_info/3` returns `{{legacy_outcome, Outcome}, CleanState}`. Both retain
+  their historical `unhandled` behavior for unrelated or missing callbacks.
+- A purged intermediate ordinary `do` continuation forwards
+  `{error, {sf_runtime, unavailable_continuation}}` to the surviving outer callback.
+  Structural failures bypass intermediate error handlers; exceptions raised
+  inside callable user functions still propagate unchanged.
 - `pass/0` deliberately returns from the runtime layer without producing a
   final `async_t` reply.
 - `par/1` is low level: only one branch may produce a final reply; other

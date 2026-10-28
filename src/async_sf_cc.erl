@@ -5,11 +5,12 @@
 -include("async_internal.hrl").
 
 -export([new/3, ordinary_node/2, ordinary_outer_node/1, frame_node/2, register_node/3,
-    register_action/3, register_timer/3, cleanup_accumulator/2,
+    register_action/3, register_timer/3, register_resources/3, cleanup_accumulator/2,
     route_action/3, dispatch/3, dispatch_message/3, dispatch_failure/3,
     dispatch_continuation/4, inspect/3, fail/4]).
 
 -define(CHILDREN(Ref), {sf_continuation_children, Ref}).
+-define(RESOURCES(Ref), {sf_continuation_resources, Ref}).
 -define(INVALID_CONTINUATION(Reason),
     erlang:error({invalid_continuation, Reason})).
 
@@ -102,6 +103,25 @@ checked_parent(_Node, ParentRef) ->
 
 register_node(Ref, Node, {async_r_t, _} = MR) -> register(Ref, Node, node, MR).
 register_action(Key, Action, {async_r_t, _} = MR) -> register(Key, Action, action, MR).
+
+%% Combinator scratch keys belong to the same continuation as its actions.
+register_resources(none, _Keys, MR) -> async_r_t:return(ok, MR);
+register_resources(ParentRef, Keys, MR) ->
+    do([
+        MR
+     || {Get, Set} <- async_r_t:ask(MR),
+        State <- async_r_t:do_get_state(MR),
+        Callbacks = Get(State),
+        begin
+            validate_registration_parent(ParentRef, none, Callbacks),
+            IndexKey = ?RESOURCES(ParentRef),
+            Existing = async_util:get(IndexKey, Callbacks,
+                #{kind => sf_reverse_index, protocol => 1, resources => []}),
+            Index = Existing#{resources := lists:usort(
+                Keys ++ maps:get(resources, Existing))},
+            async_r_t:do_put_state(Set(async_util:store(IndexKey, Index, Callbacks), State), MR)
+        end
+    ]).
 
 register_timer(_Key, infinity, {async_r_t, _} = MR) ->
     async_r_t:return(ok, MR);
@@ -230,10 +250,13 @@ dispatch_message(Ref, Outcome, {async_r_t, _} = MR) ->
         State <- async_r_t:do_get_state(MR),
         case async_util:find(Ref, Get(State)) of
             {ok, Node} ->
-                case async_util:callback_value_kind(Node) of
-                    outer_node ->
-                        execute_node(Node, Outcome, success, MR);
-                    _ -> ?INVALID_CONTINUATION({invalid_node, Ref})
+                case Node of
+                    #sf_callback{} -> async_r_t:return(Outcome, MR);
+                    _ ->
+                        case async_util:callback_value_kind(Node) of
+                            outer_node -> execute_node(Node, Outcome, success, MR);
+                            _ -> ?INVALID_CONTINUATION({invalid_node, Ref})
+                        end
                 end;
             error -> ?INVALID_CONTINUATION({missing_node, Ref})
         end
@@ -246,7 +269,7 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
         State <- async_r_t:do_get_state(MR),
         case async_util:find(Ref, Get(State)) of
             {ok, Node} ->
-                case preserve_outer_with_children(Ref, Node, Mode, Get(State)) of
+                case preserve_node_with_children(Ref, Node, Mode, Get(State)) of
                     true -> dispatch_pending_parent(Node, Outcome, Mode, MR);
                     false ->
                         {ok, TakenNode, CleanState} = take_node(
@@ -259,11 +282,9 @@ dispatch_mode(Ref, Outcome, Mode, {async_r_t, _} = MR) ->
     ]).
 
 dispatch_pending_parent(Node, Outcome, Mode, MR) ->
-    case maps:get(mode, Node, async_r_t) of
-        direct_state ->
-            async_r_t:return(Outcome, MR);
-        async_r_t ->
-            execute_node(Node, Outcome, Mode, MR)
+    case Node of
+        #{mode := direct_state} -> async_r_t:return(Outcome, MR);
+        _ -> execute_node(Node, Outcome, Mode, MR)
     end.
 
 dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
@@ -273,9 +294,9 @@ dispatch_taken_node(Node, Outcome, Mode, CleanState, MR) ->
         execute_node(Node, Outcome, Mode, MR)
     ]).
 
-preserve_outer_with_children(Ref, Node, success, Callbacks) ->
+preserve_node_with_children(Ref, Node, success, Callbacks) ->
     case async_util:callback_value_kind(Node) of
-        outer_node ->
+        Kind when Kind =:= outer_node; Kind =:= intermediate_node ->
             case async_util:find(?CHILDREN(Ref), Callbacks) of
                 {ok, #{kind := sf_reverse_index, protocol := 1,
                     children := [_ | _]}} -> true;
@@ -283,7 +304,7 @@ preserve_outer_with_children(Ref, Node, success, Callbacks) ->
             end;
         _ -> false
     end;
-preserve_outer_with_children(_Ref, _Node, _Mode, _Callbacks) ->
+preserve_node_with_children(_Ref, _Node, _Mode, _Callbacks) ->
     false.
 
 dispatch_continuation(Ref, Outcome, Offset, State) ->
@@ -296,10 +317,9 @@ dispatch_state(Ref, Outcome, Mode, Offset, State) ->
     MR = async_r_t:new(identity),
     {Get, Set} = async_t:state_callbacks_gs(Offset),
     {ok, Node, ConsumedState} = take_node(Ref, State, Get, Set),
-    {Action, State0} = execute_node_state(
-        Node, Outcome, Mode, ConsumedState, MR),
+    Action = execute_node(Node, Outcome, Mode, MR),
     {Value, NewState} = identity:run(async_r_t:run(Action,
-        {Get, Set}, make_ref(), State0, MR)),
+        {Get, Set}, make_ref(), ConsumedState, MR)),
     {ok, Value, NewState}.
 
 take_node(Ref, State, Get, Set) when is_reference(Ref) ->
@@ -316,7 +336,10 @@ take_node(Ref, _State, _Get, _Set) ->
 
 cleanup_owned(Ref, _Node, Callbacks) ->
     Children = children(Ref, Callbacks),
-    WithoutIndex = async_util:remove(?CHILDREN(Ref), Callbacks),
+    Resources = async_util:get(?RESOURCES(Ref), Callbacks, #{resources => []}),
+    WithoutResources = lists:foldl(fun async_util:remove/2, Callbacks,
+        [?RESOURCES(Ref) | maps:get(resources, Resources)]),
+    WithoutIndex = async_util:remove(?CHILDREN(Ref), WithoutResources),
     lists:foldl(fun cleanup_child/2, WithoutIndex, Children).
 
 cleanup_child(Key, Callbacks) ->
@@ -355,10 +378,7 @@ cleanup_timer(_Key, _Value, _Callbacks) -> ok.
 remove_orphan_accumulator(Value, Callbacks) ->
     case async_util:decode_callback(Value) of
         {ok, #{acc_ref := AccRef}} when is_reference(AccRef) ->
-            case accumulator_in_use(AccRef, Callbacks) of
-                true -> Callbacks;
-                false -> async_util:remove(AccRef, Callbacks)
-            end;
+            remove_orphan_accumulator_ref(AccRef, Callbacks);
         _ -> Callbacks
     end.
 
@@ -371,9 +391,13 @@ accumulator_in_use(AccRef, Callbacks) ->
     end, async_util:to_list(Callbacks)).
 
 remove_orphan_accumulator_ref(AccRef, Callbacks) ->
-    case accumulator_in_use(AccRef, Callbacks) of
-        true -> Callbacks;
-        false -> async_util:remove(AccRef, Callbacks)
+    case async_util:find(AccRef, Callbacks) of
+        error -> Callbacks;
+        {ok, _} ->
+            case accumulator_in_use(AccRef, Callbacks) of
+                true -> Callbacks;
+                false -> async_util:remove(AccRef, Callbacks)
+            end
     end.
 
 remove_action_key(_Key, #sf_callback{}, Callbacks) ->
@@ -416,12 +440,17 @@ timer_reference(#callback{}, Key, Callbacks) ->
     monad_runtime()) -> async_effect().
 execute_node(#sf_callback{parent_ref = ParentRef}, Outcome, failure, MR) ->
     forward_failure(ParentRef, Outcome, MR);
+execute_node(#{kind := ordinary_continuation, parent_ref := ParentRef},
+        Outcome, failure, MR) ->
+    forward_failure(ParentRef, Outcome, MR);
 execute_node(#{kind := Kind, callback := Callback,
         parent_ref := ParentRef}, Outcome, _Mode, MR)
         when Kind =:= ordinary_continuation; Kind =:= ordinary_outer ->
     case async_util:apply_available_fun(Callback, [Outcome]) of
         {ok, {async_r_t, _} = Effect} -> Effect;
         {ok, Other} -> ?INVALID_CONTINUATION({invalid_continuation_return, Other});
+        unavailable when ParentRef =:= none ->
+            async_r_t:return(#async_legacy_delivery{outcome = Outcome}, MR);
         unavailable ->
             forward_failure(ParentRef,
                 {error, {sf_runtime, unavailable_continuation}}, MR)
@@ -431,54 +460,6 @@ execute_node(#sf_callback{frame = Frame, parent_ref = ParentRef}, Outcome, succe
 execute_node(#{kind := sf_cc} = SfCc, Outcome, _Mode, MR) ->
     invoke_outer(SfCc, Outcome, MR).
 
-execute_node_state(#sf_callback{parent_ref = ParentRef}, Outcome, failure,
-        State, MR) ->
-    {forward_failure(ParentRef, Outcome, MR), State};
-execute_node_state(#{kind := Kind, callback := Callback,
-        parent_ref := ParentRef}, Outcome, _Mode, State, MR)
-        when Kind =:= ordinary_continuation; Kind =:= ordinary_outer ->
-    case async_util:apply_available_fun(Callback, [Outcome]) of
-        {ok, {async_r_t, _} = Effect} -> {Effect, State};
-        {ok, Other} -> ?INVALID_CONTINUATION({invalid_continuation_return, Other});
-        unavailable ->
-            {forward_failure(ParentRef,
-                {error, {sf_runtime, unavailable_continuation}}, MR), State}
-    end;
-execute_node_state(#sf_callback{frame = Frame, parent_ref = ParentRef},
-        Outcome, success, State, MR) ->
-    {async_sf_runtime:continue(Frame, ParentRef, Outcome, MR, resume), State};
-execute_node_state(#{kind := sf_cc, mode := async_r_t,
-        callback := Callback, context := Context}, Outcome, _Mode, State, MR) ->
-    case async_util:apply_available_fun(Callback, [Outcome, Context]) of
-        {ok, {async_r_t, _} = Effect} -> {Effect, State};
-        {ok, Other} -> erlang:error({invalid_sf_cc_return, Other});
-        unavailable ->
-            {forward_failure(none,
-                {error, {sf_runtime, unavailable_continuation}}, MR), State}
-    end;
-execute_node_state(#{kind := sf_cc, mode := direct_state,
-        callback := Callback, context := Context}, Outcome, _Mode, State, MR) ->
-    invoke_direct_state(Callback, Outcome, Context, State, MR).
-
-invoke_direct_state(Callback, Outcome, Context, CleanState, MR) ->
-    {arity, Arity} = erlang:fun_info(Callback, arity),
-    Args = case Arity of
-        2 -> [Outcome, Context];
-        3 -> [Outcome, Context, CleanState]
-    end,
-    case async_util:apply_available_fun(Callback, Args) of
-        unavailable ->
-            {forward_failure(none,
-                {error, {sf_runtime, unavailable_continuation}}, MR), CleanState};
-        {ok, _Ignored} when Arity =:= 2 ->
-            {async_r_t:return(Outcome, MR), CleanState};
-        {ok, NewState} ->
-            case async_util:same_type_state(NewState, CleanState) of
-                true -> {async_r_t:return(Outcome, MR), NewState};
-                false -> erlang:error({invalid_sf_cc_return, NewState})
-            end
-    end.
-
 forward_failure(none, Outcome, MR) -> async_r_t:return(Outcome, MR);
 forward_failure(ParentRef, Outcome, MR) -> dispatch_failure(ParentRef, Outcome, MR).
 
@@ -487,8 +468,7 @@ invoke_outer(#{mode := async_r_t, callback := Callback, context := Context},
     case async_util:apply_available_fun(Callback, [Outcome, Context]) of
         {ok, {async_r_t, _} = Effect} -> Effect;
         {ok, Other} -> erlang:error({invalid_sf_cc_return, Other});
-        unavailable -> forward_failure(none,
-            {error, {sf_runtime, unavailable_continuation}}, MR)
+        unavailable -> async_r_t:return(#async_legacy_delivery{outcome = Outcome}, MR)
     end;
 invoke_outer(#{mode := direct_state, callback := Callback, context := Context},
         Outcome, MR) ->
@@ -505,8 +485,7 @@ invoke_direct(Callback, Outcome, Context, CleanState, MR) ->
         3 -> [Outcome, Context, CleanState]
     end,
     case async_util:apply_available_fun(Callback, Args) of
-        unavailable -> forward_failure(none,
-            {error, {sf_runtime, unavailable_continuation}}, MR);
+        unavailable -> async_r_t:return(#async_legacy_delivery{outcome = Outcome}, MR);
         {ok, _Ignored} when Arity =:= 2 ->
             async_r_t:return(Outcome, MR);
         {ok, NewState} ->

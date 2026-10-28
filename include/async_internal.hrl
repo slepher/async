@@ -11,3 +11,6 @@
     parent_ref,
     timer_ref = undefined
 }).
+
+%% Internal delivery status, distinct from a business Outcome tuple.
+-record(async_legacy_delivery, {outcome}).

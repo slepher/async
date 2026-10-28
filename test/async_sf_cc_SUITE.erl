@@ -225,7 +225,7 @@ upgrade_badfun_forwarding(_Config) ->
         {module, Module} = code:load_binary(
             Module, "async_upgrade_badfun_fixture_replacement", ReplacementBinary),
         _ = code:purge(Module),
-        {{error, {sf_runtime, unavailable_continuation}}, State1} =
+        {{legacy_outcome, reply}, State1} =
             info({Ref, reply}, State0),
         ?assertEqual([], summaries(State1))
     after

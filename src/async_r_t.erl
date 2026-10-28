@@ -336,14 +336,6 @@ run(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
     NStateV = state_t:run(async_r_to_real_t(X), State, RM),
     reader_t:run(reader_t:run(NStateV, Acc), CallbacksGS).
 
--export([run_scope/5]).
--spec run_scope(async_r_t(S, M, A), callback_gs(S), reference(), S, t(M)) ->
-    monad:m(M, {A, S}).
-run_scope(X, CallbacksGS, Acc, State, {?MODULE, IM}) ->
-    RM = real_new(IM),
-    NStateV = state_t:run(async_r_to_real_t(X), State, RM),
-    reader_t:run(reader_t:run(NStateV, Acc), CallbacksGS).
-
 -spec map(fun((monad:m(M, {A, S})) -> monad:m(N, {B, S})), async_r_t(S, M, A)) ->
     async_r_t(S, N, B).
 map(F, X, {?MODULE, IM}) ->
